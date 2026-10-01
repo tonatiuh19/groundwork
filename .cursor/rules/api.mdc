@@ -1,0 +1,18 @@
+---
+description: API serverless rules — keep logic inline in api/index.ts
+globs: api/**/*
+alwaysApply: false
+---
+
+# API (Vercel Serverless)
+
+- All routes and helpers needed at runtime live **inline** in `api/index.ts`
+- Shared types: `import type { ... } from "../shared/api"` only
+- Do **not** `import` runtime modules from `../shared/` (breaks Vercel)
+- **ALWAYS update `api/swagger.yaml`** in the same change when endpoints, payloads, responses, or behavior change — no exceptions
+- If email templates / public flows change, also update **`DESIGN_SYSTEM.md`**
+- Dev: single port **8080** for frontend + backend
+- Only add endpoints when needed (secrets, DB, server-only logic)
+- Keep TypeScript types consistent across `client/`, `api/index.ts`, and `shared/`
+- Return `{ error: string }` with correct status (400/402/403/404/409) — use friendly messages, not driver errors
+- Vitest: never send live Resend mail; clean TiDB fixtures via `api/testDbCleanup.ts`

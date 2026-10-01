@@ -1,0 +1,1782 @@
+openapi: 3.0.3
+info:
+  title: Groundwork Capital API
+  version: 0.1.0
+  description: |
+    Public lead capture, passwordless portal auth (admin / affiliate / contractor / client) and the portal feature layer (projects, loans, commissions, draws, contracts). Cookie-authenticated mutations under /api/(admin|affiliate|contractor|client)/ reject a foreign Origin header with 403. Errors return i18n keys (e.g. errors.forbidden, validation.invalidField).
+    Independent HttpOnly cookies per actor. Emails send live whenever RESEND_API_KEY is set (local + prod); Vitest always dry-runs; NOTIFY_EMAILS=false forces dry-run.
+servers:
+  - url: /
+paths:
+  /api/admin/auth/otp/request:
+    post:
+      summary: Request admin email OTP
+      tags: [portal-auth]
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      responses:
+        "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
+        "400": { description: validation.emailInvalid }
+        "403": { description: "errors.authPending / errors.authInvited" }
+        "429": { description: errors.tooMany }
+        "502": { description: errors.otpSendFailed }
+  /api/admin/auth/otp/verify:
+    post:
+      summary: Verify admin OTP (sets gw_admin_sid)
+      tags: [portal-auth]
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      responses:
+        "200": { description: Authenticated }
+        "400": { description: validation.otpInvalid }
+        "401": { description: "errors.authInvalid / errors.authLocked" }
+  /api/admin/auth/me:
+    get:
+      summary: Current admin
+      tags: [portal-auth]
+      responses:
+        "200": { description: Admin user }
+        "401": { description: Unauthorized }
+  /api/admin/auth/logout:
+    post:
+      summary: End admin session
+      tags: [portal-auth]
+      responses:
+        "200": { description: Logged out }
+  /api/affiliate/auth/otp/request:
+    post:
+      summary: Request affiliate OTP
+      tags: [portal-auth]
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      responses:
+        "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
+        "400": { description: validation.emailInvalid }
+        "403": { description: "errors.authPending / errors.authInvited" }
+        "429": { description: errors.tooMany }
+        "502": { description: errors.otpSendFailed }
+  /api/affiliate/auth/otp/verify:
+    post:
+      summary: Verify affiliate OTP (sets gw_affiliate_sid)
+      tags: [portal-auth]
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      responses:
+        "200": { description: Authenticated }
+        "400": { description: validation.otpInvalid }
+        "401": { description: "errors.authInvalid / errors.authLocked" }
+  /api/affiliate/auth/me:
+    get:
+      summary: Current affiliate
+      tags: [portal-auth]
+      responses:
+        "200": { description: Affiliate user }
+  /api/affiliate/auth/logout:
+    post:
+      summary: End affiliate session
+      tags: [portal-auth]
+      responses:
+        "200": { description: Logged out }
+  /api/contractor/auth/otp/request:
+    post:
+      summary: Request contractor OTP
+      tags: [portal-auth]
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      responses:
+        "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
+        "400": { description: validation.emailInvalid }
+        "403": { description: "errors.authPending / errors.authInvited" }
+        "429": { description: errors.tooMany }
+        "502": { description: errors.otpSendFailed }
+  /api/contractor/auth/otp/verify:
+    post:
+      summary: Verify contractor OTP (sets gw_contractor_sid)
+      tags: [portal-auth]
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      responses:
+        "200": { description: Authenticated }
+        "400": { description: validation.otpInvalid }
+        "401": { description: "errors.authInvalid / errors.authLocked" }
+  /api/contractor/auth/me:
+    get:
+      summary: Current contractor
+      tags: [portal-auth]
+      responses:
+        "200": { description: Contractor user }
+  /api/contractor/auth/logout:
+    post:
+      summary: End contractor session
+      tags: [portal-auth]
+      responses:
+        "200": { description: Logged out }
+  /api/client/auth/otp/request:
+    post:
+      summary: Request homeowner OTP
+      tags: [portal-auth]
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      responses:
+        "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
+        "400": { description: validation.emailInvalid }
+        "403": { description: "errors.authPending / errors.authInvited" }
+        "429": { description: errors.tooMany }
+        "502": { description: errors.otpSendFailed }
+  /api/client/auth/otp/verify:
+    post:
+      summary: Verify homeowner OTP (sets gw_client_sid)
+      tags: [portal-auth]
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      responses:
+        "200": { description: Authenticated }
+        "400": { description: validation.otpInvalid }
+        "401": { description: "errors.authInvalid / errors.authLocked" }
+  /api/client/auth/me:
+    get:
+      summary: Current homeowner
+      tags: [portal-auth]
+      responses:
+        "200": { description: Client user }
+  /api/client/auth/logout:
+    post:
+      summary: End homeowner session
+      tags: [portal-auth]
+      responses:
+        "200": { description: Logged out }
+  /api/health:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  service:
+                    type: string
+                  time:
+                    type: string
+  /api/ping:
+    get:
+      summary: Liveness ping
+      responses:
+        "200":
+          description: pong
+  /api/public/leads:
+    post:
+      summary: Submit a marketing / event lead (home form)
+      description: |
+        `mode=standard` (default): `soft_pull_consent` must be true (400 validation.consent). `event_id` is ignored.
+        `mode=event` (event RSVP): `event_id` is required and `soft_pull_consent` is optional (defaults to false). The event must be published with registration open (409 errors.eventClosed; 404 errors.eventNotFound). Same email + event_id twice returns 409 errors.duplicate. When confirmed registrations reach `capacity`, the RSVP is `waitlisted` if the event has `waitlist_enabled`, otherwise 409 errors.eventFull. The confirmation email always includes the free credit report CTA (`credit_cta_url`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - full_name
+                - email
+                - phone
+                - property_address
+              properties:
+                referral_code:
+                  type: string
+                  nullable: true
+                  description: Affiliate tracking code captured from /r/CODE or ?ref=CODE (30-day window). Invalid codes are ignored.
+                full_name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                  description: At least 10 digits
+                property_address:
+                  type: string
+                soft_pull_consent:
+                  type: boolean
+                  description: Required (true) when mode=standard. Optional for mode=event.
+                preferred_language:
+                  type: string
+                  enum: [en, es]
+                  description: UI language at submit; drives confirmation email locale and DB column
+                mode:
+                  type: string
+                  enum: [event, standard]
+                event_id:
+                  type: integer
+                  nullable: true
+                  description: Required when mode=event (marketing_events.id). Ignored for standard.
+                event_city:
+                  type: string
+                  nullable: true
+                  description: Informational; for event RSVPs the stored city is taken from the event.
+                source:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: Lead created; confirmation + staff notify emails queued (or dry-run)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, lead_id, message]
+                properties:
+                  ok:
+                    type: boolean
+                  lead_id:
+                    type: integer
+                  message:
+                    type: string
+                  event_registration_status:
+                    type: string
+                    enum: [confirmed, waitlisted]
+                    description: Present when mode=event
+                  credit_cta_url:
+                    type: string
+                    description: Present when mode=event — next-step free credit report page
+        "400":
+          description: Validation error (validation.consent for standard without consent; validation.invalidField for event without event_id)
+        "404":
+          description: errors.eventNotFound (mode=event)
+        "409":
+          description: errors.eventClosed, errors.duplicate (same email + event) or errors.eventFull (full, no waitlist)
+        "429":
+          description: Rate limited
+        "500":
+          description: Server error
+  /api/public/events/live:
+    get:
+      summary: Live marketing event for the homepage (or null)
+      tags: [public-events]
+      description: "No auth. Returns the featured published event with open registration, else the next published event with open registration by starts_at; `event` is null when none (homepage falls back to the standard form). Bilingual fields are resolved for `lang`."
+      parameters:
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200":
+          description: "{ ok, event: PublicEventView | null }"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, event]
+                properties:
+                  ok: { type: boolean }
+                  event: { $ref: "#/components/schemas/PublicEventView", nullable: true }
+        "500": { description: errors.server }
+  /api/public/events/{slug}:
+    get:
+      summary: Public event detail by slug (published only)
+      tags: [public-events]
+      description: "No auth. Draft/archived/unknown slugs return 404 errors.eventNotFound. `registration_open` may be false (event detail stays visible after registration closes)."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200":
+          description: "{ ok, event: PublicEventView }"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, event]
+                properties:
+                  ok: { type: boolean }
+                  event: { $ref: "#/components/schemas/PublicEventView" }
+        "404": { description: errors.eventNotFound }
+        "500": { description: errors.server }
+  /api/public/get-credit-report-lead:
+    post:
+      summary: Submit get-credit-report lead (OFG-parity fields)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - first_name
+                - last_name
+                - email
+                - phone
+                - preferred_language
+                - soft_pull_consent
+              properties:
+                referral_code:
+                  type: string
+                  nullable: true
+                  description: Affiliate tracking code captured from /r/CODE or ?ref=CODE (30-day window). Invalid codes are ignored.
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                  description: At least 10 digits
+                preferred_language:
+                  type: string
+                  enum: [en, es]
+                soft_pull_consent:
+                  type: boolean
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: |
+            Lead created. Returns mfsn_url + short_url.
+            Applicant welcome email includes the MyFreeScoreNow link (live when RESEND_API_KEY is set; dry-run under Vitest).
+            Staff notify event key: get_credit_report_lead.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, lead_id, mfsn_url, short_url, email_sent, message]
+                properties:
+                  ok:
+                    type: boolean
+                  lead_id:
+                    type: integer
+                  mfsn_url:
+                    type: string
+                  short_url:
+                    type: string
+                  email_sent:
+                    type: boolean
+                  message:
+                    type: string
+        "400":
+          description: Validation error
+        "429":
+          description: Rate limited
+  /go/free-score:
+    get:
+      summary: Redirect to MyFreeScoreNow free snapshot (same URL as OFG)
+      responses:
+        "302":
+          description: Redirect to MFSN
+  /api/public/go/free-score:
+    get:
+      summary: Same redirect under /api prefix
+      responses:
+        "302":
+          description: Redirect to MFSN
+  /api/public/contact:
+    post:
+      summary: Public contact form (SMS consent fields)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - full_name
+                - email
+                - phone
+                - intent
+                - sms_transactional_consent
+              properties:
+                full_name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+                intent:
+                  type: string
+                  enum: [adu_project, financing, partner, general]
+                preferred_language:
+                  type: string
+                  enum: [en, es]
+                sms_transactional_consent:
+                  type: boolean
+                sms_marketing_consent:
+                  type: boolean
+      responses:
+        "201":
+          description: Contact lead stored; confirmation + staff notify (live when RESEND_API_KEY is set; dry-run under Vitest)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, lead_id, message]
+                properties:
+                  ok: { type: boolean }
+                  lead_id: { type: integer }
+                  message: { type: string }
+        "400":
+          description: Validation error
+        "429":
+          description: Rate limited
+  /api/public/partner-referral:
+    post:
+      summary: Partner / referral program signup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [full_name, email, phone]
+              properties:
+                full_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                company: { type: string, nullable: true }
+                notes: { type: string, nullable: true }
+                preferred_language:
+                  type: string
+                  enum: [en, es]
+      responses:
+        "201":
+          description: Partner lead stored; confirmation + staff notify
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, lead_id, message]
+                properties:
+                  ok: { type: boolean }
+                  lead_id: { type: integer }
+                  message: { type: string }
+        "400":
+          description: Validation error
+        "429":
+          description: Rate limited
+  /api/public/plans:
+    get:
+      summary: "List active ADU plans"
+      tags: [portal-public]
+      responses:
+        "200": { description: "Plans (id, code, name, bedrooms, bathrooms, stories, sq_ft, images)" }
+  /api/public/affiliate/signup:
+    post:
+      summary: "Affiliate self-signup (account starts pending admin approval)"
+      tags: [portal-public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, phone]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                company: { type: string, nullable: true }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "201": { description: "Application stored; staff notified (live when RESEND_API_KEY is set; dry-run under Vitest)" }
+        "400": { description: "Validation error (i18n key in error)" }
+        "409": { description: "errors.affiliateExists" }
+        "429": { description: "Rate limited" }
+  /api/public/affiliates/by-code/{code}:
+    get:
+      summary: "Public affiliate card for SPA /r/:code. Logs a click when the affiliate is active. Unknown/inactive → 404 errors.referralInactive. (The /r/:code page itself is SPA-owned, not an Express route.)"
+      tags: [portal-public]
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: to, in: query, required: false, schema: { type: string } }
+        - { name: landing, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: "Affiliate card + landing key"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  affiliate:
+                    type: object
+                    properties:
+                      first_name: { type: string }
+                      last_name: { type: string }
+                      company: { type: string, nullable: true }
+                      avatar_url: { type: string, nullable: true }
+                      bio: { type: string, nullable: true }
+                      referral_code: { type: string }
+                      slug: { type: string, nullable: true }
+                      initials: { type: string }
+                  landing: { type: string }
+        "404": { description: "errors.referralInactive" }
+        "429": { description: "errors.tooMany" }
+  /api/public/enroll:
+    post:
+      summary: "Public homeowner enroll — creates prospect client + lead-milestone project, optional soft-pull, emails 5-day magic-link invite."
+      tags: [portal-public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, phone, property_address, homeowner_consent]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                property_address: { type: string }
+                property_city: { type: string, nullable: true }
+                property_zip: { type: string, nullable: true }
+                adu_plan_id: { type: integer, nullable: true }
+                preferred_language: { type: string, enum: [en, es] }
+                soft_pull_consent: { type: boolean, description: "Optional (default false)" }
+                homeowner_consent: { type: boolean }
+                referral_code: { type: string, nullable: true }
+      responses:
+        "201": { description: "{ ok, project_public_id, invite_sent }" }
+        "400": { description: "Validation error" }
+        "409": { description: "errors.clientExists" }
+        "429": { description: "Rate limited" }
+  /api/public/client-invite/{token}:
+    get:
+      summary: "Preview a client portal magic-link invite (5-day TTL)"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "Invite preview (first_name, email)" }
+        "404": { description: "errors.inviteInvalid" }
+  /api/public/client-invite/accept:
+    post:
+      summary: "Accept client portal invite — activates prospect→active, mints session cookie, returns PortalAuthResponse"
+      tags: [portal-public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200": { description: "Accepted; Set-Cookie gw_client_sid" }
+        "404": { description: "errors.inviteInvalid" }
+  /api/public/r/{code}:
+    get:
+      summary: "Compat redirect for advanced landings / old bookmarks. Prefer SPA /r/:code + by-code API. Unknown home/enroll → /r/expired."
+      tags: [portal-public]
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: to, in: query, required: false, schema: { type: string } }
+      responses:
+        "302": { description: "Redirect to SPA /r or marketing landing with ?ref=" }
+  /api/public/contractor-invite/{token}:
+    get:
+      summary: "Preview a contractor invitation"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "Invite preview (first_name, email, company)" }
+        "404": { description: "errors.inviteInvalid" }
+  /api/public/contractor-invite/accept:
+    post:
+      summary: "Accept a contractor invitation (contractor becomes active)"
+      tags: [portal-public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200": { description: "Accepted" }
+        "404": { description: "errors.inviteInvalid" }
+  /api/affiliate/overview:
+    get:
+      summary: "Affiliate profile, tracking URL and stats (clicks, leads, clients, pipeline counts, commission totals, payout_days). Includes first_name, last_name, avatar_url, bio for the public card."
+      tags: [portal-affiliate]
+      description: "Requires the gw_affiliate_sid session cookie. Default tracking_url is SPA /r/{slug|code} (enrollment landing)."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/affiliate/me:
+    get:
+      summary: "Affiliate self profile (company, bio, referral_code, slug, avatar)"
+      tags: [portal-affiliate]
+      responses:
+        "200": { description: "{ ok, profile }" }
+        "401": { description: "Not signed in" }
+    patch:
+      summary: "Update affiliate profile fields (name, phone, company, language, bio)"
+      tags: [portal-affiliate]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                phone: { type: string, nullable: true }
+                company: { type: string, nullable: true }
+                preferred_language: { type: string, enum: [en, es] }
+                bio: { type: string, nullable: true, maxLength: 500 }
+      responses:
+        "200": { description: "{ ok, user, profile }" }
+        "400": { description: "validation.invalidField / validation.phoneMin" }
+  /api/affiliate/me/avatar:
+    post:
+      summary: "Upload cropped affiliate avatar (raw JPEG/PNG/WebP ≤4MB) to Vercel Blob"
+      tags: [portal-affiliate]
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        "200": { description: "{ ok, user } with avatar_url" }
+        "400": { description: "validation.photoFile" }
+        "503": { description: "errors.storageNotConfigured" }
+  /api/affiliate/clients:
+    get:
+      summary: "Clients registered by or attributed to this affiliate (milestone only; no loan or money fields)"
+      tags: [portal-affiliate]
+      description: "Requires the gw_affiliate_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+    post:
+      summary: "Register a homeowner (creates client + project). homeowner_consent must be true"
+      tags: [portal-affiliate]
+      description: "Requires the gw_affiliate_sid session cookie."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, phone, homeowner_consent]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                property_address: { type: string, nullable: true }
+                adu_plan_id: { type: integer, nullable: true }
+                homeowner_consent: { type: boolean }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "201": { description: "Created (client + project public id)" }
+        "400": { description: "validation.homeownerConsent or other validation error" }
+        "401": { description: "Not signed in" }
+        "409": { description: "errors.clientExists" }
+  /api/affiliate/commissions:
+    get:
+      summary: "Own commissions with status and expected payout date"
+      tags: [portal-affiliate]
+      description: "Requires the gw_affiliate_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/contractor/projects:
+    get:
+      summary: "Projects assigned to the contractor (with budget and drawn totals)"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/contractor/projects/{publicId}:
+    get:
+      summary: "Assigned project detail (client contact, photos, draws, contracts)"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "404": { description: "errors.notFound (also for projects not assigned to this contractor)" }
+  /api/contractor/photos:
+    get:
+      summary: "All photos the contractor uploaded"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/contractor/projects/{publicId}/photos:
+    post:
+      summary: "Add a progress photo by URL. Only https URLs on Vercel Blob (*.public.blob.vercel-storage.com) or hosts in PHOTO_URL_ALLOWED_HOSTS are accepted"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [storage_url]
+              properties:
+                storage_url: { type: string, description: "https:// URL on an allow-listed host" }
+                caption: { type: string, nullable: true }
+      responses:
+        "201": { description: "Created" }
+        "400": { description: "validation.photoUrl / errors.projectNotActive" }
+        "401": { description: "Not signed in" }
+        "404": { description: "errors.notFound" }
+  /api/contractor/projects/{publicId}/photos/upload:
+    post:
+      summary: "Upload a progress photo (raw image bytes, JPEG/PNG/WebP, max 4 MB) to Vercel Blob and attach it to the project"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie and BLOB_READ_WRITE_TOKEN on the server. The Content-Type header must match the real image type (magic bytes are verified). Optional ?caption=."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+        - { name: caption, in: query, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        "201": { description: "Created { ok, id, storage_url }" }
+        "400": { description: "validation.photoFile / errors.projectNotActive" }
+        "401": { description: "Not signed in" }
+        "404": { description: "errors.notFound (project not assigned to this contractor)" }
+        "413": { description: "errors.payloadTooLarge" }
+        "502": { description: "errors.storageFailed" }
+        "503": { description: "errors.storageNotConfigured" }
+  /api/contractor/contracts/{id}/pdf:
+    get:
+      summary: "Download a contractor_client contract as PDF (rendered from the stored snapshot)"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie. Only contracts on the contractor's own projects with status generated/sent/signed. ?lang=en|es (defaults to the contractor's preferred language)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "application/pdf", content: { application/pdf: { schema: { type: string, format: binary } } } }
+        "401": { description: "Not signed in" }
+        "404": { description: "errors.notFound" }
+  /api/contractor/draws:
+    get:
+      summary: "Own draw requests"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/contractor/projects/{publicId}/draws:
+    post:
+      summary: "Create a draw request (status draft). Only while project is contracted or in_build; total capped by contractor cost"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_cents]
+              properties:
+                amount_cents: { type: integer, minimum: 1 }
+                note: { type: string, nullable: true }
+      responses:
+        "201": { description: "Created" }
+        "400": { description: "validation.drawAmount" }
+        "401": { description: "Not signed in" }
+        "409": { description: "errors.projectNotActive / errors.drawExceedsBudget" }
+  /api/contractor/draws/{id}/submit:
+    post:
+      summary: "Submit a draft draw for staff review (notifies staff)"
+      tags: [portal-contractor]
+      description: "Requires the gw_contractor_sid session cookie."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "404": { description: "errors.notFound" }
+        "409": { description: "errors.invalidTransition" }
+  /api/client/overview:
+    get:
+      summary: "Homeowner projects with milestone, plan, photos and timeline (no loan or money fields)"
+      tags: [portal-client]
+      description: "Requires the gw_client_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/client/documents:
+    get:
+      summary: "Contracts/documents for the homeowner (status only)"
+      tags: [portal-client]
+      description: "Requires the gw_client_sid session cookie."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+  /api/client/documents/{id}/pdf:
+    get:
+      summary: "Download one of the homeowner's documents as PDF (rendered from the stored snapshot)"
+      tags: [portal-client]
+      description: "Requires the gw_client_sid session cookie. Excludes affiliate_terms and draft/void contracts. ?lang=en|es (defaults to the client's preferred language)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "application/pdf", content: { application/pdf: { schema: { type: string, format: binary } } } }
+        "401": { description: "Not signed in" }
+        "404": { description: "errors.notFound (also for other clients' documents)" }
+  /api/admin/dashboard:
+    get:
+      summary: "Queue counts and pipeline; finance block only when role has finance.read"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid (any admin role)."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/me:
+    patch:
+      summary: "Update signed-in admin profile (self only)"
+      tags: [portal-admin]
+      description: "Any active admin role. Patch first_name, last_name, phone (nullable), preferred_language. Email is not editable."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                phone: { type: string, nullable: true }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "200": { description: "Updated user (same shape as /auth/me)" }
+        "400": { description: "validation.invalidField / validation.phoneMin" }
+        "401": { description: "Not signed in" }
+  /api/admin/me/avatar:
+    post:
+      summary: "Upload cropped admin avatar to Vercel Blob"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and BLOB_READ_WRITE_TOKEN. Raw image body (JPEG/PNG/WebP, max 4 MB); Content-Type must match magic bytes. Stores a square public Blob URL on admins.avatar_url."
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        "200": { description: "Updated user with avatar_url" }
+        "400": { description: "validation.photoFile" }
+        "401": { description: "Not signed in" }
+        "413": { description: "errors.payloadTooLarge" }
+        "503": { description: "errors.storageNotConfigured" }
+  /api/admin/plans:
+    get:
+      summary: "List ADU plans (all, including inactive)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid (any admin role)."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/plans/{id}:
+    patch:
+      summary: "Update an ADU plan"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `plans.write`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                name: { type: string }
+                description: "{ type: string, nullable: true }"
+                layout_image_url: { type: string, nullable: true }
+                exterior_image_url: { type: string, nullable: true }
+                is_active: { type: boolean }
+                sort_order: { type: integer }
+                bedrooms: { type: integer }
+                stories: { type: integer }
+                sq_ft: { type: integer }
+                default_commission_cents: { type: integer }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/events:
+    get:
+      summary: "List marketing events (query: status, q, limit, offset) — returns total"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `events` or `leads`. Each event includes confirmed_count, waitlisted_count and registration_open."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [draft, published, archived] } }
+        - { name: q, in: query, required: false, schema: { type: string }, description: "Matches slug, titles, city" }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: "OK { events: MarketingEvent[], total, limit, offset }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    post:
+      summary: "Create a marketing event"
+      tags: [portal-admin]
+      description: "Requires permission `events` (super_admin | admin | content). Creating with is_featured=true un-features all other events."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Writable event fields (PATCH: any subset). POST requires starts_at, city, title_en (title_es defaults to title_en); slug defaults to a slugified title_en."
+              properties:
+                slug: { type: string, description: "Unique; slugified server-side (409 errors.duplicate)" }
+                status: { type: string, enum: [draft, published, archived] }
+                is_featured: { type: boolean, description: "Setting true clears the flag on every other event" }
+                starts_at: { type: string, format: date-time }
+                ends_at: { type: string, format: date-time, nullable: true }
+                registration_opens_at: { type: string, format: date-time, nullable: true, description: "Defaults to created_at when null" }
+                registration_closes_at: { type: string, format: date-time, nullable: true, description: "Defaults to starts_at when null" }
+                capacity: { type: integer, nullable: true, description: "null = unlimited" }
+                waitlist_enabled: { type: boolean }
+                city: { type: string }
+                venue_name: { type: string, nullable: true }
+                venue_address: { type: string, nullable: true }
+                zoom_url: { type: string, nullable: true }
+                image_url: { type: string, nullable: true }
+                title_en: { type: string }
+                title_es: { type: string }
+                summary_en: { type: string, nullable: true }
+                summary_es: { type: string, nullable: true }
+                body_en: { type: string, nullable: true }
+                body_es: { type: string, nullable: true }
+                location_label_en: { type: string, nullable: true }
+                location_label_es: { type: string, nullable: true }
+                cta_en: { type: string, nullable: true }
+                cta_es: { type: string, nullable: true }
+      responses:
+        "201": { description: "Created { ok, id, event }" }
+        "400": { description: validation.invalidField }
+        "409": { description: errors.duplicate (slug taken) }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/events/{id}:
+    get:
+      summary: "Get one marketing event with RSVP counts"
+      tags: [portal-admin]
+      description: "Requires permission `events` or `leads`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { event: MarketingEvent }" }
+        "404": { description: errors.eventNotFound }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    patch:
+      summary: "Update a marketing event"
+      tags: [portal-admin]
+      description: "Requires permission `events`. Archive via status=archived (closes registration and hides the public page). is_featured=true un-features every other event."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Writable event fields (PATCH: any subset). POST requires starts_at, city, title_en (title_es defaults to title_en); slug defaults to a slugified title_en."
+              properties:
+                slug: { type: string, description: "Unique; slugified server-side (409 errors.duplicate)" }
+                status: { type: string, enum: [draft, published, archived] }
+                is_featured: { type: boolean, description: "Setting true clears the flag on every other event" }
+                starts_at: { type: string, format: date-time }
+                ends_at: { type: string, format: date-time, nullable: true }
+                registration_opens_at: { type: string, format: date-time, nullable: true, description: "Defaults to created_at when null" }
+                registration_closes_at: { type: string, format: date-time, nullable: true, description: "Defaults to starts_at when null" }
+                capacity: { type: integer, nullable: true, description: "null = unlimited" }
+                waitlist_enabled: { type: boolean }
+                city: { type: string }
+                venue_name: { type: string, nullable: true }
+                venue_address: { type: string, nullable: true }
+                zoom_url: { type: string, nullable: true }
+                image_url: { type: string, nullable: true }
+                title_en: { type: string }
+                title_es: { type: string }
+                summary_en: { type: string, nullable: true }
+                summary_es: { type: string, nullable: true }
+                body_en: { type: string, nullable: true }
+                body_es: { type: string, nullable: true }
+                location_label_en: { type: string, nullable: true }
+                location_label_es: { type: string, nullable: true }
+                cta_en: { type: string, nullable: true }
+                cta_es: { type: string, nullable: true }
+      responses:
+        "200": { description: "OK { event }" }
+        "400": { description: validation.invalidField }
+        "404": { description: errors.eventNotFound }
+        "409": { description: errors.duplicate (slug taken) }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    delete:
+      summary: "Delete a marketing event"
+      tags: [portal-admin]
+      description: "Requires permission `events`. Only unpublished events with zero RSVPs can be deleted; otherwise 409 errors.invalidTransition — archive via PATCH instead."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "404": { description: errors.eventNotFound }
+        "409": { description: errors.invalidTransition }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/events/{id}/attendees:
+    get:
+      summary: "RSVPs (leads) for an event"
+      tags: [portal-admin]
+      description: "Requires permission `events` or `leads` (agents see RSVPs here). JSON { event, attendees, total, limit, offset }, or CSV (up to 5000 rows, spreadsheet-formula-safe) with format=csv."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: registration_status, in: query, required: false, schema: { type: string, enum: [confirmed, waitlisted] } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: format, in: query, required: false, schema: { type: string, enum: [json, csv] } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: "OK (application/json or text/csv)" }
+        "404": { description: errors.eventNotFound }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/leads:
+    get:
+      summary: "List leads (query: status, q, mode, event_id, event_registration_status, limit, offset) — returns total"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `leads`. Each lead includes event_id, event_registration_status and event_title (English title via LEFT JOIN marketing_events)."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: mode, in: query, required: false, schema: { type: string, enum: [event, standard] } }
+        - { name: event_id, in: query, required: false, schema: { type: integer } }
+        - { name: event_registration_status, in: query, required: false, schema: { type: string, enum: [confirmed, waitlisted] } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: "OK { leads, total, limit, offset }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/leads/{id}:
+    patch:
+      summary: "Update lead status/notes"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `leads`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                status: { type: string, enum: [new, contacted, qualified, closed, spam] }
+                notes: { type: string, nullable: true }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/leads/{id}/convert:
+    post:
+      summary: "Convert a lead into client + project (keeps referral attribution)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.write`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                adu_plan_id: { type: integer, nullable: true }
+      responses:
+        "201": { description: "Created" }
+        "409": { description: "errors.leadAlreadyConverted" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/affiliates:
+    get:
+      summary: "List affiliates (query: status, q, limit, offset) — returns total"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, active, inactive, suspended] } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: "OK { affiliates, total, limit, offset }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/affiliates/{id}:
+    get:
+      summary: "Affiliate detail"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { affiliate }" }
+        "404": { description: "errors.notFound" }
+    patch:
+      summary: "Update affiliate (approve = status active; sends welcome email)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `approvals`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                status: { type: string, enum: [pending, active, inactive, suspended] }
+                slug: { type: string }
+                notes: { type: string }
+                company: { type: string }
+                phone: { type: string }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/assignees:
+    get:
+      summary: "Active staff for project/client assignment (people.read)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`. Returns active admins for assignee pickers."
+      responses:
+        "200": { description: "OK { assignees: [{ id, email, first_name, last_name, role }] }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Forbidden" }
+  /api/admin/contractors:
+    get:
+      summary: "List contractors (query: status, q, limit, offset) — returns total"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [invited, active, inactive, suspended] } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: "OK { contractors, total, limit, offset }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/contractors/invite:
+    post:
+      summary: "Invite a contractor by email (invite-only onboarding)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `approvals`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                company: { type: string }
+                license_number: { type: string }
+                phone: { type: string }
+      responses:
+        "201": { description: "Invited; email sent" }
+        "409": { description: "errors.contractorExists / errors.contractorInvited" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/contractors/{id}:
+    get:
+      summary: "Contractor detail"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { contractor }" }
+        "404": { description: "errors.notFound" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    patch:
+      summary: "Update contractor"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `approvals`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                status: { type: string, enum: [active, inactive, suspended] }
+                notes: { type: string }
+                company: { type: string }
+                license_number: { type: string }
+                phone: { type: string }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/clients:
+    get:
+      summary: "List clients (query: status, q, limit, offset) — returns total"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [prospect, active, inactive, suspended] } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: "OK { clients, total, limit, offset }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    post:
+      summary: "Create a client and project"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.write`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                property_address: { type: string }
+                adu_plan_id: { type: integer, nullable: true }
+                affiliate_id: { type: integer, nullable: true }
+      responses:
+        "201": { description: "Created" }
+        "409": { description: "errors.clientExists" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/clients/{id}:
+    get:
+      summary: "Client detail"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { client }" }
+        "404": { description: "errors.notFound" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    patch:
+      summary: "Update client"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.write`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                phone: { type: string }
+                status: { type: string, enum: [prospect, active, inactive, suspended] }
+                address_line1: { type: string }
+                city: { type: string }
+                zip: { type: string }
+                affiliate_id: { type: integer, nullable: true }
+                assigned_admin_id: { type: integer, nullable: true }
+                admin_notes: { type: string }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/clients/{id}/portal-invite:
+    post:
+      summary: "Email the client a 5-day magic-link portal invite (/client/invite/:token)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `people.write`. Issues client_portal_invites row and emails tplPortalNotice CTA."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, invite_sent }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+        "409": { description: "errors.authInactive" }
+  /api/admin/projects:
+    get:
+      summary: "List projects (query: milestone, q, affiliate_id, contractor_id, assigned_admin_id, loan_status, limit, offset)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.read`. Same server filters as the board. Finance fields stripped without finance.read."
+      parameters:
+        - { name: milestone, in: query, required: false, schema: { type: string } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: affiliate_id, in: query, required: false, schema: { type: integer } }
+        - { name: contractor_id, in: query, required: false, schema: { type: integer } }
+        - { name: assigned_admin_id, in: query, required: false, schema: { type: integer } }
+        - { name: loan_status, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+        - { name: offset, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { projects, total, limit, offset }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    post:
+      summary: "Create a project for an existing client"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.write`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: integer }
+                adu_plan_id: { type: integer, nullable: true }
+                affiliate_id: { type: integer, nullable: true }
+                property_address: { type: string }
+      responses:
+        "201": { description: "Created (public id GW-XXXXXXXX)" }
+        "400": { description: "errors.invalidReference" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/projects/board:
+    get:
+      summary: "Kanban board — per-milestone columns with server filters and pagination"
+      tags: [portal-admin]
+      description: |
+        Requires gw_admin_sid and permission `projects.read`.
+        Without `milestone`, returns every milestone column (offset 0).
+        With `milestone`, returns one column page (`offset` / `limit`) for load-more.
+        Filters apply server-side to every column. Finance fields stripped without finance.read.
+      parameters:
+        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: milestone, in: query, required: false, schema: { type: string, enum: [lead, financing, contracted, in_build, closed, cancelled] } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+        - { name: affiliate_id, in: query, required: false, schema: { type: integer } }
+        - { name: contractor_id, in: query, required: false, schema: { type: integer } }
+        - { name: assigned_admin_id, in: query, required: false, schema: { type: integer } }
+        - { name: loan_status, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: "Full board `{ columns }` or single-column page `{ milestone, items, total, has_more }`" }
+        "400": { description: "validation.invalidField (bad id filters)" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/projects/{publicId}:
+    get:
+      summary: "Project detail: project, contracts, draws, photos, milestone events, commission"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.read`."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "OK" }
+        "404": { description: "errors.notFound" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    patch:
+      summary: "Update project. Ops fields need projects.write; money fields (*_cents) need finance.write"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.write`."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset. Side effects: loan finalized creates a pending commission (payout delay from settings); leaving finalized voids unpaid commissions; in_build requires an active contractor; affiliate cannot change after finalize (errors.projectLocked). Milestone changes follow a state machine: forward one step (financing may be skipped), back one step, any active stage -> cancelled, closed -> in_build only, cancelled -> lead only; anything else is 409 errors.invalidTransition. The check runs under a row lock, so concurrent moves cannot both win."
+              properties:
+                contractor_id: { type: integer, nullable: true }
+                affiliate_id: { type: integer, nullable: true }
+                adu_plan_id: { type: integer, nullable: true }
+                milestone: { type: string, enum: [lead, financing, contracted, in_build, closed, cancelled] }
+                property_address: { type: string }
+                sq_ft: { type: integer }
+                loan_status: { type: string, enum: [not_started, in_process, underwriting, approved, finalized, denied, withdrawn] }
+                loan_lender_type: { type: string, enum: [anchor, external, unknown] }
+                loan_lender_name: { type: string }
+                anchor_external_id: { type: string }
+                notes: { type: string }
+                sale_price_cents: { type: integer }
+                contractor_cost_cents: { type: integer }
+                agent_commission_cents: { type: integer }
+                commission_override_cents: { type: integer, nullable: true }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.invalidTransition / errors.contractorInactive / errors.projectLocked / errors.commissionPaidLocked" }
+        "400": { description: "errors.contractorRequired / errors.drawExceedsBudget / errors.invalidReference / validation.invalidField" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/projects/{publicId}/anchor/sync:
+    post:
+      summary: Sync loan status from Anchor API (requires ANCHOR_API_KEY + ANCHOR_API_BASE)
+      tags: [portal-admin]
+      description: |
+        Requires gw_admin_sid and `projects.write`. Project must have
+        loan_lender_type=anchor and anchor_external_id set. Updates loan_status,
+        anchor_last_synced_at, and accrues/voids commissions when finalize flips.
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Synced project detail }
+        "400": { description: Missing Anchor id or wrong lender type }
+        "404": { description: Project or Anchor loan not found }
+        "503": { description: Anchor not configured }
+  /api/cron/anchor-sync:
+    post:
+      summary: Cron batch sync for all Anchor-linked projects
+      tags: [cron]
+      description: Authorization Bearer CRON_SECRET. Caps at 200 projects per run.
+      responses:
+        "200": { description: Batch result }
+        "401": { description: Unauthorized }
+        "503": { description: Anchor not configured }
+  /api/admin/projects/{publicId}/contracts:
+    post:
+      summary: "Generate a contract record (stores a payload snapshot; the PDF is rendered on demand from it)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.write`."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "Created" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/contracts/{id}:
+    patch:
+      summary: "Update contract status / storage URL"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.write`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                status: { type: string, enum: [generated, sent, signed, void] }
+                storage_url: { type: string, nullable: true }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/contracts/{id}/pdf:
+    get:
+      summary: "Download a contract as PDF (rendered from the stored snapshot)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.read`. ?lang=en|es (defaults to the admin's preferred language)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "application/pdf", content: { application/pdf: { schema: { type: string, format: binary } } } }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal or missing permission" }
+        "404": { description: "errors.notFound" }
+  /api/admin/draws:
+    get:
+      summary: "List draw requests (query: status)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.read`."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/draws/{id}:
+    patch:
+      summary: "Approve / reject / pay a draw (submitted→approved|rejected, approved→paid|rejected); notifies contractor"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `projects.read` (temporary: all project staff may review draws)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                status: { type: string, enum: [approved, rejected, paid] }
+                note: { type: string }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.invalidTransition" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/commissions:
+    get:
+      summary: "List affiliate commissions (query: status)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `finance.read`."
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/commissions/{id}:
+    patch:
+      summary: "Update commission (pending→approved|void, approved→paid|void|pending, void→pending); paid notifies affiliate"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `finance.write`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                status: { type: string, enum: [pending, approved, paid, void] }
+                notes: { type: string }
+                expected_pay_at: { type: string, format: date }
+                amount_cents: { type: integer }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.invalidTransition" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/staff:
+    get:
+      summary: "List admin staff"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `staff`."
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    post:
+      summary: "Add a staff member (welcome email)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `staff`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, role]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                role: { type: string, enum: [super_admin, admin, agent, finance, content] }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "201": { description: "Created" }
+        "409": { description: "errors.duplicate" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/staff/{id}:
+    patch:
+      summary: "Change role/status/name. Cannot change own role/status (errors.cannotDemoteSelf); keeps at least one active super_admin (errors.lastSuperAdmin)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `staff`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                role: { type: string }
+                status: { type: string, enum: [active, inactive, suspended] }
+                first_name: { type: string }
+                last_name: { type: string }
+                phone: { type: string }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/settings:
+    get:
+      summary: "Commission settings + notify extra emails"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`."
+      responses:
+        "200":
+          description: "OK { settings, notify_extra_emails }"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  settings:
+                    type: object
+                    properties:
+                      commission_payout_days_after_loan_close: { type: integer }
+                      commission_cents_per_sqft: { type: integer }
+                  notify_extra_emails:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        email: { type: string, format: email }
+                        label: { type: string, nullable: true }
+                        is_active: { type: boolean }
+                        events_json: { type: string, nullable: true }
+                        created_at: { type: string }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    put:
+      summary: "Save commission settings"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commission_payout_days_after_loan_close: { type: integer, minimum: 0, maximum: 365 }
+                commission_cents_per_sqft: { type: integer, minimum: 0 }
+      responses:
+        "200": { description: "OK" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/settings/notify-extras:
+    post:
+      summary: "Add an extra staff notify email"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                label: { type: string }
+                events:
+                  type: array
+                  items: { type: string }
+                  description: "Optional event filter; omit for all events"
+      responses:
+        "201": { description: "Created { ok, id }" }
+        "409": { description: "errors.duplicate" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/settings/notify-extras/{id}:
+    patch:
+      summary: "Update notify extra (label, is_active, email, events)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "Any subset of fields"
+              properties:
+                label: { type: string, nullable: true }
+                is_active: { type: boolean }
+                email: { type: string, format: email }
+                events:
+                  type: array
+                  nullable: true
+                  items: { type: string }
+      responses:
+        "200": { description: "OK" }
+        "404": { description: "errors.notFound" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+    delete:
+      summary: "Remove a notify extra email"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "404": { description: "errors.notFound" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+components:
+  schemas:
+    PublicEventView:
+      type: object
+      description: "Public event payload; bilingual fields resolved for the requested lang (falls back to the other language)."
+      required: [id, slug, city, starts_at, waitlist_enabled, confirmed_count, registration_open, title]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        city: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time, nullable: true }
+        capacity: { type: integer, nullable: true }
+        waitlist_enabled: { type: boolean }
+        confirmed_count: { type: integer }
+        spots_remaining: { type: integer, nullable: true, description: "null when capacity is unlimited" }
+        registration_open: { type: boolean }
+        venue_name: { type: string, nullable: true }
+        venue_address: { type: string, nullable: true }
+        zoom_url: { type: string, nullable: true }
+        image_url: { type: string, nullable: true }
+        title: { type: string }
+        summary: { type: string, nullable: true }
+        body: { type: string, nullable: true }
+        location_label: { type: string, nullable: true }
+        cta: { type: string, nullable: true }

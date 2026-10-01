@@ -1,0 +1,22 @@
+---
+description: Critical Groundwork Capital project rules from AGENTS.md — always apply
+alwaysApply: true
+---
+
+# Critical Rules (NO EXCEPTIONS)
+
+- **npm only** — never pnpm or yarn
+- **Schema first**: always check `database/schema.sql` before any SQL; never assume column names
+- **Never edit `database/schema.sql` directly for schema changes** — write a migration in `database/migrations/` first, apply it, then update `schema.sql` to match
+- **API monolith**: all required API logic stays **inline** in `api/index.ts` (Vercel serverless). Do **not** runtime-import from `shared/` in the API — `import type` only. Shared runtime modules break prod with `ERR_MODULE_NOT_FOUND`
+- **Redux only for data**: never axios/fetch in components; use `createAsyncThunk` in slices; components only dispatch + select
+- **Fix root causes** — never patch around type errors or bugs
+- **No breaking changes**
+- **Swagger (always with API changes)**: any change to `api/index.ts` routes, request/response shapes, or behavior → **update `api/swagger.yaml` in the same change**
+- **DESIGN_SYSTEM.md (always with UI/brand/email/flow changes)**: any change to visuals, branding, email templates, public pages, or product flows → **update `DESIGN_SYSTEM.md` in the same change**
+- **i18n (always)**: every user-visible string in `client/` MUST use `t('key')` via `useTranslation()` — never hardcode UI copy. Add the same key to BOTH `client/locales/en/translation.json` AND `client/locales/es/translation.json` in the same change. Browser language is detected (`navigator` + `localStorage`); **fallback language is English**. Yup/Formik messages are i18n keys too.
+- **Tests**: under `VITEST=true`, emails MUST dry-run (never hit Resend). Integration suites that insert TiDB rows MUST clean fixtures in `afterAll` via `api/testDbCleanup.ts` (safe `@example.com` / `@example.test` emails only).
+- **Review chat history** before changing code so you do not reintroduce fixed issues
+- Prefer reusable components/utilities when it avoids debt
+- **Mobile (mandatory):** public + portal UI must fit ~320px+ without document horizontal scroll; contain intentional sideways scroll in wrappers (`overflow-x: auto`). Fluid layouts, collapsing grids, wrapping actions. Validate narrow viewports before finishing UI work.
+- Frontend: clean UX; UI logs via `client/utils/logger.ts`

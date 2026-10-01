@@ -1,0 +1,49 @@
+---
+description: Frontend styling, i18n, forms, and UI conventions
+globs: client/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+
+# Frontend Conventions
+
+## Paths
+- `@/*` → `client/`, `@shared/*` → `shared/` — prefer aliases over deep relatives
+
+## Styling
+- Tailwind 3 + tokens from `client/global.css` / `tailwind.config.ts`
+- **Never** arbitrary colors (`text-emerald-500`, `bg-amber-400`, etc.)
+- Use semantic tokens: `primary` (ink navy), `accent` (foundation gold), `destructive`, `muted`, `secondary`, `foreground`, `background`, `border`, `card`, `input`, `ring`
+- Prefer existing `client/components/ui/` when present; Lucide icons first
+- Brand logo: `/logos/groundwork-logo.png`
+
+## Mobile responsiveness (mandatory on every UI change)
+- Design and verify for phones (~320–430px CSS px) and tablets — not desktop-only then “hope”
+- **No document-level horizontal scrolling** (`html`/`body`/`#root` stay within viewport width)
+- Prefer `minmax(0, 1fr)`, `width: 100%`, `max-width: 100%`, wrapping flex (`flex-wrap`), and single-column grids under ~760–900px
+- Avoid fixed widths that exceed the viewport; long text uses `overflow-wrap` / truncation inside cards
+- Intentional sideways scroll (admin board columns, compact trackers, sidebar chip nav) MUST live inside a local `overflow-x: auto` wrapper — never leak to the page
+- Touch targets: keep primary actions tappable; stack footer actions on small screens when needed
+- **CSS cascade:** put responsive overrides **after** the base rules for the same selectors (or use mobile-first `min-width` queries). An early `@media (max-width: …)` block is overridden by later unscoped rules with equal specificity — that caused ADU options to stay 2-column on phones
+- Before finishing a UI change: spot-check at ~375px width for overflow, clipped CTAs, and unusable tables/forms
+
+## i18n (mandatory on every UI change)
+- **Never hardcode** user-visible strings in components (including buttons, labels, empty states, errors, Yup messages, `aria-label`, PageMeta title/description)
+- Add keys to **both** `client/locales/en/translation.json` and `client/locales/es/translation.json` in the same PR/change
+- Use `t('namespace.key')` via `useTranslation()`
+- Language detection: `localStorage` then `navigator`; **fallbackLng is `en`** (`client/i18n.ts`)
+- Supported languages: `en`, `es` only
+- Prefer split keys for emphasized copy (`titleBefore` / `titleEm` / `titleAfter`) over embedding HTML in JSON
+
+## SEO
+- Use **`PageMeta`** (`client/components/PageMeta.tsx`) on every route — do not hand-roll `Helmet` title/description/OG tags
+- Pass i18n strings for `title` / `description` / `keywords`; set `noIndex` on unlisted flows
+
+## Design docs (mandatory on UI/brand/email changes)
+- **ALWAYS update `DESIGN_SYSTEM.md`** in the same change when visuals, branding, email chrome, public pages, or product flows change
+
+## Forms
+- Formik + Yup; reusable schemas; submit via Redux thunks
+- Validation message strings must be i18n keys
+
+## Logging
+- UI: `client/utils/logger.ts` only (not raw `console.*`)
