@@ -61,7 +61,7 @@ Home **Why build an ADU** (`#why-adu`): ink band, centered opportunity eyebrow +
 - EN + ES catalogs under `client/locales/{en,es}/translation.json`
 - Detect browser language when possible; **fallback English**
 - No hardcoded UI strings in components
-- Header **language switcher** (`LanguageSwitcher`): compact EN / ES segmented control — ink thumb slides under the active code, gold hover on inactive; persists via `i18nextLng` localStorage. Used on `/`, `/get-credit-report`, and 404.
+- Header **language switcher** (`LanguageSwitcher`): compact EN / ES segmented control — ink thumb slides under the active code, gold hover on inactive; persists via `i18nextLng` localStorage. Used in `SiteHeader` (home, events, get-credit-report, marketing interiors) and 404.
 - Home lead submit sends `preferred_language` from current UI locale → DB + confirmation email locale
 - GCR form keeps its own `preferred_language` select (contact preference); header switcher does **not** overwrite a manual form choice
 
@@ -208,7 +208,9 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 - Short path: `/go/free-score` → 302 to MFSN
 - Soft-pull consent checkbox required, **checked by default** (home form too)
 - Home “Check your free credit report” CTAs → `/get-credit-report`
-- Header: logo (home) + language switcher; **“Back to home” text link desktop-only** (hidden ≤760px — logo is the home control on mobile)
+- **Layout:** same interior language as public event pages (`SiteHeader` / `SiteFooter`, `event-detail` hero + `event-body` educational copy adapted from the homeowner ADU financing session messaging). Hero CTA scrolls to `#get-report`.
+- **End of page:** form-section capture → email MyFreeScoreNow link; success state offers **Open free report now**.
+- Mobile: fluid section shell; form card full-width; no document horizontal scroll.
 
 ## Logo sizes
 

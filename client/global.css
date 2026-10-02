@@ -1463,40 +1463,30 @@ label {
   font-size: 0.95rem;
 }
 
-/* ── Get Credit Report page ─────────────────────────────────────────────── */
-.gcr-page .gcr-back {
+/* ── Get Credit Report page (event-style education + form at end) ───────── */
+.gcr-page .event-back {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   font-size: 0.85rem;
+  margin-bottom: 0.75rem;
 }
-.gcr-main {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 1rem 1.5rem 4rem;
+.gcr-trust {
+  justify-content: flex-start;
+  margin: 1rem 0 1.25rem;
 }
-.gcr-hero {
-  text-align: center;
-  padding: 1.5rem 0 1rem;
-}
-.gcr-hero h1 {
-  margin: 0.5rem 0 0.75rem;
-  font-size: clamp(1.85rem, 4vw, 2.75rem);
-  color: var(--ink);
-  line-height: 1.15;
-}
-.gcr-sub {
-  margin: 0 auto 1rem;
-  max-width: 34rem;
-  color: var(--slate);
-  font-size: 1.05rem;
-  line-height: 1.55;
-}
-.gcr-hero .trust-line {
+.gcr-side-card .gcr-side-mark {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
 }
+.gcr-side-card .gcr-side-mark svg {
+  color: var(--gold);
+}
 .gcr-card-wrap {
-  margin-top: 1.25rem;
+  margin-top: 0;
+  width: 100%;
+  min-width: 0;
 }
 .gcr-card {
   background: #fff;
