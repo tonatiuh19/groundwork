@@ -17,6 +17,10 @@
   },
   "routes": [
     {
+      "src": "/.well-known/(.*)",
+      "dest": "/api/index.ts"
+    },
+    {
       "src": "/api/(.*)",
       "dest": "/api/index.ts"
     },

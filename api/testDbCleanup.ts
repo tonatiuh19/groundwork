@@ -130,6 +130,11 @@ export async function cleanupPortalFixturesByPrefix(
   for (const table of ["clients", "affiliates", "contractors", "admins", "leads"]) {
     await pool.execute(`DELETE FROM \`${table}\` WHERE LOWER(email) LIKE ?`, [like]);
   }
+  // Test MCP dynamic clients: client_id starts with prefix (e.g. gwmcp-…-client)
+  const clientLike = `${prefix.trim().toLowerCase().replace(/[%_\\]/g, "\\$&")}%`;
+  await pool.execute(`DELETE FROM mcp_oauth_clients WHERE client_id LIKE ?`, [
+    clientLike,
+  ]);
   // Leads are gone, so test events (slug = prefix + suffix) can be removed safely.
   await cleanupMarketingEventsBySlugPrefix(pool, prefix);
 }

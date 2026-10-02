@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
-import { Camera, Loader2 } from "lucide-react";
+import { Camera, Loader2, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -10,6 +10,10 @@ import {
 } from "@/store/slices/adminProfileSlice";
 import { setPortalUser } from "@/store/slices/portalAuthSlice";
 import {
+  fetchMcpConnections,
+  revokeMcpConnection,
+} from "@/store/slices/adminMcpSlice";
+import {
   ErrorNote,
   PageHeader,
   SelectField,
@@ -17,11 +21,19 @@ import {
   TextField,
 } from "@/components/portal/kit";
 import AvatarCropModal from "@/components/portal/AvatarCropModal";
+import { logger } from "@/utils/logger";
+import { translateApiError } from "@/lib/api";
 
 export default function AdminProfile() {
   const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
   const user = useAppSelector((s) => s.portalAuth.admin.user);
+  const {
+    connections: mcpConnections,
+    loading: mcpLoading,
+    revokingId,
+    error: mcpError,
+  } = useAppSelector((s) => s.adminMcp);
   const fileRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -34,6 +46,12 @@ export default function AdminProfile() {
       if (cropSrc) URL.revokeObjectURL(cropSrc);
     };
   }, [cropSrc]);
+
+  useEffect(() => {
+    if (user?.role === "super_admin") {
+      void dispatch(fetchMcpConnections());
+    }
+  }, [dispatch, user?.role]);
 
   if (!user) return null;
 
@@ -170,6 +188,77 @@ export default function AdminProfile() {
           </Form>
         </Formik>
       </section>
+
+      {user.role === "super_admin" ? (
+        <section className="pf-card mt-6">
+          <div className="flex items-start gap-3 mb-4">
+            <Sparkles
+              className="h-5 w-5 text-accent shrink-0 mt-0.5"
+              aria-hidden
+            />
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-foreground">
+                {t("adminMcp.connectionsTitle")}
+              </h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                {t("adminMcp.connectionsSubtitle")}
+              </p>
+            </div>
+          </div>
+          {mcpError ? (
+            <p className="text-sm text-destructive mb-3">
+              {translateApiError(t, mcpError)}
+            </p>
+          ) : null}
+          {mcpLoading && mcpConnections.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t("pf.loading")}</p>
+          ) : mcpConnections.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("adminMcp.connectionsEmpty")}
+            </p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {mcpConnections.map((c) => (
+                <li
+                  key={c.id}
+                  className="py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-foreground truncate">
+                      {c.client_name}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {c.last_used_at
+                        ? t("adminMcp.lastUsed", {
+                            when: new Date(c.last_used_at).toLocaleString(
+                              i18n.language,
+                            ),
+                          })
+                        : t("adminMcp.neverUsed")}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex items-center justify-center rounded-md border border-border px-3 py-1.5 text-sm font-medium disabled:opacity-50 self-start sm:self-auto"
+                    disabled={revokingId === c.id}
+                    onClick={() =>
+                      void dispatch(revokeMcpConnection(c.id)).catch((e) =>
+                        logger.warn("mcp revoke failed", e),
+                      )
+                    }
+                  >
+                    {revokingId === c.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      t("adminMcp.revoke")
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
       <AvatarCropModal
         open={Boolean(cropSrc)}

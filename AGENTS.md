@@ -79,3 +79,10 @@ Preflight: api inline check → typecheck → vitest → `vercel --prod` → sta
 ### Staff notify
 
 Active `admins` with any role (`super_admin` | `admin` | `agent` | `finance` | `content`) receive staff notify events via Resend, plus any `admin_notify_extra_emails` rows.
+
+### Remote MCP (super_admin)
+
+- Streamable HTTP at `/api/mcp` + OAuth under `/api/mcp/oauth/*` (tables `mcp_oauth_*` → `admins.id`).
+- Always on (no kill switch). Logic stays **inline** in `api/index.ts`. Writes need dry-run then `confirm=true` + `confirm_phrase=CONFIRM`.
+- See `mcp/admin-ask/README.md` and `.cursor/mcp.json`.
+

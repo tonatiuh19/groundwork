@@ -6,7 +6,11 @@
 import "dotenv/config";
 import crypto from "crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import cors from "cors";
+import { z } from "zod";
 import express, {
   type Express,
   type NextFunction,
@@ -47,6 +51,328 @@ const APP_NAME = "Groundwork Capital";
 const APP_URL = (
   process.env.PUBLIC_APP_URL || "https://groundworkcapitalgroup.com"
 ).replace(/\/$/, "");
+
+// ─── MCP OAuth / Streamable HTTP (super_admin only) ──────────────────────────
+
+/** Canonical public origin — force www (apex 308s break OAuth discovery / DCR). */
+function siteOrigin(): string {
+  const raw = (
+    process.env.PUBLIC_APP_URL || "https://www.groundworkcapitalgroup.com"
+  ).replace(/\/$/, "");
+  if (
+    raw === "https://groundworkcapitalgroup.com" ||
+    raw === "http://groundworkcapitalgroup.com"
+  ) {
+    return "https://www.groundworkcapitalgroup.com";
+  }
+  return raw;
+}
+
+function mcpResourceUrl(): string {
+  return `${siteOrigin()}/api/mcp`;
+}
+
+/** Product scope — avoid bare "mcp" (Claude may discard token). */
+const MCP_SCOPE = "groundwork.admin.read";
+const MCP_ACCESS_TTL_SEC = 3600;
+const MCP_REFRESH_TTL_SEC = 30 * 24 * 3600;
+
+function mcpOauthAuthorizationServerMetadata() {
+  const issuer = mcpResourceUrl();
+  return {
+    issuer,
+    authorization_endpoint: `${issuer}/oauth/authorize`,
+    token_endpoint: `${issuer}/oauth/token`,
+    registration_endpoint: `${issuer}/oauth/register`,
+    revocation_endpoint: `${issuer}/oauth/revoke`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
+    scopes_supported: [MCP_SCOPE],
+    resource_indicator_parameter_supported: true,
+  };
+}
+
+function mcpOauthProtectedResourceMetadata() {
+  const resource = mcpResourceUrl();
+  return {
+    resource,
+    authorization_servers: [resource],
+    bearer_methods_supported: ["header"],
+    scopes_supported: [MCP_SCOPE],
+    resource_name: "Groundwork Capital Admin",
+  };
+}
+
+export function mcpOauthReturnPathAllowed(raw: string): boolean {
+  if (!raw.startsWith("/api/mcp/oauth/authorize") && !raw.startsWith("/admin/mcp-consent")) {
+    return false;
+  }
+  try {
+    const u = new URL(raw, "https://www.groundworkcapitalgroup.com");
+    return (
+      u.pathname === "/api/mcp/oauth/authorize" ||
+      u.pathname === "/admin/mcp-consent"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Claude (web/mobile connectors) silently drops entire tool catalogs when
+ * tools/list includes newer MCP fields (`execution`, `annotations`, `title`,
+ * `outputSchema`) or JSON Schema metadata (`$schema`, empty `additionalProperties`).
+ * Keep wire responses to { name, description, inputSchema }.
+ */
+export function sanitizeMcpJsonRpcForClaude(raw: string): string {
+  if (
+    !raw ||
+    (!raw.trimStart().startsWith("{") && !raw.trimStart().startsWith("["))
+  ) {
+    return raw;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    let changed = false;
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") continue;
+      const m = msg as Record<string, unknown>;
+      const result = m.result;
+      if (!result || typeof result !== "object") continue;
+      const r = result as Record<string, unknown>;
+
+      if (Array.isArray(r.tools)) {
+        r.tools = r.tools.map((tool) => {
+          if (!tool || typeof tool !== "object") return tool;
+          const t = tool as Record<string, unknown>;
+          const inputSchema: Record<string, unknown> =
+            t.inputSchema &&
+            typeof t.inputSchema === "object" &&
+            !Array.isArray(t.inputSchema)
+              ? { ...(t.inputSchema as Record<string, unknown>) }
+              : { type: "object", properties: {} };
+          delete inputSchema.$schema;
+          if (
+            inputSchema.additionalProperties &&
+            typeof inputSchema.additionalProperties === "object" &&
+            !Array.isArray(inputSchema.additionalProperties) &&
+            Object.keys(inputSchema.additionalProperties as object).length === 0
+          ) {
+            delete inputSchema.additionalProperties;
+          }
+          return {
+            name: t.name,
+            description: t.description,
+            inputSchema,
+          };
+        });
+        changed = true;
+      }
+
+      const caps = r.capabilities;
+      if (caps && typeof caps === "object") {
+        const c = caps as Record<string, unknown>;
+        if (c.tools && typeof c.tools === "object" && !Array.isArray(c.tools)) {
+          if (Object.keys(c.tools as object).length > 0) {
+            c.tools = {};
+            changed = true;
+          }
+        }
+      }
+
+      if ("instructions" in r) {
+        delete r.instructions;
+        changed = true;
+      }
+    }
+    if (!changed) return raw;
+    return JSON.stringify(Array.isArray(parsed) ? messages : messages[0]);
+  } catch {
+    return raw;
+  }
+}
+
+/** Claude-safe tool list: name + description + plain JSON Schema only. */
+export function mcpToolsListForClaude(
+  tools: Array<{
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+  }>,
+): Array<{
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}> {
+  return tools.map((t) => {
+    const schema: Record<string, unknown> = { ...(t.inputSchema || {}) };
+    delete schema.$schema;
+    if (
+      schema.additionalProperties &&
+      typeof schema.additionalProperties === "object" &&
+      !Array.isArray(schema.additionalProperties) &&
+      Object.keys(schema.additionalProperties as object).length === 0
+    ) {
+      delete schema.additionalProperties;
+    }
+    if (!schema.type) schema.type = "object";
+    if (!schema.properties) schema.properties = {};
+    return {
+      name: t.name,
+      description: t.description,
+      inputSchema: schema,
+    };
+  });
+}
+
+export function parseBearerAuthorization(
+  header: string | undefined | null,
+): string | null {
+  if (!header) return null;
+  const m = String(header).match(/^\s*Bearer\s+(\S+)\s*$/i);
+  if (!m) return null;
+  const tok = m[1];
+  if (!tok || tok === "undefined" || tok === "null") return null;
+  return tok;
+}
+
+const KNOWN_MCP_REDIRECT_URIS = [
+  "https://claude.ai/api/mcp/auth_callback",
+  "https://claude.com/api/mcp/auth_callback",
+  "http://localhost/callback",
+  "http://127.0.0.1/callback",
+  "http://localhost/oauth/callback",
+  "http://127.0.0.1/oauth/callback",
+  "cursor://anysphere.cursor-mcp/oauth/callback",
+  "https://www.cursor.com/agents/mcp/oauth/callback",
+  "http://localhost:8787/callback",
+  "http://127.0.0.1:8787/callback",
+];
+
+export function parseMcpRedirectUris(json: unknown): string[] {
+  if (Array.isArray(json)) return json.map(String);
+  if (typeof json === "string") {
+    try {
+      const parsed = JSON.parse(json);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function loopbackRedirectOk(requested: string, registered: string): boolean {
+  try {
+    const req = new URL(requested);
+    const reg = new URL(registered);
+    const loopbacks = new Set(["localhost", "127.0.0.1", "[::1]"]);
+    if (!loopbacks.has(req.hostname) || !loopbacks.has(reg.hostname)) return false;
+    return (
+      req.protocol === reg.protocol &&
+      req.hostname === reg.hostname &&
+      req.pathname === reg.pathname &&
+      req.search === reg.search
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Allowed https callback path prefixes on Claude / Cursor hosts (not arbitrary paths). */
+function mcpHttpsRedirectPathOk(host: string, pathname: string): boolean {
+  const h = host.toLowerCase();
+  const p = pathname || "/";
+  if (
+    h === "claude.ai" ||
+    h === "www.claude.ai" ||
+    h === "claude.com" ||
+    h === "www.claude.com"
+  ) {
+    return (
+      p === "/api/mcp/auth_callback" || p.startsWith("/api/mcp/auth_callback/")
+    );
+  }
+  if (h === "cursor.com" || h === "www.cursor.com") {
+    return (
+      p === "/agents/mcp/oauth/callback" ||
+      p.startsWith("/agents/mcp/oauth/callback/")
+    );
+  }
+  return false;
+}
+
+/** DCR: Claude/Cursor callback paths, loopback http, or cursor: — never arbitrary https. */
+export function mcpRedirectUriOkForRegistration(uri: string): boolean {
+  try {
+    const u = new URL(uri);
+    if (u.protocol === "cursor:") return true;
+    if (
+      u.protocol === "http:" &&
+      (u.hostname === "localhost" ||
+        u.hostname === "127.0.0.1" ||
+        u.hostname === "[::1]")
+    ) {
+      return true;
+    }
+    if (u.protocol === "https:") {
+      if (mcpHttpsRedirectPathOk(u.hostname, u.pathname)) return true;
+      return KNOWN_MCP_REDIRECT_URIS.some(
+        (r) => r === uri || loopbackRedirectOk(uri, r),
+      );
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function mcpRedirectUriAllowed(
+  requested: string,
+  registered: string[],
+): boolean {
+  if (!requested) return false;
+  if (
+    registered.some((r) => r === requested || loopbackRedirectOk(requested, r))
+  ) {
+    return true;
+  }
+  if (mcpRedirectUriOkForRegistration(requested)) return true;
+  return KNOWN_MCP_REDIRECT_URIS.some(
+    (r) => r === requested || loopbackRedirectOk(requested, r),
+  );
+}
+
+export function verifyPkceS256(verifier: string, challenge: string): boolean {
+  if (!verifier || !challenge) return false;
+  const dig = crypto
+    .createHash("sha256")
+    .update(verifier, "utf8")
+    .digest("base64url");
+  return dig === challenge;
+}
+
+function mcpStr(v: unknown): string {
+  return v == null ? "" : String(v).trim();
+}
+
+/**
+ * Writes require BOTH confirm=true and confirm_phrase=CONFIRM.
+ * Phrase alone must not execute (models sometimes echo CONFIRM in dry-runs).
+ */
+export function mcpWriteConfirmed(args: Record<string, unknown>): boolean {
+  const confirm = args.confirm;
+  const confirmed =
+    confirm === true ||
+    confirm === 1 ||
+    confirm === "1" ||
+    (typeof confirm === "string" && confirm.toLowerCase() === "true");
+  return confirmed && mcpStr(args.confirm_phrase) === "CONFIRM";
+}
+
 
 /**
  * Origin for portal-facing links (tracking URLs shown in-app).
@@ -6947,6 +7273,1922 @@ function buildApp(): Express {
     }
   });
 
+  // ─── Remote MCP (Streamable HTTP + OAuth) — super_admin only ───────────────
+
+  type McpToolDef = {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+    readOnly: boolean;
+  };
+
+  type McpAdmin = PortalAuthUser;
+
+  const MCP_CONFIRM_PROPERTIES: Record<string, Record<string, unknown>> = {
+    confirm: {
+      type: "boolean",
+      description:
+        "Set true only after the user approves the dry-run preview. Writes require confirm=true AND confirm_phrase=CONFIRM.",
+    },
+    confirm_phrase: {
+      type: "string",
+      description: 'Required with confirm=true. Must be exactly the string CONFIRM.',
+    },
+  };
+
+  function withMcpWriteConfirm(tool: McpToolDef): McpToolDef {
+    if (tool.readOnly) return tool;
+    const props =
+      tool.inputSchema.properties &&
+      typeof tool.inputSchema.properties === "object" &&
+      !Array.isArray(tool.inputSchema.properties)
+        ? { ...(tool.inputSchema.properties as Record<string, unknown>) }
+        : {};
+    const already = props.confirm != null && props.confirm_phrase != null;
+    const mergedProps = already ? props : { ...props, ...MCP_CONFIRM_PROPERTIES };
+    const description = /confirm_phrase|confirm=true/i.test(tool.description)
+      ? tool.description
+      : `${tool.description} ALWAYS dry-run first (omit confirm or confirm=false); show the preview to the user; then re-call with confirm=true and confirm_phrase=CONFIRM to execute.`;
+    return {
+      ...tool,
+      description,
+      inputSchema: {
+        ...tool.inputSchema,
+        type: "object",
+        properties: mergedProps,
+      },
+    };
+  }
+
+  function sanitizeMcpArgsForLog(args: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...args };
+    for (const k of Object.keys(out)) {
+      if (typeof out[k] === "string" && String(out[k]).length > 800) {
+        out[k] = `[omitted, ${String(out[k]).length} chars]`;
+      }
+    }
+    return out;
+  }
+
+  function mcpJsonSchemaToZod(
+    inputSchema: Record<string, unknown>,
+  ): z.ZodObject<Record<string, z.ZodTypeAny>> {
+    const props =
+      inputSchema.properties &&
+      typeof inputSchema.properties === "object" &&
+      !Array.isArray(inputSchema.properties)
+        ? (inputSchema.properties as Record<string, Record<string, unknown>>)
+        : {};
+    const required = new Set(
+      Array.isArray(inputSchema.required) ? inputSchema.required.map(String) : [],
+    );
+    const shape: Record<string, z.ZodTypeAny> = {};
+    for (const [key, prop] of Object.entries(props)) {
+      const p = prop || {};
+      let base: z.ZodTypeAny;
+      if (Array.isArray(p.enum) && p.enum.length > 0) {
+        const vals = p.enum.map(String) as [string, ...string[]];
+        base = z.enum(vals);
+      } else if (p.type === "integer") {
+        base = z.coerce.number().int();
+      } else if (p.type === "number") {
+        base = z.coerce.number();
+      } else if (p.type === "boolean") {
+        base = z.preprocess((v) => {
+          if (v === true || v === "true" || v === 1 || v === "1") return true;
+          if (v === false || v === "false" || v === 0 || v === "0") return false;
+          return v;
+        }, z.boolean());
+      } else if (p.type === "array") {
+        const items = (p.items || {}) as Record<string, unknown>;
+        if (items.type === "integer") base = z.array(z.coerce.number().int());
+        else if (items.type === "number") base = z.array(z.coerce.number());
+        else base = z.array(z.string());
+      } else {
+        base = z.string();
+      }
+      if (typeof p.description === "string" && p.description) {
+        base = base.describe(p.description);
+      }
+      shape[key] = required.has(key) ? base : base.optional();
+    }
+    return Object.keys(shape).length > 0 ? z.object(shape) : z.object({});
+  }
+
+  const MCP_TOOLS_RAW: McpToolDef[] = [
+    {
+      name: "dashboard_summary",
+      description:
+        "Groundwork admin dashboard rollup: new leads, pending affiliates, invited contractors, submitted draws, projects by milestone, and finance commission/profit totals.",
+      readOnly: true,
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "search_leads",
+      description: "Search ADU financing leads by name/email/phone/status.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string", description: "Search query" },
+          status: {
+            type: "string",
+            enum: ["new", "contacted", "qualified", "closed", "spam"],
+          },
+          limit: { type: "integer", description: "Max rows (default 25, max 100)" },
+        },
+      },
+    },
+    {
+      name: "get_lead",
+      description: "Get one lead by id.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        required: ["lead_id"],
+        properties: { lead_id: { type: "integer" } },
+      },
+    },
+    {
+      name: "search_clients",
+      description: "Search clients by name/email/phone/status.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["prospect", "active", "inactive", "suspended"],
+          },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "get_client",
+      description: "Get one client by id (includes recent projects).",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        required: ["client_id"],
+        properties: { client_id: { type: "integer" } },
+      },
+    },
+    {
+      name: "search_projects",
+      description: "Search ADU projects by public_id, address, milestone, or client name.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          milestone: {
+            type: "string",
+            enum: ["lead", "financing", "contracted", "in_build", "closed", "cancelled"],
+          },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "get_project",
+      description: "Get one project by public_id or numeric id.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          public_id: { type: "string" },
+          project_id: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "search_affiliates",
+      description: "Search affiliates by name/email/company/status.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["pending", "active", "inactive", "suspended"],
+          },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "get_affiliate",
+      description: "Get one affiliate by id.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        required: ["affiliate_id"],
+        properties: { affiliate_id: { type: "integer" } },
+      },
+    },
+    {
+      name: "search_contractors",
+      description: "Search contractors by name/email/company/status.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["invited", "active", "inactive", "suspended"],
+          },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "get_contractor",
+      description: "Get one contractor by id.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        required: ["contractor_id"],
+        properties: { contractor_id: { type: "integer" } },
+      },
+    },
+    {
+      name: "list_draws",
+      description: "List draw requests (excludes draft unless status=draft).",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["draft", "submitted", "approved", "rejected", "paid"],
+          },
+          project_public_id: { type: "string" },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "list_commissions",
+      description: "List affiliate commissions.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["pending", "approved", "paid", "void"],
+          },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "list_events",
+      description: "List marketing events.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["draft", "published", "archived"],
+          },
+          q: { type: "string" },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "get_event",
+      description: "Get one marketing event by id or slug.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          event_id: { type: "integer" },
+          slug: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "search_staff",
+      description: "Search admin staff by name/email/role/status.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          role: {
+            type: "string",
+            enum: ["super_admin", "admin", "agent", "finance", "content"],
+          },
+          status: {
+            type: "string",
+            enum: ["active", "inactive", "suspended"],
+          },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "list_plans",
+      description: "List ADU plans (catalog).",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          active_only: { type: "boolean" },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "convert_lead",
+      description:
+        "Convert a lead into a client + project and send a client portal invite.",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["lead_id"],
+        properties: {
+          lead_id: { type: "integer" },
+          adu_plan_id: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "update_project_milestone",
+      description:
+        "Update a project milestone using allowed Groundwork transitions (assertMilestoneTransition).",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["milestone"],
+        properties: {
+          public_id: { type: "string" },
+          project_id: { type: "integer" },
+          milestone: {
+            type: "string",
+            enum: ["lead", "financing", "contracted", "in_build", "closed", "cancelled"],
+          },
+          note: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "approve_affiliate",
+      description: "Approve a pending affiliate (status → active).",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["affiliate_id"],
+        properties: { affiliate_id: { type: "integer" } },
+      },
+    },
+    {
+      name: "invite_contractor",
+      description: "Invite a contractor to the Groundwork contractor portal.",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["email", "first_name", "last_name"],
+        properties: {
+          email: { type: "string" },
+          first_name: { type: "string" },
+          last_name: { type: "string" },
+          company: { type: "string" },
+          phone: { type: "string" },
+          license_number: { type: "string" },
+          preferred_language: { type: "string", enum: ["en", "es"] },
+        },
+      },
+    },
+    {
+      name: "invite_client_portal",
+      description: "Send (or re-send) a client portal invite email.",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["client_id"],
+        properties: { client_id: { type: "integer" } },
+      },
+    },
+    {
+      name: "update_draw_status",
+      description: "Review a draw request: approved, rejected, or paid.",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["draw_id", "status"],
+        properties: {
+          draw_id: { type: "integer" },
+          status: { type: "string", enum: ["approved", "rejected", "paid"] },
+          note: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "update_commission_status",
+      description: "Update affiliate commission status (approved/paid/void/pending).",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["commission_id", "status"],
+        properties: {
+          commission_id: { type: "integer" },
+          status: {
+            type: "string",
+            enum: ["pending", "approved", "paid", "void"],
+          },
+          notes: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "create_staff",
+      description:
+        "Create an admin staff member and send welcome email. Cannot create super_admin via MCP — use Admin → Staff.",
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["email", "first_name", "last_name", "role"],
+        properties: {
+          email: { type: "string" },
+          first_name: { type: "string" },
+          last_name: { type: "string" },
+          role: {
+            type: "string",
+            enum: ["admin", "agent", "finance", "content"],
+          },
+          phone: { type: "string" },
+          preferred_language: { type: "string", enum: ["en", "es"] },
+        },
+      },
+    },
+  ];
+
+  const MCP_TOOLS: McpToolDef[] = MCP_TOOLS_RAW.map(withMcpWriteConfirm);
+
+  function mcpLimit(args: Record<string, unknown>, def = 25, max = 100): number {
+    const n = Number(args.limit ?? def);
+    if (!Number.isFinite(n) || n < 1) return def;
+    return Math.min(Math.floor(n), max);
+  }
+
+  async function executeMcpTool(
+    admin: McpAdmin,
+    name: string,
+    args: Record<string, unknown>,
+    confirm: boolean,
+  ): Promise<{ ok: boolean; result?: unknown; error?: string; dry_run?: boolean }> {
+    const tool = MCP_TOOLS.find((t) => t.name === name);
+    if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
+
+    if (!tool.readOnly && (!confirm || mcpStr(args.confirm_phrase) !== "CONFIRM")) {
+      return {
+        ok: true,
+        dry_run: true,
+        result: {
+          preview: true,
+          tool: name,
+          message: 'Pass confirm=true and confirm_phrase="CONFIRM" to execute.',
+          args: sanitizeMcpArgsForLog(args),
+        },
+      };
+    }
+
+    try {
+      switch (name) {
+        case "dashboard_summary": {
+          const count = async (sql: string) => {
+            const [rows] = await pool.query<RowDataPacket[]>(sql);
+            return Number(rows[0]?.n || 0);
+          };
+          const [milestones] = await pool.query<RowDataPacket[]>(
+            `SELECT milestone, COUNT(*) AS n FROM projects GROUP BY milestone`,
+          );
+          const [draws] = await pool.query<RowDataPacket[]>(
+            `SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents
+             FROM draw_requests WHERE status = 'submitted'`,
+          );
+          const [comm] = await pool.query<RowDataPacket[]>(
+            `SELECT status, COALESCE(SUM(amount_cents), 0) AS cents
+             FROM affiliate_commissions GROUP BY status`,
+          );
+          const byComm = Object.fromEntries(
+            comm.map((c) => [String(c.status), Number(c.cents)]),
+          );
+          return {
+            ok: true,
+            result: {
+              leads_new: await count(`SELECT COUNT(*) AS n FROM leads WHERE status = 'new'`),
+              affiliates_pending: await count(
+                `SELECT COUNT(*) AS n FROM affiliates WHERE status = 'pending'`,
+              ),
+              contractors_invited: await count(
+                `SELECT COUNT(*) AS n FROM contractors WHERE status = 'invited'`,
+              ),
+              draws_submitted: Number(draws[0]?.n || 0),
+              draws_submitted_cents: Number(draws[0]?.cents || 0),
+              projects_by_milestone: Object.fromEntries(
+                milestones.map((m) => [String(m.milestone), Number(m.n)]),
+              ),
+              finance: {
+                commissions_pending_cents: byComm.pending || 0,
+                commissions_approved_cents: byComm.approved || 0,
+                commissions_paid_cents: byComm.paid || 0,
+              },
+            },
+          };
+        }
+        case "search_leads": {
+          const like = likeParam(args.q);
+          const status = ["new", "contacted", "qualified", "closed", "spam"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("status = ?");
+            params.push(status);
+          }
+          if (like) {
+            where.push(
+              "(first_name LIKE ? OR last_name LIKE ? OR full_name LIKE ? OR email LIKE ? OR phone LIKE ?)",
+            );
+            params.push(like, like, like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, full_name, phone, status, mode,
+                    property_address, created_at, client_id
+             FROM leads
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY id DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { leads: rows } };
+        }
+        case "get_lead": {
+          const id = Number(args.lead_id);
+          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid lead_id" };
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, full_name, phone, status, mode,
+                    property_address, soft_pull_consent, event_city, event_id,
+                    event_registration_status, source, affiliate_id, client_id,
+                    referral_code, preferred_language, notes, created_at, updated_at
+             FROM leads WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          if (!rows[0]) return { ok: false, error: "lead not found" };
+          return { ok: true, result: { lead: rows[0] } };
+        }
+        case "search_clients": {
+          const like = likeParam(args.q);
+          const status = ["prospect", "active", "inactive", "suspended"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("status = ?");
+            params.push(status);
+          }
+          if (like) {
+            where.push(
+              "(first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ?)",
+            );
+            params.push(like, like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, phone, status, city, created_at
+             FROM clients
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY id DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { clients: rows } };
+        }
+        case "get_client": {
+          const id = Number(args.client_id);
+          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid client_id" };
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, phone, preferred_language, status,
+                    address_line1, address_line2, city, state, zip, affiliate_id,
+                    assigned_admin_id, lead_id, email_verified_at, last_login_at,
+                    created_at, updated_at
+             FROM clients WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          if (!rows[0]) return { ok: false, error: "client not found" };
+          const [projects] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, public_id, milestone, property_address, loan_status, created_at
+             FROM projects WHERE client_id = ? ORDER BY id DESC LIMIT 20`,
+            [id],
+          );
+          return { ok: true, result: { client: rows[0], projects } };
+        }
+        case "search_projects": {
+          const like = likeParam(args.q);
+          const milestone = [
+            "lead",
+            "financing",
+            "contracted",
+            "in_build",
+            "closed",
+            "cancelled",
+          ].includes(mcpStr(args.milestone))
+            ? mcpStr(args.milestone)
+            : null;
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (milestone) {
+            where.push("p.milestone = ?");
+            params.push(milestone);
+          }
+          if (like) {
+            where.push(
+              "(p.public_id LIKE ? OR p.property_address LIKE ? OR c.first_name LIKE ? OR c.last_name LIKE ? OR c.email LIKE ?)",
+            );
+            params.push(like, like, like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT p.id, p.public_id, p.milestone, p.property_address, p.loan_status,
+                    p.sale_price_cents, p.created_at, c.first_name, c.last_name, c.email
+             FROM projects p
+             JOIN clients c ON c.id = p.client_id
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY p.id DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { projects: rows } };
+        }
+        case "get_project": {
+          const publicId = mcpStr(args.public_id);
+          const projectId = Number(args.project_id);
+          let rows: RowDataPacket[] = [];
+          if (publicId) {
+            const [r] = await pool.execute<RowDataPacket[]>(
+              `SELECT p.*, c.email AS client_email, c.first_name AS client_first, c.last_name AS client_last
+               FROM projects p JOIN clients c ON c.id = p.client_id
+               WHERE p.public_id = ? LIMIT 1`,
+              [publicId],
+            );
+            rows = r;
+          } else if (Number.isInteger(projectId) && projectId > 0) {
+            const [r] = await pool.execute<RowDataPacket[]>(
+              `SELECT p.*, c.email AS client_email, c.first_name AS client_first, c.last_name AS client_last
+               FROM projects p JOIN clients c ON c.id = p.client_id
+               WHERE p.id = ? LIMIT 1`,
+              [projectId],
+            );
+            rows = r;
+          } else {
+            return { ok: false, error: "public_id or project_id required" };
+          }
+          if (!rows[0]) return { ok: false, error: "project not found" };
+          return { ok: true, result: { project: rows[0] } };
+        }
+        case "search_affiliates": {
+          const like = likeParam(args.q);
+          const status = ["pending", "active", "inactive", "suspended"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("status = ?");
+            params.push(status);
+          }
+          if (like) {
+            where.push(
+              "(first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR company LIKE ?)",
+            );
+            params.push(like, like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, company, status, referral_code, created_at
+             FROM affiliates
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY id DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { affiliates: rows } };
+        }
+        case "get_affiliate": {
+          const id = Number(args.affiliate_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid affiliate_id" };
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, phone, company, status,
+                    preferred_language, referral_code, slug, approved_at,
+                    approved_by_admin_id, last_login_at, created_at, updated_at
+             FROM affiliates WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          if (!rows[0]) return { ok: false, error: "affiliate not found" };
+          return { ok: true, result: { affiliate: rows[0] } };
+        }
+        case "search_contractors": {
+          const like = likeParam(args.q);
+          const status = ["invited", "active", "inactive", "suspended"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("status = ?");
+            params.push(status);
+          }
+          if (like) {
+            where.push(
+              "(first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR company LIKE ?)",
+            );
+            params.push(like, like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, company, status, license_number, created_at
+             FROM contractors
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY id DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { contractors: rows } };
+        }
+        case "get_contractor": {
+          const id = Number(args.contractor_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid contractor_id" };
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, phone, company, license_number,
+                    status, preferred_language, invited_by_admin_id, activated_at,
+                    last_login_at, created_at, updated_at
+             FROM contractors WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          if (!rows[0]) return { ok: false, error: "contractor not found" };
+          return { ok: true, result: { contractor: rows[0] } };
+        }
+        case "list_draws": {
+          const status = ["draft", "submitted", "approved", "rejected", "paid"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const pub = mcpStr(args.project_public_id);
+          const limit = mcpLimit(args, 50, 200);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("d.status = ?");
+            params.push(status);
+          } else {
+            where.push("d.status <> 'draft'");
+          }
+          if (pub) {
+            where.push("p.public_id = ?");
+            params.push(pub);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT d.id, d.amount_cents, d.status, d.note, d.created_at, d.reviewed_at, d.paid_at,
+                    p.public_id AS project_public_id,
+                    CONCAT(k.first_name, ' ', k.last_name) AS contractor_name
+             FROM draw_requests d
+             JOIN projects p ON p.id = d.project_id
+             JOIN contractors k ON k.id = d.contractor_id
+             WHERE ${where.join(" AND ")}
+             ORDER BY d.id DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { draws: rows } };
+        }
+        case "list_commissions": {
+          const status = ["pending", "approved", "paid", "void"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const limit = mcpLimit(args, 50, 200);
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT ac.id, ac.amount_cents, ac.status, ac.expected_pay_at, ac.paid_at, ac.created_at,
+                    CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name,
+                    p.public_id AS project_public_id
+             FROM affiliate_commissions ac
+             JOIN affiliates a ON a.id = ac.affiliate_id
+             JOIN projects p ON p.id = ac.project_id
+             ${status ? "WHERE ac.status = ?" : ""}
+             ORDER BY ac.id DESC LIMIT ${limit}`,
+            status ? [status] : [],
+          );
+          return { ok: true, result: { commissions: rows } };
+        }
+        case "list_events": {
+          const status = ["draft", "published", "archived"].includes(
+            mcpStr(args.status),
+          )
+            ? mcpStr(args.status)
+            : null;
+          const like = likeParam(args.q);
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("status = ?");
+            params.push(status);
+          }
+          if (like) {
+            where.push("(slug LIKE ? OR title_en LIKE ? OR title_es LIKE ? OR city LIKE ?)");
+            params.push(like, like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, slug, status, starts_at, city, title_en, title_es, is_featured
+             FROM marketing_events
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY starts_at DESC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { events: rows } };
+        }
+        case "get_event": {
+          const id = Number(args.event_id);
+          const slug = mcpStr(args.slug);
+          let rows: RowDataPacket[] = [];
+          if (Number.isInteger(id) && id > 0) {
+            const [r] = await pool.execute<RowDataPacket[]>(
+              `SELECT * FROM marketing_events WHERE id = ? LIMIT 1`,
+              [id],
+            );
+            rows = r;
+          } else if (slug) {
+            const [r] = await pool.execute<RowDataPacket[]>(
+              `SELECT * FROM marketing_events WHERE slug = ? LIMIT 1`,
+              [slug],
+            );
+            rows = r;
+          } else {
+            return { ok: false, error: "event_id or slug required" };
+          }
+          if (!rows[0]) return { ok: false, error: "event not found" };
+          return { ok: true, result: { event: mapMarketingEventRow(rows[0]) } };
+        }
+        case "search_staff": {
+          const like = likeParam(args.q);
+          const role = ["super_admin", "admin", "agent", "finance", "content"].includes(
+            mcpStr(args.role),
+          )
+            ? mcpStr(args.role)
+            : null;
+          const status = ["active", "inactive", "suspended"].includes(mcpStr(args.status))
+            ? mcpStr(args.status)
+            : null;
+          const limit = mcpLimit(args);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (role) {
+            where.push("role = ?");
+            params.push(role);
+          }
+          if (status) {
+            where.push("status = ?");
+            params.push(status);
+          }
+          if (like) {
+            where.push("(first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)");
+            params.push(like, like, like);
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, email, first_name, last_name, role, status, last_login_at, created_at
+             FROM admins
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+             ORDER BY id ASC LIMIT ${limit}`,
+            params,
+          );
+          return { ok: true, result: { staff: rows } };
+        }
+        case "list_plans": {
+          const activeOnly = args.active_only !== false;
+          const limit = mcpLimit(args, 50, 200);
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, name, sq_ft, default_commission_cents, is_active, sort_order
+             FROM adu_plans
+             ${activeOnly ? "WHERE is_active = 1" : ""}
+             ORDER BY sort_order ASC, id ASC LIMIT ${limit}`,
+          );
+          return { ok: true, result: { plans: rows } };
+        }
+        case "convert_lead": {
+          const id = Number(args.lead_id);
+          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid lead_id" };
+          const planId = args.adu_plan_id ? Number(args.adu_plan_id) : null;
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT * FROM leads WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          const lead = rows[0];
+          if (!lead) return { ok: false, error: "lead not found" };
+          if (lead.client_id) return { ok: false, error: "lead already converted" };
+          const created = await withTx(async (conn) => {
+            const [ex] = await conn.execute<RowDataPacket[]>(
+              `SELECT id FROM clients WHERE email = ? LIMIT 1`,
+              [String(lead.email).toLowerCase()],
+            );
+            const out = await createClientWithProject(conn, {
+              email: String(lead.email).toLowerCase(),
+              first_name: String(lead.first_name || lead.full_name).slice(0, 100),
+              last_name: String(lead.last_name || "").slice(0, 100),
+              phone: lead.phone,
+              lang: asLang(lead.preferred_language),
+              property_address: lead.property_address,
+              property_city: null,
+              property_zip: null,
+              affiliate_id: lead.affiliate_id ?? null,
+              lead_id: Number(lead.id),
+              adu_plan_id: planId && Number.isInteger(planId) ? planId : null,
+              assigned_admin_id: admin.id,
+              byType: "admin",
+              byId: admin.id,
+              existingClientId: ex[0] ? Number(ex[0].id) : null,
+            });
+            await conn.execute(
+              `UPDATE leads SET client_id = ?, status = 'qualified' WHERE id = ?`,
+              [out.clientId, id],
+            );
+            const token = await issueClientPortalInvite(conn, {
+              clientId: out.clientId,
+              email: String(lead.email).toLowerCase(),
+              byType: "admin",
+              byId: admin.id,
+            });
+            return { ...out, token };
+          });
+          const lang = asLang(lead.preferred_language);
+          const first = String(lead.first_name || lead.full_name || "").slice(0, 100);
+          await sendClientPortalInviteEmail({
+            email: String(lead.email).toLowerCase(),
+            firstName: first,
+            lang,
+            token: created.token,
+            publicId: created.publicId,
+          });
+          return {
+            ok: true,
+            result: {
+              client_id: created.clientId,
+              project_public_id: created.publicId,
+              invite_sent: true,
+            },
+          };
+        }
+        case "update_project_milestone": {
+          const milestone = mcpStr(args.milestone);
+          const publicId = mcpStr(args.public_id);
+          const projectId = Number(args.project_id);
+          let old: RowDataPacket | undefined;
+          if (publicId) {
+            const [r] = await pool.execute<RowDataPacket[]>(
+              `SELECT id, public_id, milestone, contractor_id FROM projects WHERE public_id = ? LIMIT 1`,
+              [publicId],
+            );
+            old = r[0];
+          } else if (Number.isInteger(projectId) && projectId > 0) {
+            const [r] = await pool.execute<RowDataPacket[]>(
+              `SELECT id, public_id, milestone, contractor_id FROM projects WHERE id = ? LIMIT 1`,
+              [projectId],
+            );
+            old = r[0];
+          } else {
+            return { ok: false, error: "public_id or project_id required" };
+          }
+          if (!old) return { ok: false, error: "project not found" };
+          try {
+            assertMilestoneTransition(old.milestone, milestone);
+          } catch (e) {
+            if (e instanceof HttpError) return { ok: false, error: e.key };
+            throw e;
+          }
+          if (milestone === "in_build" && !old.contractor_id) {
+            return { ok: false, error: "errors.contractorRequired" };
+          }
+          const note = mcpStr(args.note).slice(0, 500) || null;
+          await withTx(async (conn) => {
+            await conn.execute(
+              `UPDATE projects SET milestone = ?, milestone_changed_at = NOW() WHERE id = ?`,
+              [milestone, old!.id],
+            );
+            await conn.execute(
+              `INSERT INTO project_milestone_events
+                 (project_id, from_milestone, to_milestone, changed_by_type, changed_by_id, note)
+               VALUES (?,?,?,?,?,?)`,
+              [old!.id, old!.milestone, milestone, "admin", admin.id, note],
+            );
+          });
+          return {
+            ok: true,
+            result: {
+              public_id: old.public_id,
+              from: old.milestone,
+              to: milestone,
+            },
+          };
+        }
+        case "approve_affiliate": {
+          const id = Number(args.affiliate_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid affiliate_id" };
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, status, email, first_name, preferred_language FROM affiliates WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          if (!rows[0]) return { ok: false, error: "affiliate not found" };
+          if (rows[0].status !== "pending" && rows[0].status !== "inactive") {
+            return { ok: false, error: `cannot approve from status ${rows[0].status}` };
+          }
+          await pool.execute(
+            `UPDATE affiliates SET status = 'active', approved_at = COALESCE(approved_at, NOW()), approved_by_admin_id = ? WHERE id = ?`,
+            [admin.id, id],
+          );
+          const lang = asLang(rows[0].preferred_language);
+          await safeSend(
+            String(rows[0].email),
+            tplPortalNotice({
+              lang,
+              subject: tr(lang, "Affiliate approved — Groundwork Capital", "Afiliado aprobado — Groundwork Capital"),
+              headline: tr(lang, "You're approved.", "Estás aprobado."),
+              paragraphs: [
+                tr(
+                  lang,
+                  `Hi ${rows[0].first_name}, your affiliate account is active.`,
+                  `Hola ${rows[0].first_name}, tu cuenta de afiliado está activa.`,
+                ),
+              ],
+              cta: {
+                url: `${APP_URL}/affiliate/login`,
+                label: tr(lang, "Open affiliate portal", "Abrir portal de afiliados"),
+              },
+            }),
+          );
+          return { ok: true, result: { affiliate_id: id, status: "active" } };
+        }
+        case "invite_contractor": {
+          const email = normalizeEmail(args.email);
+          const first = mcpStr(args.first_name).slice(0, 100);
+          const last = mcpStr(args.last_name).slice(0, 100);
+          const company = mcpStr(args.company).slice(0, 200) || null;
+          const license = mcpStr(args.license_number).slice(0, 100) || null;
+          const phone = mcpStr(args.phone).slice(0, 40) || null;
+          const lang = asLang(args.preferred_language);
+          if (!isValidEmail(email)) return { ok: false, error: "validation.emailInvalid" };
+          if (!first) return { ok: false, error: "validation.firstNameRequired" };
+          if (!last) return { ok: false, error: "validation.lastNameRequired" };
+          const [ex] = await pool.execute<RowDataPacket[]>(
+            `SELECT id, status FROM contractors WHERE email = ? LIMIT 1`,
+            [email],
+          );
+          if (ex[0] && ex[0].status !== "invited") {
+            return { ok: false, error: "errors.contractorExists" };
+          }
+          const token = crypto.randomBytes(32).toString("hex");
+          const contractorId = await withTx(async (conn) => {
+            let cid: number;
+            if (ex[0]) {
+              cid = Number(ex[0].id);
+              await conn.execute(
+                `UPDATE contractors SET first_name = ?, last_name = ?, company = ?,
+                   license_number = ?, phone = ?, preferred_language = ?,
+                   invited_by_admin_id = ? WHERE id = ?`,
+                [first, last, company, license, phone, lang, admin.id, cid],
+              );
+              await conn.execute(
+                `UPDATE contractor_invites SET expires_at = NOW()
+                 WHERE contractor_id = ? AND accepted_at IS NULL`,
+                [cid],
+              );
+            } else {
+              const [r] = await conn.execute<ResultSetHeader>(
+                `INSERT INTO contractors
+                   (email, first_name, last_name, phone, company, license_number, status,
+                    preferred_language, invited_by_admin_id)
+                 VALUES (?, ?, ?, ?, ?, ?, 'invited', ?, ?)`,
+                [email, first, last, phone, company, license, lang, admin.id],
+              );
+              cid = Number(r.insertId);
+            }
+            await conn.execute(
+              `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
+               VALUES (?, ?, ?, ?, ?)`,
+              [token, email, cid, admin.id, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)],
+            );
+            return cid;
+          });
+          await safeSend(
+            email,
+            tplPortalNotice({
+              lang,
+              subject: tr(
+                lang,
+                "You're invited to the Groundwork contractor portal",
+                "Te invitamos al portal de contratistas de Groundwork",
+              ),
+              headline: tr(lang, "Build with Groundwork.", "Construye con Groundwork."),
+              paragraphs: [
+                tr(
+                  lang,
+                  `Hi ${first}, you've been invited to manage ADU projects.`,
+                  `Hola ${first}, te invitamos a gestionar proyectos ADU.`,
+                ),
+              ],
+              cta: {
+                url: `${APP_URL}/contractor/invite/${token}`,
+                label: tr(lang, "Accept invite", "Aceptar invitación"),
+              },
+            }),
+          );
+          return { ok: true, result: { contractor_id: contractorId, invite_sent: true } };
+        }
+        case "invite_client_portal": {
+          const id = Number(args.client_id);
+          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid client_id" };
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT email, first_name, preferred_language, status FROM clients WHERE id = ? LIMIT 1`,
+            [id],
+          );
+          const c = rows[0];
+          if (!c) return { ok: false, error: "client not found" };
+          if (!["prospect", "active"].includes(String(c.status))) {
+            return { ok: false, error: "errors.authInactive" };
+          }
+          const token = await issueClientPortalInvite(pool, {
+            clientId: id,
+            email: String(c.email),
+            byType: "admin",
+            byId: admin.id,
+          });
+          await sendClientPortalInviteEmail({
+            email: String(c.email),
+            firstName: String(c.first_name || ""),
+            lang: asLang(c.preferred_language),
+            token,
+            publicId: undefined,
+          });
+          return { ok: true, result: { client_id: id, invite_sent: true } };
+        }
+        case "update_draw_status": {
+          const id = Number(args.draw_id);
+          const next = mcpStr(args.status);
+          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid draw_id" };
+          if (!["approved", "rejected", "paid"].includes(next)) {
+            return { ok: false, error: "invalid status" };
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT d.id, d.status, d.amount_cents, p.public_id, k.email, k.first_name, k.preferred_language
+             FROM draw_requests d JOIN projects p ON p.id = d.project_id
+             JOIN contractors k ON k.id = d.contractor_id WHERE d.id = ? LIMIT 1`,
+            [id],
+          );
+          const d = rows[0];
+          if (!d) return { ok: false, error: "draw not found" };
+          const allowed: Record<string, string[]> = {
+            submitted: ["approved", "rejected"],
+            approved: ["paid", "rejected"],
+          };
+          if (!allowed[String(d.status)]?.includes(next)) {
+            return { ok: false, error: "errors.invalidTransition" };
+          }
+          const note = mcpStr(args.note).slice(0, 2000) || null;
+          const updates: Record<string, unknown> = {
+            status: next,
+            reviewed_by_admin_id: admin.id,
+            reviewed_at: new Date(),
+          };
+          if (note) updates.note = note;
+          if (next === "paid") updates.paid_at = new Date();
+          await withTx(async (conn) => {
+            await applyUpdate(conn, "draw_requests", id, updates);
+            if (next === "rejected") {
+              await conn.execute(
+                `UPDATE projects p
+                 JOIN draw_requests d ON d.project_id = p.id
+                 SET p.draw_committed_cents = GREATEST(0, CAST(p.draw_committed_cents AS SIGNED) - d.amount_cents)
+                 WHERE d.id = ?`,
+                [id],
+              );
+            }
+          });
+          return { ok: true, result: { draw_id: id, status: next, project_public_id: d.public_id } };
+        }
+        case "update_commission_status": {
+          const id = Number(args.commission_id);
+          const next = mcpStr(args.status);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid commission_id" };
+          if (!["pending", "approved", "paid", "void"].includes(next)) {
+            return { ok: false, error: "invalid status" };
+          }
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT ac.*, p.public_id FROM affiliate_commissions ac
+             JOIN projects p ON p.id = ac.project_id WHERE ac.id = ? LIMIT 1`,
+            [id],
+          );
+          const c = rows[0];
+          if (!c) return { ok: false, error: "commission not found" };
+          if (c.status === "paid") return { ok: false, error: "errors.invalidTransition" };
+          const allowed: Record<string, string[]> = {
+            pending: ["approved", "void"],
+            approved: ["paid", "void", "pending"],
+            void: ["pending"],
+          };
+          if (!allowed[String(c.status)]?.includes(next)) {
+            return { ok: false, error: "errors.invalidTransition" };
+          }
+          const updates: Record<string, unknown> = { status: next };
+          if (next === "paid") updates.paid_at = new Date();
+          const notes = mcpStr(args.notes).slice(0, 500);
+          if (notes) updates.notes = notes;
+          await withTx(async (conn) => {
+            await applyUpdate(conn, "affiliate_commissions", id, updates);
+            if (next === "paid") {
+              await conn.execute(
+                `UPDATE projects SET commission_paid_at = NOW() WHERE id = ?`,
+                [c.project_id],
+              );
+            }
+          });
+          return {
+            ok: true,
+            result: { commission_id: id, status: next, project_public_id: c.public_id },
+          };
+        }
+        case "create_staff": {
+          const email = normalizeEmail(args.email);
+          const first = mcpStr(args.first_name).slice(0, 100);
+          const last = mcpStr(args.last_name).slice(0, 100);
+          const role = mcpStr(args.role);
+          const phone = mcpStr(args.phone).slice(0, 20) || null;
+          const lang = asLang(args.preferred_language);
+          if (!isValidEmail(email)) return { ok: false, error: "validation.emailInvalid" };
+          if (!first) return { ok: false, error: "validation.firstNameRequired" };
+          if (!last) return { ok: false, error: "validation.lastNameRequired" };
+          if (!["super_admin", "admin", "agent", "finance", "content"].includes(role)) {
+            return { ok: false, error: "validation.invalidField" };
+          }
+          // MCP must not mint additional super_admins (use Admin → Staff UI for that).
+          if (role === "super_admin") {
+            return {
+              ok: false,
+              error: "MCP cannot create super_admin — use Admin → Staff",
+            };
+          }
+          const [r] = await pool.execute<ResultSetHeader>(
+            `INSERT INTO admins (email, first_name, last_name, phone, role, status, preferred_language)
+             VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+            [email, first, last, phone, role, lang],
+          );
+          await safeSend(
+            email,
+            tplPortalNotice({
+              lang,
+              subject: tr(lang, "You've been added to Groundwork Admin", "Te agregaron a Groundwork Admin"),
+              headline: tr(lang, "Welcome to the team.", "Bienvenido al equipo."),
+              paragraphs: [
+                tr(
+                  lang,
+                  `Hi ${first}, you now have ${role.replace("_", " ")} access.`,
+                  `Hola ${first}, ahora tienes acceso de ${role.replace("_", " ")}.`,
+                ),
+              ],
+              cta: {
+                url: `${APP_URL}/admin/login`,
+                label: tr(lang, "Open admin portal", "Abrir portal de administración"),
+              },
+            }),
+          );
+          return { ok: true, result: { id: Number(r.insertId), email, role } };
+        }
+        default:
+          return { ok: false, error: `Unhandled tool: ${name}` };
+      }
+    } catch (err: any) {
+      if (err instanceof HttpError) return { ok: false, error: err.key };
+      if (err?.code === "ER_DUP_ENTRY" || err?.errno === 1062) {
+        return { ok: false, error: "errors.duplicate" };
+      }
+      console.error("[mcp] execute", name, err);
+      return { ok: false, error: err?.message || "tool_failed" };
+    }
+  }
+
+  async function requireMcpAuth(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const challenge =
+      `Bearer FAKESECRET_g3h4i5j6k7l8m9n0o1p2="${siteOrigin()}/.well-known/oauth-protected-resource", scope="${MCP_SCOPE}"`;
+    const fail = (reason: string) => {
+      console.warn("[mcp] auth_reject", { reason });
+      res.setHeader("WWW-Authenticate", challenge);
+      res.status(401).json({ error: "Unauthorized" });
+    };
+    try {
+      const bearer = parseBearerAuthorization(req.headers.authorization);
+      if (bearer) {
+        const [mcpRows] = await pool.query<RowDataPacket[]>(
+          `SELECT t.admin_id, a.*
+             FROM mcp_oauth_tokens t
+             JOIN admins a ON a.id = t.admin_id
+            WHERE t.token_hash = ? AND t.revoked_at IS NULL AND t.expires_at > NOW()
+              AND a.status = 'active' AND a.role = 'super_admin'
+            LIMIT 1`,
+          [sha256(bearer)],
+        );
+        if (mcpRows[0]) {
+          await pool.execute(
+            `UPDATE mcp_oauth_tokens SET last_used_at = NOW() WHERE token_hash = ?`,
+            [sha256(bearer)],
+          );
+          res.locals.portalUser = toPortalUser("admin", mcpRows[0]);
+          next();
+          return;
+        }
+        fail("bearer_unknown_or_expired");
+        return;
+      }
+      if (req.headers.authorization) {
+        fail("authorization_not_bearer");
+        return;
+      }
+      const user = await loadPortalUser("admin", req);
+      if (!user) {
+        fail("missing_authorization");
+        return;
+      }
+      if (user.role !== "super_admin" || user.status !== "active") {
+        fail("not_super_admin");
+        return;
+      }
+      res.locals.portalUser = user;
+      next();
+    } catch (err) {
+      console.error("[mcp] requireMcpAuth", err);
+      fail("auth_error");
+    }
+  }
+
+  function requireSuperAdminMcp(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) {
+    return requireAdmin()(req, res, () => {
+      const user = portalUser(res);
+      if (user.role !== "super_admin") {
+        return res.status(403).json({ error: "errors.forbidden" });
+      }
+      return next();
+    });
+  }
+
+  async function handleMcpStreamable(req: Request, res: Response) {
+    const admin = portalUser(res);
+    const server = new McpServer({
+      name: "groundwork-capital",
+      version: "1.0.0",
+    });
+
+    for (const t of MCP_TOOLS) {
+      server.registerTool(
+        t.name,
+        {
+          description: t.description,
+          inputSchema: mcpJsonSchemaToZod(t.inputSchema),
+        },
+        async (toolArgs) => {
+          const cleaned: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(
+            (toolArgs || {}) as Record<string, unknown>,
+          )) {
+            if (v !== undefined) cleaned[k] = v;
+          }
+          const confirm = mcpWriteConfirmed(cleaned);
+          try {
+            const result = await executeMcpTool(admin, t.name, cleaned, confirm);
+            try {
+              await pool.execute(
+                `INSERT INTO mcp_audit_logs (admin_id, tool_name, confirm, request_json, result_json, error_message)
+                 VALUES (?,?,?,?,?,?)`,
+                [
+                  admin.id,
+                  t.name,
+                  confirm ? 1 : 0,
+                  JSON.stringify(sanitizeMcpArgsForLog(cleaned)),
+                  JSON.stringify(result.result ?? null),
+                  result.error || null,
+                ],
+              );
+            } catch (auditErr) {
+              console.error("[mcp] audit", auditErr);
+            }
+            const payload = result.ok
+              ? result.result
+              : { ok: false, error: result.error };
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(payload, null, 2),
+                },
+              ],
+              isError: !result.ok,
+            };
+          } catch (err) {
+            console.error("[mcp] tool", t.name, err);
+            return {
+              content: [{ type: "text" as const, text: "Tool call failed." }],
+              isError: true,
+            };
+          }
+        },
+      );
+    }
+
+    server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: mcpToolsListForClaude(MCP_TOOLS),
+    }));
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+
+    // Sanitize Claude-hostile fields on the wire
+    const origJson = res.json.bind(res);
+    (res as any).json = (body: unknown) => {
+      try {
+        const raw = typeof body === "string" ? body : JSON.stringify(body);
+        const cleaned = sanitizeMcpJsonRpcForClaude(raw);
+        res.setHeader("Content-Type", "application/json");
+        return res.send(cleaned);
+      } catch {
+        return origJson(body);
+      }
+    };
+    const origSend = res.send.bind(res);
+    (res as any).send = (body: unknown) => {
+      if (typeof body === "string" && (body.startsWith("{") || body.startsWith("["))) {
+        return origSend(sanitizeMcpJsonRpcForClaude(body));
+      }
+      return origSend(body as any);
+    };
+
+    await server.connect(transport);
+    await transport.handleRequest(req as any, res as any, req.body);
+  }
+
+  app.options("/api/mcp", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type, Accept, Mcp-Session-Id",
+    );
+    return res.status(204).end();
+  });
+
+  app.get("/api/mcp", requireMcpAuth, (_req, res) => {
+    return res.status(405).setHeader("Allow", "POST").json({ error: "use_post" });
+  });
+
+  app.post("/api/mcp", requireMcpAuth, (req, res) => {
+    void handleMcpStreamable(req, res).catch((err) => {
+      console.error("[mcp] streamable", err);
+      if (!res.headersSent) res.status(500).json({ error: "mcp_error" });
+    });
+  });
+
+  app.post("/api/mcp/", requireMcpAuth, (req, res) => {
+    void handleMcpStreamable(req, res).catch((err) => {
+      console.error("[mcp] streamable", err);
+      if (!res.headersSent) res.status(500).json({ error: "mcp_error" });
+    });
+  });
+
+  app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+    res.json(mcpOauthAuthorizationServerMetadata());
+  });
+  app.get("/.well-known/oauth-authorization-server/api/mcp", (_req, res) => {
+    res.json(mcpOauthAuthorizationServerMetadata());
+  });
+  app.get("/.well-known/openid-configuration", (_req, res) => {
+    res.json(mcpOauthAuthorizationServerMetadata());
+  });
+  app.get("/.well-known/openid-configuration/api/mcp", (_req, res) => {
+    res.json(mcpOauthAuthorizationServerMetadata());
+  });
+  app.get("/.well-known/oauth-protected-resource", (_req, res) => {
+    res.json(mcpOauthProtectedResourceMetadata());
+  });
+  app.get("/.well-known/oauth-protected-resource/api/mcp", (_req, res) => {
+    res.json(mcpOauthProtectedResourceMetadata());
+  });
+  app.get("/api/mcp/.well-known/oauth-authorization-server", (_req, res) => {
+    res.json(mcpOauthAuthorizationServerMetadata());
+  });
+  app.get("/api/mcp/.well-known/oauth-protected-resource", (_req, res) => {
+    res.json(mcpOauthProtectedResourceMetadata());
+  });
+
+  app.post("/api/mcp/oauth/register", async (req, res) => {
+    try {
+      const clientId = `mcp_${crypto.randomBytes(18).toString("base64url")}`;
+      const rawUris = Array.isArray(req.body?.redirect_uris)
+        ? req.body.redirect_uris.map(String)
+        : [];
+      const redirectUris = rawUris.filter((u: string) =>
+        mcpRedirectUriOkForRegistration(u),
+      );
+      if (!redirectUris.length) {
+        return res.status(400).json({
+          error: "invalid_redirect_uri",
+          error_description:
+            "redirect_uris must be a known Claude/Cursor callback, loopback http, or cursor: scheme",
+        });
+      }
+      await pool.execute(
+        `INSERT INTO mcp_oauth_clients (client_id, client_name, redirect_uris_json) VALUES (?,?,?)`,
+        [
+          clientId,
+          mcpStr(req.body?.client_name) || "MCP Client",
+          JSON.stringify(redirectUris),
+        ],
+      );
+      return res.status(201).json({
+        client_id: clientId,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        client_name: mcpStr(req.body?.client_name) || "MCP Client",
+        redirect_uris: redirectUris,
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        scope: MCP_SCOPE,
+      });
+    } catch (err) {
+      console.error("[mcp] register", err);
+      return res.status(500).json({ error: "registration_failed" });
+    }
+  });
+
+  app.get("/api/mcp/oauth/authorize", async (req, res) => {
+    try {
+      const clientId = mcpStr(req.query.client_id);
+      const redirectUri = mcpStr(req.query.redirect_uri);
+      const state = mcpStr(req.query.state);
+      const challenge = mcpStr(req.query.code_challenge);
+      const method = mcpStr(req.query.code_challenge_method) || "S256";
+      const scope = mcpStr(req.query.scope) || MCP_SCOPE;
+      const resourceParam = mcpStr(req.query.resource) || mcpResourceUrl();
+      const responseType = mcpStr(req.query.response_type) || "code";
+      if (!clientId || !redirectUri || responseType !== "code" || !challenge) {
+        return res.status(400).send("invalid_request");
+      }
+      if (method !== "S256") return res.status(400).send("unsupported code_challenge_method");
+
+      const [clients] = await pool.query<RowDataPacket[]>(
+        `SELECT * FROM mcp_oauth_clients WHERE client_id = ? LIMIT 1`,
+        [clientId],
+      );
+      if (!clients[0]) {
+        if (!mcpRedirectUriOkForRegistration(redirectUri)) {
+          return res.status(400).send("unknown_client");
+        }
+        await pool.execute(
+          `INSERT INTO mcp_oauth_clients (client_id, client_name, redirect_uris_json) VALUES (?,?,?)
+           ON DUPLICATE KEY UPDATE client_name = VALUES(client_name)`,
+          [
+            clientId,
+            "MCP client",
+            JSON.stringify([redirectUri, ...KNOWN_MCP_REDIRECT_URIS]),
+          ],
+        );
+      } else {
+        const registered = parseMcpRedirectUris(clients[0].redirect_uris_json);
+        if (!mcpRedirectUriAllowed(redirectUri, registered)) {
+          return res.status(400).send("invalid redirect_uri");
+        }
+      }
+
+      const consent = new URL(`${siteOrigin()}/admin/mcp-consent`);
+      consent.searchParams.set("client_id", clientId);
+      consent.searchParams.set("redirect_uri", redirectUri);
+      consent.searchParams.set("code_challenge", challenge);
+      consent.searchParams.set("code_challenge_method", "S256");
+      consent.searchParams.set("scope", scope);
+      consent.searchParams.set("resource", resourceParam);
+      if (state) consent.searchParams.set("state", state);
+      return res.redirect(302, consent.toString());
+    } catch (err) {
+      console.error("[mcp] authorize", err);
+      return res.status(500).send("authorize_failed");
+    }
+  });
+
+  app.post(
+    "/api/admin/mcp/oauth/approve",
+    requireSuperAdminMcp,
+    async (req, res) => {
+      try {
+        const user = portalUser(res);
+        const clientId = mcpStr(req.body?.client_id);
+        const redirectUri = mcpStr(req.body?.redirect_uri);
+        const codeChallenge = mcpStr(req.body?.code_challenge);
+        const state = mcpStr(req.body?.state);
+        const approve = req.body?.approve !== false;
+        if (!clientId || !redirectUri) {
+          return res.status(400).json({ error: "invalid_request" });
+        }
+        const [clients] = await pool.query<RowDataPacket[]>(
+          `SELECT * FROM mcp_oauth_clients WHERE client_id = ? LIMIT 1`,
+          [clientId],
+        );
+        if (!clients[0]) return res.status(400).json({ error: "unknown_client" });
+        const registered = parseMcpRedirectUris(clients[0].redirect_uris_json);
+        if (!mcpRedirectUriAllowed(redirectUri, registered)) {
+          return res.status(400).json({ error: "invalid_redirect_uri" });
+        }
+        if (!approve) {
+          const deny = new URL(redirectUri);
+          deny.searchParams.set("error", "access_denied");
+          if (state) deny.searchParams.set("state", state);
+          return res.json({ redirect_to: deny.toString() });
+        }
+        if (!codeChallenge) {
+          return res.status(400).json({ error: "invalid_request" });
+        }
+        const code = crypto.randomBytes(24).toString("hex");
+        await pool.execute(
+          `INSERT INTO mcp_oauth_codes
+            (code_hash, client_id, admin_id, redirect_uri, code_challenge, code_challenge_method, scopes, expires_at)
+           VALUES (?,?,?,?,?,?,?,?)`,
+          [
+            sha256(code),
+            clientId,
+            user.id,
+            redirectUri,
+            codeChallenge,
+            "S256",
+            MCP_SCOPE,
+            new Date(Date.now() + 10 * 60_000),
+          ],
+        );
+        const ok = new URL(redirectUri);
+        ok.searchParams.set("code", code);
+        if (state) ok.searchParams.set("state", state);
+        return res.json({
+          redirect_to: ok.toString(),
+          client_name: clients[0].client_name
+            ? String(clients[0].client_name)
+            : "MCP client",
+        });
+      } catch (err) {
+        console.error("[mcp] approve", err);
+        return res.status(500).json({ error: "approve_failed" });
+      }
+    },
+  );
+
+  app.post("/api/mcp/oauth/token", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const grantType = mcpStr(req.body?.grant_type) || "authorization_code";
+      const clientId = mcpStr(req.body?.client_id);
+      if (!clientId) return res.status(400).json({ error: "invalid_client" });
+
+      const [clients] = await pool.query<RowDataPacket[]>(
+        `SELECT * FROM mcp_oauth_clients WHERE client_id = ? LIMIT 1`,
+        [clientId],
+      );
+      if (!clients[0]) return res.status(400).json({ error: "invalid_client" });
+      const clientName = clients[0].client_name
+        ? String(clients[0].client_name)
+        : "MCP client";
+
+      if (grantType === "refresh_token") {
+        const refresh = mcpStr(req.body?.refresh_token);
+        if (!refresh) return res.status(400).json({ error: "invalid_request" });
+        const [tokRows] = await pool.query<RowDataPacket[]>(
+          `SELECT t.*, a.role, a.status AS admin_status
+             FROM mcp_oauth_tokens t
+             JOIN admins a ON a.id = t.admin_id
+            WHERE t.refresh_token_hash = ? AND t.client_id = ? AND t.revoked_at IS NULL
+            LIMIT 1`,
+          [sha256(refresh), clientId],
+        );
+        if (
+          !tokRows[0] ||
+          tokRows[0].role !== "super_admin" ||
+          tokRows[0].admin_status !== "active"
+        ) {
+          return res.status(400).json({ error: "invalid_grant" });
+        }
+        if (
+          !tokRows[0].refresh_expires_at ||
+          new Date(tokRows[0].refresh_expires_at).getTime() <= Date.now()
+        ) {
+          return res.status(400).json({ error: "invalid_grant" });
+        }
+        const access = crypto.randomBytes(32).toString("hex");
+        const newRefresh = crypto.randomBytes(32).toString("hex");
+        await pool.execute(
+          `UPDATE mcp_oauth_tokens
+              SET token_hash = ?,
+                  refresh_token_hash = ?,
+                  expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND),
+                  refresh_expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND),
+                  last_used_at = NOW()
+            WHERE id = ?`,
+          [
+            sha256(access),
+            sha256(newRefresh),
+            MCP_ACCESS_TTL_SEC,
+            MCP_REFRESH_TTL_SEC,
+            tokRows[0].id,
+          ],
+        );
+        res.setHeader("Pragma", "no-cache");
+        return res.json({
+          access_token: access,
+          token_type: "bearer",
+          expires_in: MCP_ACCESS_TTL_SEC,
+          refresh_token: newRefresh,
+          scope: MCP_SCOPE,
+        });
+      }
+
+      if (grantType !== "authorization_code") {
+        return res.status(400).json({ error: "unsupported_grant_type" });
+      }
+      const code = mcpStr(req.body?.code);
+      const redirectUri = mcpStr(req.body?.redirect_uri);
+      const codeVerifier = mcpStr(req.body?.code_verifier);
+      if (!code || !redirectUri || !codeVerifier) {
+        return res.status(400).json({ error: "invalid_request" });
+      }
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT * FROM mcp_oauth_codes
+          WHERE code_hash = ? AND client_id = ? AND consumed_at IS NULL AND expires_at > NOW()
+          LIMIT 1`,
+        [sha256(code), clientId],
+      );
+      if (!rows[0]) return res.status(400).json({ error: "invalid_grant" });
+      if (String(rows[0].redirect_uri) !== redirectUri) {
+        return res.status(400).json({ error: "invalid_grant" });
+      }
+      if (!verifyPkceS256(codeVerifier, String(rows[0].code_challenge || ""))) {
+        return res.status(400).json({ error: "invalid_grant" });
+      }
+      const [adminRows] = await pool.query<RowDataPacket[]>(
+        `SELECT id, role, status FROM admins WHERE id = ? LIMIT 1`,
+        [rows[0].admin_id],
+      );
+      if (
+        !adminRows[0] ||
+        adminRows[0].role !== "super_admin" ||
+        adminRows[0].status !== "active"
+      ) {
+        return res.status(400).json({ error: "invalid_grant" });
+      }
+      const [consumed] = await pool.execute<ResultSetHeader>(
+        `UPDATE mcp_oauth_codes SET consumed_at = NOW()
+          WHERE id = ? AND consumed_at IS NULL AND expires_at > NOW()`,
+        [rows[0].id],
+      );
+      if (!consumed.affectedRows) return res.status(400).json({ error: "invalid_grant" });
+
+      const access = crypto.randomBytes(32).toString("hex");
+      const refresh = crypto.randomBytes(32).toString("hex");
+      await pool.execute(
+        `INSERT INTO mcp_oauth_tokens
+           (token_hash, refresh_token_hash, client_id, client_name, admin_id, scopes, expires_at, refresh_expires_at)
+         VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ? SECOND),DATE_ADD(NOW(), INTERVAL ? SECOND))`,
+        [
+          sha256(access),
+          sha256(refresh),
+          clientId,
+          clientName,
+          rows[0].admin_id,
+          MCP_SCOPE,
+          MCP_ACCESS_TTL_SEC,
+          MCP_REFRESH_TTL_SEC,
+        ],
+      );
+      res.setHeader("Pragma", "no-cache");
+      return res.json({
+        access_token: access,
+        token_type: "bearer",
+        expires_in: MCP_ACCESS_TTL_SEC,
+        refresh_token: refresh,
+        scope: MCP_SCOPE,
+      });
+    } catch (err) {
+      console.error("[mcp] token", err);
+      return res.status(500).json({ error: "token_failed" });
+    }
+  });
+
+  app.post("/api/mcp/oauth/revoke", async (req, res) => {
+    try {
+      const token = mcpStr(req.body?.token);
+      if (token) {
+        const hash = sha256(token);
+        await pool.execute(
+          `UPDATE mcp_oauth_tokens SET revoked_at = NOW()
+            WHERE revoked_at IS NULL AND (token_hash = ? OR refresh_token_hash = ?)`,
+          [hash, hash],
+        );
+      }
+      return res.json({ revoked: true });
+    } catch (err) {
+      console.error("[mcp] revoke", err);
+      return res.json({ revoked: true });
+    }
+  });
+
+  app.get(
+    "/api/admin/me/mcp-connections",
+    requireSuperAdminMcp,
+    route(async (_req, res) => {
+      const user = portalUser(res);
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT id, client_id, client_name, scopes, created_at, last_used_at, expires_at, refresh_expires_at
+         FROM mcp_oauth_tokens
+         WHERE admin_id = ? AND revoked_at IS NULL
+         ORDER BY id DESC
+         LIMIT 50`,
+        [user.id],
+      );
+      res.json({
+        connections: rows.map((r) => ({
+          id: Number(r.id),
+          client_id: String(r.client_id),
+          client_name: r.client_name ? String(r.client_name) : "MCP client",
+          scopes: String(r.scopes || MCP_SCOPE),
+          created_at: isoDate(r.created_at),
+          last_used_at: isoDate(r.last_used_at),
+          expires_at: isoDate(r.expires_at),
+          refresh_expires_at: isoDate(r.refresh_expires_at),
+        })),
+      });
+    }),
+  );
+
+  app.delete(
+    "/api/admin/me/mcp-connections/:id",
+    requireSuperAdminMcp,
+    route(async (req, res) => {
+      const user = portalUser(res);
+      const id = parseId(req.params.id);
+      const [result] = await pool.execute<ResultSetHeader>(
+        `UPDATE mcp_oauth_tokens
+         SET revoked_at = NOW()
+         WHERE id = ? AND admin_id = ? AND revoked_at IS NULL`,
+        [id, user.id],
+      );
+      if (!result.affectedRows) throw new HttpError(404, "errors.notFound");
+      res.json({ ok: true });
+    }),
+  );
+
+  app.get(
+    "/api/admin/mcp/tools",
+    requireSuperAdminMcp,
+    (_req, res) => {
+      res.json({
+        tools: MCP_TOOLS.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+          readOnly: t.readOnly,
+          requiresConfirm: !t.readOnly,
+        })),
+      });
+    },
+  );
+
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "errors.notFound" });
   });
@@ -6995,4 +9237,15 @@ export const __test = {
   detectImageType,
   mapAnchorLoanStatus,
   __testSetAnchorHttp,
+  sanitizeMcpJsonRpcForClaude,
+  mcpToolsListForClaude,
+  parseBearerAuthorization,
+  mcpRedirectUriAllowed,
+  mcpRedirectUriOkForRegistration,
+  mcpOauthReturnPathAllowed,
+  verifyPkceS256,
+  mcpWriteConfirmed,
+  siteOrigin,
+  mcpResourceUrl,
+  MCP_SCOPE,
 };

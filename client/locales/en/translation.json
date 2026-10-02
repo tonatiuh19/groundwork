@@ -1053,5 +1053,35 @@
   "leadMode": {
     "event": "Event RSVP",
     "standard": "Standard"
+  },
+  "adminMcp": {
+    "consentTitle": "Connect Claude to Groundwork",
+    "consentSubtitle": "An AI assistant wants access to Groundwork admin tools as you (reads + guided writes you approve).",
+    "consentAs": "Signed in as {{name}} ({{email}}).",
+    "you": "You",
+    "permLeads": "Search and view leads",
+    "permProjects": "Search projects, milestones, and ADU plans",
+    "permPeople": "Search clients, affiliates, contractors, and staff",
+    "permFinance": "View draws and affiliate commissions",
+    "permEvents": "View marketing events",
+    "permWrites": "Convert leads, update milestones, approve affiliates, invite portals, update draws/commissions, and create staff (only after you confirm in chat)",
+    "consentNote": "Writes require confirm=true + CONFIRM. Dry-runs never write. Revoke anytime in Profile → Connected AI apps. Super admin only.",
+    "allow": "Allow access",
+    "deny": "Deny",
+    "invalidRequest": "This connect link is missing required OAuth parameters.",
+    "consentFailed": "Could not complete consent. Try again.",
+    "loadFailed": "Could not load connected apps.",
+    "revokeFailed": "Could not revoke connection.",
+    "loginRequiredTitle": "Sign in required",
+    "loginRequiredBody": "Sign in to Groundwork Admin as a super admin, then approve AI access.",
+    "goLogin": "Go to login",
+    "superOnlyTitle": "Super admin required",
+    "superOnlyBody": "Remote MCP is limited to super_admin accounts.",
+    "connectionsTitle": "Connected AI apps",
+    "connectionsSubtitle": "Claude and Cursor connections that can use Groundwork admin tools as you. Revoke anytime.",
+    "connectionsEmpty": "No connected apps yet.",
+    "revoke": "Revoke",
+    "lastUsed": "Last used {{when}}",
+    "neverUsed": "Not used yet"
   }
 }

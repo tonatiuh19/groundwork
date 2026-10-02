@@ -10,6 +10,7 @@ import clientPortalReducer from "./slices/clientPortalSlice";
 import onboardingReducer from "./slices/onboardingSlice";
 import enrollReducer from "./slices/enrollSlice";
 import publicEventsReducer from "./slices/publicEventsSlice";
+import adminMcpReducer from "./slices/adminMcpSlice";
 
 export const store = configureStore({
   // Photo uploads pass a `File` through a thunk arg (never stored in state).
@@ -29,6 +30,7 @@ export const store = configureStore({
     onboarding: onboardingReducer,
     enroll: enrollReducer,
     publicEvents: publicEventsReducer,
+    adminMcp: adminMcpReducer,
   },
 });
 

@@ -1754,6 +1754,158 @@ paths:
         "404": { description: "errors.notFound" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/mcp:
+    post:
+      summary: "Remote MCP Streamable HTTP (super_admin OAuth Bearer or gw_admin_sid)"
+      tags: [mcp]
+      description: |
+        Claude/Cursor MCP endpoint. Auth: Bearer mcp_oauth_tokens access token
+        or admin session cookie. Must be role=super_admin and status=active.
+        Writes require confirm=true + confirm_phrase=CONFIRM (dry-run otherwise).
+      responses:
+        "200": { description: "JSON-RPC MCP response" }
+        "401": { description: "Unauthorized (WWW-Authenticate challenge)" }
+        "405": { description: "GET not allowed — use POST" }
+    get:
+      summary: "MCP GET rejected (use POST)"
+      tags: [mcp]
+      responses:
+        "405": { description: "use_post" }
+    options:
+      summary: "CORS preflight"
+      tags: [mcp]
+      responses:
+        "204": { description: "No content" }
+  /api/mcp/:
+    post:
+      summary: "Remote MCP Streamable HTTP (trailing slash alias)"
+      tags: [mcp]
+      responses:
+        "200": { description: "JSON-RPC MCP response" }
+        "401": { description: "Unauthorized" }
+  /api/mcp/oauth/register:
+    post:
+      summary: "OAuth dynamic client registration (Claude/Cursor)"
+      tags: [mcp]
+      responses:
+        "201": { description: "Registered public client" }
+        "400": { description: "invalid_redirect_uri" }
+  /api/mcp/oauth/authorize:
+    get:
+      summary: "OAuth authorize — redirects to /admin/mcp-consent"
+      tags: [mcp]
+      responses:
+        "302": { description: "Redirect to consent UI" }
+        "400": { description: "invalid_request" }
+  /api/mcp/oauth/token:
+    post:
+      summary: "OAuth token (authorization_code + PKCE S256, refresh_token)"
+      tags: [mcp]
+      responses:
+        "200": { description: "access_token + refresh_token" }
+        "400": { description: "invalid_grant / invalid_request" }
+  /api/mcp/oauth/revoke:
+    post:
+      summary: "OAuth token revocation"
+      tags: [mcp]
+      responses:
+        "200": { description: "revoked" }
+  /api/admin/mcp/oauth/approve:
+    post:
+      summary: "Approve or deny MCP OAuth consent (super_admin cookie)"
+      tags: [mcp]
+      description: "Requires gw_admin_sid and role=super_admin."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, redirect_uri, code_challenge, approve]
+              properties:
+                client_id: { type: string }
+                redirect_uri: { type: string }
+                code_challenge: { type: string }
+                code_challenge_method: { type: string }
+                scope: { type: string }
+                resource: { type: string }
+                state: { type: string }
+                approve: { type: boolean }
+      responses:
+        "200": { description: "{ redirect_to }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Not super_admin" }
+  /api/admin/me/mcp-connections:
+    get:
+      summary: "List MCP OAuth connections for the signed-in super_admin"
+      tags: [mcp]
+      responses:
+        "200": { description: "{ connections[] } — includes expires_at (access) and refresh_expires_at" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Not super_admin" }
+  /api/admin/me/mcp-connections/{id}:
+    delete:
+      summary: "Revoke an MCP OAuth connection"
+      tags: [mcp]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ok" }
+        "404": { description: "Not found" }
+  /api/admin/mcp/tools:
+    get:
+      summary: "List Groundwork MCP tools (super_admin)"
+      tags: [mcp]
+      responses:
+        "200": { description: "{ tools[] }" }
+  /.well-known/oauth-protected-resource:
+    get:
+      summary: "OAuth protected resource metadata (RFC 9728)"
+      tags: [mcp]
+      responses:
+        "200": { description: "PRM JSON" }
+  /.well-known/oauth-protected-resource/api/mcp:
+    get:
+      summary: "OAuth protected resource metadata (path-scoped)"
+      tags: [mcp]
+      responses:
+        "200": { description: "PRM JSON" }
+  /.well-known/oauth-authorization-server:
+    get:
+      summary: "OAuth authorization server metadata"
+      tags: [mcp]
+      responses:
+        "200": { description: "AS metadata JSON" }
+  /.well-known/oauth-authorization-server/api/mcp:
+    get:
+      summary: "OAuth authorization server metadata (path-scoped)"
+      tags: [mcp]
+      responses:
+        "200": { description: "AS metadata JSON" }
+  /.well-known/openid-configuration:
+    get:
+      summary: "OpenID discovery alias (same payload as AS metadata)"
+      tags: [mcp]
+      responses:
+        "200": { description: "AS metadata JSON" }
+  /.well-known/openid-configuration/api/mcp:
+    get:
+      summary: "OpenID discovery alias (path-scoped)"
+      tags: [mcp]
+      responses:
+        "200": { description: "AS metadata JSON" }
+  /api/mcp/.well-known/oauth-authorization-server:
+    get:
+      summary: "AS metadata under MCP resource path"
+      tags: [mcp]
+      responses:
+        "200": { description: "AS metadata JSON" }
+  /api/mcp/.well-known/oauth-protected-resource:
+    get:
+      summary: "PRM under MCP resource path"
+      tags: [mcp]
+      responses:
+        "200": { description: "PRM JSON" }
 components:
   schemas:
     PublicEventView:
@@ -1780,3 +1932,4 @@ components:
         body: { type: string, nullable: true }
         location_label: { type: string, nullable: true }
         cta: { type: string, nullable: true }
+

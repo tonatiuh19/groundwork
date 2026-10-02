@@ -48,6 +48,7 @@ import AdminPlans from "./pages/admin/Plans";
 import AdminStaff from "./pages/admin/Staff";
 import AdminSettings from "./pages/admin/Settings";
 import AdminProfile from "./pages/admin/Profile";
+import AdminMcpConsent from "./pages/admin/McpConsent";
 import AffiliateLayout from "./pages/affiliate/AffiliateLayout";
 import AffiliateDashboard from "./pages/affiliate/Dashboard";
 import AffiliateClients from "./pages/affiliate/Clients";
@@ -105,6 +106,7 @@ export default function App() {
             <Route path="/r/:code" element={<ReferralLanding />} />
 
             <Route path="/admin/login" element={<AdminLogin />} />
+            <Route path="/admin/mcp-consent" element={<AdminMcpConsent />} />
             <Route path="/affiliate/login" element={<AffiliateLogin />} />
             <Route path="/affiliate/signup" element={<AffiliateSignup />} />
             <Route path="/contractor/login" element={<ContractorLogin />} />

@@ -272,7 +272,7 @@ function documentedRoutes(): Set<string> {
       current = p[1];
       continue;
     }
-    const m = /^ {4}(get|post|put|patch|delete):\s*$/.exec(line);
+    const m = /^ {4}(get|post|put|patch|delete|options):\s*$/.exec(line);
     if (m && current) out.add(`${m[1]} ${current}`);
   }
   return out;

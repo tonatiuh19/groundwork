@@ -214,3 +214,13 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 
 - Header logo ~52px height; footer ~56px
 - Transparent PNG as provided — no black rounded plate behind the wordmark
+
+## Remote MCP (super_admin · Claude / Cursor)
+
+- **Endpoint:** `https://www.groundworkcapitalgroup.com/api/mcp` (Streamable HTTP). Issuer forces **www** (apex 308s break OAuth discovery).
+- **Who:** `admins.role = super_admin` only. Cookie (`gw_admin_sid`) or Bearer OAuth token.
+- **Consent:** `/admin/mcp-consent` — mobile-friendly card outside the admin shell; login via `?return=` then Allow/Deny. No in-app Ask AI panel yet.
+- **Connections:** Admin → Profile → **Connected AI apps** (revoke). Scope `groundwork.admin.read`. Access tokens ~1h; refresh tokens expire after **30 days** (rotated on refresh).
+- **Writes:** tools dry-run first; execute only with **both** `confirm=true` **and** `confirm_phrase=CONFIRM` (phrase alone never writes). `create_staff` cannot mint `super_admin` (use Admin → Staff).
+- **Docs:** `mcp/admin-ask/README.md`. Cursor prod URL in `.cursor/mcp.json` (local override in user config — do not commit localhost).
+

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Formik, Form, Field } from "formik";
 import * as Yup from "yup";
 import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
@@ -50,10 +50,27 @@ const COPY: Record<
   },
 };
 
+/** Resolve ?return= to a same-portal relative path (blocks open redirects). */
+function resolveReturnPath(
+  actor: PortalActor,
+  homePath: string,
+  raw: string | null,
+): string {
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return homePath;
+  try {
+    const u = new URL(raw, "https://www.groundworkcapitalgroup.com");
+    if (!u.pathname.startsWith(`/${actor}`)) return homePath;
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return homePath;
+  }
+}
+
 export default function PortalLoginPage({ actor, homePath }: Props) {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { requesting, verifying, error, otpEmail, user } =
     useAppSelector((s) => s.portalAuth[actor]);
   const [step, setStep] = useState<"email" | "code">(
@@ -65,6 +82,11 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
   const meta = COPY[actor];
   const isStatusLegend =
     error === "errors.authPending" || error === "errors.authInvited";
+  const afterLoginPath = resolveReturnPath(
+    actor,
+    homePath,
+    searchParams.get("return"),
+  );
 
   useEffect(() => {
     dispatch(clearPortalAuthError(actor));
@@ -85,9 +107,9 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
 
   useEffect(() => {
     if (!probingSession && user) {
-      navigate(homePath, { replace: true });
+      navigate(afterLoginPath, { replace: true });
     }
-  }, [probingSession, user, homePath, navigate]);
+  }, [probingSession, user, afterLoginPath, navigate]);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -101,10 +123,10 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
         verifyPortalOtp({ actor, email, code: code.trim() }),
       );
       if (verifyPortalOtp.fulfilled.match(result)) {
-        navigate(homePath);
+        navigate(afterLoginPath);
       }
     },
-    [actor, dispatch, email, homePath, navigate],
+    [actor, dispatch, email, afterLoginPath, navigate],
   );
 
   if (probingSession || user) {

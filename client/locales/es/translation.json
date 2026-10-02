@@ -1053,5 +1053,35 @@
   "leadMode": {
     "event": "Registro a evento",
     "standard": "Estándar"
+  },
+  "adminMcp": {
+    "consentTitle": "Conectar Claude a Groundwork",
+    "consentSubtitle": "Un asistente de IA quiere acceso a las herramientas de administración de Groundwork como tú (lecturas + escrituras guiadas que apruebes).",
+    "consentAs": "Sesión iniciada como {{name}} ({{email}}).",
+    "you": "Tú",
+    "permLeads": "Buscar y ver leads",
+    "permProjects": "Buscar proyectos, hitos y planos ADU",
+    "permPeople": "Buscar clientes, afiliados, contratistas y personal",
+    "permFinance": "Ver desembolsos y comisiones de afiliados",
+    "permEvents": "Ver eventos de marketing",
+    "permWrites": "Convertir leads, actualizar hitos, aprobar afiliados, invitar portales, actualizar desembolsos/comisiones y crear personal (solo después de confirmar en el chat)",
+    "consentNote": "Las escrituras requieren confirm=true + CONFIRM. Las pruebas en seco no escriben. Revoca cuando quieras en Perfil → Apps de IA conectadas. Solo super admin.",
+    "allow": "Permitir acceso",
+    "deny": "Denegar",
+    "invalidRequest": "Este enlace de conexión no tiene los parámetros OAuth requeridos.",
+    "consentFailed": "No se pudo completar el consentimiento. Inténtalo de nuevo.",
+    "loadFailed": "No se pudieron cargar las apps conectadas.",
+    "revokeFailed": "No se pudo revocar la conexión.",
+    "loginRequiredTitle": "Inicio de sesión requerido",
+    "loginRequiredBody": "Inicia sesión en Groundwork Admin como super admin y luego aprueba el acceso de IA.",
+    "goLogin": "Ir al inicio de sesión",
+    "superOnlyTitle": "Se requiere super admin",
+    "superOnlyBody": "El MCP remoto está limitado a cuentas super_admin.",
+    "connectionsTitle": "Apps de IA conectadas",
+    "connectionsSubtitle": "Conexiones de Claude y Cursor que pueden usar herramientas de administración de Groundwork como tú. Revoca cuando quieras.",
+    "connectionsEmpty": "Aún no hay apps conectadas.",
+    "revoke": "Revocar",
+    "lastUsed": "Último uso {{when}}",
+    "neverUsed": "Aún no se ha usado"
   }
 }
