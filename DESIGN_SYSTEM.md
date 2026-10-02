@@ -178,7 +178,12 @@ Affiliate lookup (`GET /api/public/affiliates/by-code/:code`) is rate limited pe
 
 ## Composition
 
-Editorial landing (`/`): hero + benefit grid + ADU definition + dark why-ADU comparison cards + process + risks (copy + scaffolding renovation photo) + market numbers + ADU designs gallery (3 exterior viz + specialist CTA) + partner teaser + financing explainer + interactive ADU floor-plan options (tabbed card, event-section language) + event band (when live) + lead form (event mode) + credit-report CTA.
+Editorial landing (`/`): hero + benefit grid + ADU definition + dark why-ADU comparison cards + process + risks (copy + scaffolding renovation photo) + market numbers + ADU designs gallery (3 exterior viz + specialist CTA) + partner teaser + financing explainer + interactive ADU floor-plan options (tabbed card, event-section language; click plan → full-viewport lightbox) + event band (when live) + lead form (event mode) + credit-report CTA.
+
+### ADU floor-plan options (`#adu-options`)
+
+- Assets: `/public/adu/plan-1.png` (445 sf · 1bd/1ba), `plan-2.png` (830 sf · 2-story 2bd/2ba), `plan-3.png` (474 sf · 2bd/1ba).
+- Card image is a button with “View larger”; opens `ImageLightbox` (Escape / backdrop / close). Mobile: lightbox stage scrolls; no document horizontal scroll.
 
 Interior routes share home band language:
 - `/about` — interior hero → benefit steps → opportunity who-band → statement mission → financing why-list + CTA

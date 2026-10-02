@@ -2018,7 +2018,25 @@ label {
   border: 1px solid #ebe3d4;
   overflow: hidden;
 }
-.adu-option-figure img {
+.adu-option-zoom {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #fff;
+  cursor: zoom-in;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.adu-option-zoom:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.adu-option-figure img,
+.adu-option-zoom img {
   display: block;
   width: 100%;
   height: auto;
@@ -2026,6 +2044,22 @@ label {
   object-fit: contain;
   object-position: center;
   animation: groundwork-image-in 500ms ease-out both;
+}
+.adu-option-zoom-hint {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(14, 42, 74, 0.88);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  pointer-events: none;
 }
 .adu-option-card-meta {
   margin-top: 1rem;
@@ -2046,6 +2080,87 @@ label {
   width: 100%;
   margin-top: 1.15rem;
   justify-content: center;
+}
+
+/* Floor-plan lightbox (public) */
+.image-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(0.75rem, env(safe-area-inset-top))
+    max(0.75rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom))
+    max(0.75rem, env(safe-area-inset-left));
+  background: rgba(14, 42, 74, 0.72);
+  backdrop-filter: blur(4px);
+}
+.image-lightbox {
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, 100%);
+  max-height: min(92vh, 100%);
+  background: #fff;
+  border-radius: 0.85rem;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  min-width: 0;
+}
+.image-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid rgba(14, 42, 74, 0.08);
+  background: #faf7f1;
+}
+.image-lightbox-title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+.image-lightbox-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(14, 42, 74, 0.08);
+  color: var(--ink);
+  cursor: pointer;
+}
+.image-lightbox-close:hover {
+  background: rgba(14, 42, 74, 0.14);
+}
+.image-lightbox-close:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.image-lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.75rem;
+  background: #fff;
+}
+.image-lightbox-stage img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: none;
+  margin: 0 auto;
 }
 
 .designs-section {

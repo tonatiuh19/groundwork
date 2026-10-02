@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Expand } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import ImageLightbox from "@/components/ImageLightbox";
 
 const PLAN_OPTIONS = [1, 2, 3] as const;
 
@@ -10,6 +11,10 @@ export default function AduOptionsSection() {
   const { t } = useTranslation();
   const [activePlan, setActivePlan] =
     useState<(typeof PLAN_OPTIONS)[number]>(1);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+
+  const planSrc = `/adu/plan-${activePlan}.png`;
+  const planAlt = t(`options.plan${activePlan}Alt`);
 
   return (
     <section
@@ -47,7 +52,10 @@ export default function AduOptionsSection() {
                     ? "adu-option-tab is-active"
                     : "adu-option-tab"
                 }
-                onClick={() => setActivePlan(n)}
+                onClick={() => {
+                  setActivePlan(n);
+                  setLightboxOpen(false);
+                }}
               >
                 <span className="adu-option-tab-num">0{n}</span>
                 <span className="adu-option-tab-label">
@@ -69,12 +77,24 @@ export default function AduOptionsSection() {
             <span>{t(`options.plan${activePlan}Kicker`)}</span>
           </div>
           <figure className="adu-option-figure">
-            <img
-              key={activePlan}
-              src={`/adu/plan-${activePlan}.png`}
-              alt={t(`options.plan${activePlan}Alt`)}
-              loading="lazy"
-            />
+            <button
+              type="button"
+              className="adu-option-zoom"
+              onClick={() => setLightboxOpen(true)}
+              aria-label={t("options.openLightbox", {
+                plan: t(`options.plan${activePlan}Title`),
+              })}
+            >
+              <img
+                key={activePlan}
+                src={planSrc}
+                alt={planAlt}
+                loading="lazy"
+              />
+              <span className="adu-option-zoom-hint">
+                <Expand size={15} aria-hidden /> {t("options.viewLarger")}
+              </span>
+            </button>
           </figure>
           <div className="adu-option-card-meta">
             <strong>{t(`options.plan${activePlan}Title`)}</strong>
@@ -85,6 +105,13 @@ export default function AduOptionsSection() {
           </Link>
         </article>
       </div>
+
+      <ImageLightbox
+        open={lightboxOpen}
+        src={planSrc}
+        alt={planAlt}
+        onClose={() => setLightboxOpen(false)}
+      />
     </section>
   );
 }
