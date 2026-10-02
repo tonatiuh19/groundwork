@@ -1563,6 +1563,10 @@ label {
   cursor: pointer;
   font: inherit;
 }
+.gcr-optional {
+  border-top: 1px solid rgba(14, 42, 74, 0.08);
+  padding-top: 2.5rem;
+}
 @media (min-width: 640px) {
   .gcr-card {
     padding: 2rem;

@@ -202,15 +202,13 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 
 ## Get Credit Report
 
-- Route: `/get-credit-report` (unlisted / noindex)
-- API: `POST /api/public/get-credit-report-lead`
-- Partner URL (same as OFG): MyFreeScoreNow free snapshot
-- Short path: `/go/free-score` → 302 to MFSN
-- Soft-pull consent checkbox required, **checked by default** (home form too)
-- Home “Check your free credit report” CTAs → `/get-credit-report`
-- **Layout:** same interior language as public event pages (`SiteHeader` / `SiteFooter`, `event-detail` hero + `event-body` educational copy adapted from the homeowner ADU financing session messaging). Hero CTA scrolls to `#get-report`.
-- **End of page:** form-section capture → email MyFreeScoreNow link; success state offers **Open free report now**.
-- Mobile: fluid section shell; form card full-width; no document horizontal scroll.
+- Route: `/get-credit-report` (unlisted / noindex) — **Fontana event registration landing** (slug `fontana-oct-6`), same hero/body/RSVP as `/events/fontana-oct-6`.
+- Primary CTA: event RSVP (`LeadForm` with `mode=event`). Post-RSVP “free credit report” scrolls to `#free-report` on the same page (not a circular link).
+- Optional end section: soft-pull capture (`POST /api/public/get-credit-report-lead`) → MyFreeScoreNow link. Clearly labeled optional — not required to attend.
+- Partner URL (same as OFG): MyFreeScoreNow free snapshot; short path `/go/free-score` → 302.
+- Soft-pull consent on the optional form only (checked by default). Event RSVP never asks for soft-pull.
+- Home marketing CTAs that still say “Check your free credit report” may land here; the page leads with Fontana RSVP first.
+- Mobile: fluid event + form sections; no document horizontal scroll.
 
 ## Logo sizes
 

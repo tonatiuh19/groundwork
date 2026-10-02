@@ -3,25 +3,40 @@ import * as Yup from "yup";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  CalendarDays,
   CheckCircle2,
+  Clock,
   ExternalLink,
+  Loader2,
   Mail,
+  MapPin,
   ShieldCheck,
+  Video,
 } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { resetLeadForm } from "@/store/slices/leadSlice";
+import {
+  clearEventDetail,
+  fetchEventBySlug,
+} from "@/store/slices/publicEventsSlice";
 import {
   clearGetCreditReportLead,
   submitGetCreditReportLead,
 } from "@/store/slices/getCreditReportSlice";
 import { GET_CREDIT_REPORT_URLS } from "@/lib/getCreditReportLinks";
+import LeadForm from "@/components/LeadForm";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
-import PageMeta, { breadcrumbSchema, webPageSchema } from "@/components/PageMeta";
+import PageMeta, { breadcrumbSchema } from "@/components/PageMeta";
+import { eventDayOfMonth, useFormatters } from "@/lib/format";
 import { translateApiError } from "@/lib/api";
+
+/** Campaign landing: Fontana RSVP lives at this URL (optional free credit report below). */
+const FONTANA_EVENT_SLUG = "fontana-oct-6";
 
 function makeGcrSchema(t: TFunction) {
   return Yup.object({
@@ -42,44 +57,115 @@ function makeGcrSchema(t: TFunction) {
 }
 
 /**
- * Educational landing (same voice as public event pages) ending in the free
- * soft-pull credit report capture + MyFreeScoreNow handoff.
+ * `/get-credit-report` — Fontana event registration (same content/RSVP as
+ * `/events/fontana-oct-6`) plus an optional free soft-pull credit report at the end.
  */
 export default function GetCreditReport() {
   const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
-  const { submitting, error, result } = useAppSelector((s) => s.gcr);
-  const mfsnUrl = result?.mfsn_url || GET_CREDIT_REPORT_URLS.free;
-  const schema = useMemo(() => makeGcrSchema(t), [t]);
-  const bodyParagraphs = [
-    t("getCreditReport.body1"),
-    t("getCreditReport.body2"),
-    t("getCreditReport.body3"),
-  ].filter(Boolean);
+  const fmt = useFormatters();
+  const lang = i18n.language?.startsWith("es") ? "es" : "en";
+  const { slug: loadedSlug, event, loading, error } = useAppSelector(
+    (s) => s.publicEvents.detail,
+  );
+  const {
+    submitting: gcrSubmitting,
+    error: gcrError,
+    result: gcrResult,
+  } = useAppSelector((s) => s.gcr);
+  const mfsnUrl = gcrResult?.mfsn_url || GET_CREDIT_REPORT_URLS.free;
+  const gcrSchema = useMemo(() => makeGcrSchema(t), [t]);
+
+  useEffect(() => {
+    void dispatch(fetchEventBySlug({ slug: FONTANA_EVENT_SLUG, lang }));
+  }, [dispatch, lang]);
+
+  useEffect(() => {
+    dispatch(resetLeadForm());
+    return () => {
+      dispatch(clearEventDetail());
+      dispatch(clearGetCreditReportLead());
+    };
+  }, [dispatch]);
+
+  const current =
+    event && loadedSlug === FONTANA_EVENT_SLUG ? event : null;
+  const missing = !current && !loading && error !== null;
+
+  if (missing) {
+    return (
+      <div className="groundwork-page">
+        <PageMeta
+          title={t("event.notFoundTitle")}
+          description={t("event.notFoundBody")}
+          canonical="/get-credit-report"
+          noIndex
+        />
+        <SiteHeader />
+        <main className="interior-main">
+          <section className="interior-hero section-shell event-empty">
+            <p className="eyebrow">
+              <span className="eyebrow-line" /> {t("event.eyebrow")}
+            </p>
+            <h1>{t("event.notFoundTitle")}</h1>
+            <p className="section-lead">
+              {error && error !== "errors.eventNotFound"
+                ? t("errors.server")
+                : t("event.notFoundBody")}
+            </p>
+            <p className="event-empty-actions">
+              <Link className="button button-gold" to="/">
+                {t("notFound.home")} <ArrowRight size={16} />
+              </Link>
+            </p>
+          </section>
+        </main>
+        <SiteFooter />
+      </div>
+    );
+  }
+
+  if (!current) {
+    return (
+      <div className="groundwork-page">
+        <PageMeta
+          title={t("getCreditReport.metaTitle")}
+          description={t("getCreditReport.metaDescription")}
+          canonical="/get-credit-report"
+          noIndex
+        />
+        <SiteHeader />
+        <main className="interior-main">
+          <p className="pf-loading event-loading">
+            <Loader2 className="spin" size={16} /> {t("pf.loading")}
+          </p>
+        </main>
+      </div>
+    );
+  }
+
+  const paragraphs = (current.body || "")
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const place = current.location_label || current.city;
 
   return (
     <div className="groundwork-page gcr-page">
       <PageMeta
-        title={t("getCreditReport.metaTitle")}
-        description={t("getCreditReport.metaDescription")}
+        title={current.title}
+        description={current.summary || t("getCreditReport.metaDescription")}
         canonical="/get-credit-report"
+        image={current.image_url || undefined}
+        ogType="website"
         noIndex
         jsonLd={[
-          webPageSchema({
-            name: t("getCreditReport.metaTitle"),
-            description: t("getCreditReport.metaDescription"),
-            path: "/get-credit-report",
-          }),
           breadcrumbSchema([
             { name: t("brand.name"), path: "/" },
-            {
-              name: t("getCreditReport.metaTitle"),
-              path: "/get-credit-report",
-            },
+            { name: current.title, path: "/get-credit-report" },
           ]),
         ]}
       />
-
       <SiteHeader />
 
       <main className="interior-main event-page">
@@ -89,65 +175,149 @@ export default function GetCreditReport() {
               <ArrowLeft size={14} /> {t("getCreditReport.backHome")}
             </Link>
             <p className="eyebrow">
-              <span className="eyebrow-line" /> {t("getCreditReport.eyebrow")}
+              <span className="eyebrow-line" /> {t("event.eyebrow")}
             </p>
-            <h1>{t("getCreditReport.heading")}</h1>
-            <p className="section-lead">{t("getCreditReport.subheading")}</p>
+            <h1>{current.title}</h1>
+            {current.summary ? (
+              <p className="section-lead">{current.summary}</p>
+            ) : null}
 
-            <div className="trust-line gcr-trust">
-              <ShieldCheck size={17} /> {t("getCreditReport.trust")}
+            <div className="event-meta event-meta--wrap">
+              <div>
+                <span>
+                  <CalendarDays size={12} /> {t("event.date")}
+                </span>
+                <strong>{fmt.eventDateTime(current.starts_at)}</strong>
+              </div>
+              <div>
+                <span>
+                  <MapPin size={12} /> {t("event.location")}
+                </span>
+                <strong>{place}</strong>
+                {current.venue_name || current.venue_address ? (
+                  <em>
+                    {[current.venue_name, current.venue_address]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </em>
+                ) : null}
+              </div>
+              {current.zoom_url ? (
+                <div>
+                  <span>
+                    <Video size={12} /> {t("event.online")}
+                  </span>
+                  <a
+                    className="text-link"
+                    href={current.zoom_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {t("event.joinOnline")} <ArrowRight size={13} />
+                  </a>
+                </div>
+              ) : null}
+              {current.spots_remaining != null ? (
+                <div>
+                  <span>
+                    <Clock size={12} /> {t("event.spots")}
+                  </span>
+                  <strong>
+                    {current.spots_remaining === 0 && current.waitlist_enabled
+                      ? t("event.waitlistOpen")
+                      : t("event.spotsLeft", {
+                          count: current.spots_remaining,
+                        })}
+                  </strong>
+                </div>
+              ) : null}
             </div>
 
-            {!result ? (
+            {current.registration_open ? (
               <a
                 className="button button-gold event-detail-cta"
-                href="#get-report"
+                href="#register"
               >
-                {t("getCreditReport.heroCta")} <ArrowRight size={16} />
+                {current.cta || t("event.register")} <ArrowRight size={16} />
               </a>
-            ) : null}
+            ) : (
+              <p className="event-closed event-closed--inline" role="status">
+                <Clock size={18} /> {t("event.registrationClosed")}
+              </p>
+            )}
           </div>
 
           <aside className="event-detail-side">
-            <div className="event-card gcr-side-card">
-              <div className="event-card-top">
-                <span className="calendar-mark gcr-side-mark" aria-hidden>
-                  <ShieldCheck size={22} />
-                </span>
-                <span>
-                  {t("getCreditReport.cardLine1")}
-                  <br />
-                  {t("getCreditReport.cardLine2")}
-                </span>
+            {current.image_url ? (
+              <img
+                className="event-detail-image"
+                src={current.image_url}
+                alt={current.title}
+              />
+            ) : (
+              <div className="event-card">
+                <div className="event-card-top">
+                  <span className="calendar-mark">
+                    {eventDayOfMonth(current.starts_at)}
+                  </span>
+                  <span>
+                    {t("event.cardLine1")}
+                    <br />
+                    {t("event.cardLine2")}
+                  </span>
+                </div>
+                <p className="event-card-place">{place}</p>
               </div>
-              <p className="event-card-place">{t("getCreditReport.cardPlace")}</p>
-            </div>
+            )}
           </aside>
         </section>
 
-        {Array.isArray(bodyParagraphs) && bodyParagraphs.length ? (
-          <section className="event-body section-shell" aria-label={t("getCreditReport.bodyAria")}>
-            {bodyParagraphs.map((p, i) => (
+        {paragraphs.length ? (
+          <section className="event-body section-shell">
+            {paragraphs.map((p, i) => (
               <p key={i}>{p}</p>
             ))}
           </section>
         ) : null}
 
-        <section className="form-section section-shell" id="get-report">
+        <section className="form-section section-shell" id="register">
           <div className="form-intro">
             <p className="eyebrow">
-              <span className="eyebrow-line" /> {t("getCreditReport.formEyebrow")}
+              <span className="eyebrow-line" /> {t("form.eyebrow")}
             </p>
             <h2>
-              {t("getCreditReport.formTitleBefore")}
+              {t("form.titleEventBefore")}
               <br />
-              <em>{t("getCreditReport.formTitleEm")}</em>
+              <em>{t("form.titleEventEm", { city: current.city })}</em>
             </h2>
-            <p>{t("getCreditReport.formHint")}</p>
+            <p>{t("form.intro")}</p>
+          </div>
+          <div className="lead-form-wrap">
+            <LeadForm event={current} creditNextHref="#free-report" />
+          </div>
+        </section>
+
+        <section
+          className="form-section section-shell gcr-optional"
+          id="free-report"
+        >
+          <div className="form-intro">
+            <p className="eyebrow">
+              <span className="eyebrow-line" /> {t("getCreditReport.optionalEyebrow")}
+            </p>
+            <h2>
+              {t("getCreditReport.optionalTitleBefore")}
+              <br />
+              <em>{t("getCreditReport.optionalTitleEm")}</em>
+            </h2>
+            <p>{t("getCreditReport.optionalHint")}</p>
+            <div className="trust-line gcr-trust">
+              <ShieldCheck size={17} /> {t("getCreditReport.trust")}
+            </div>
           </div>
 
           <div className="lead-form-wrap gcr-card-wrap">
-            {result ? (
+            {gcrResult ? (
               <div className="gcr-card gcr-success">
                 <div className="gcr-success-head">
                   <CheckCircle2 size={28} />
@@ -183,13 +353,13 @@ export default function GetCreditReport() {
                   last_name: "",
                   email: "",
                   phone: "",
-                  preferred_language: (i18n.language?.startsWith("es")
-                    ? "es"
-                    : "en") as "en" | "es",
+                  preferred_language: (lang === "es" ? "es" : "en") as
+                    | "en"
+                    | "es",
                   notes: "",
                   soft_pull_consent: true,
                 }}
-                validationSchema={schema}
+                validationSchema={gcrSchema}
                 onSubmit={async (values) => {
                   await dispatch(
                     submitGetCreditReportLead({
@@ -210,9 +380,9 @@ export default function GetCreditReport() {
                     <p className="gcr-form-hint">
                       {t("getCreditReport.formCardHint")}
                     </p>
-                    {error ? (
+                    {gcrError ? (
                       <p className="form-error" role="alert">
-                        {translateApiError(t, error)}
+                        {translateApiError(t, gcrError)}
                       </p>
                     ) : null}
 
@@ -282,9 +452,9 @@ export default function GetCreditReport() {
                     <button
                       className="button button-gold form-submit"
                       type="submit"
-                      disabled={submitting}
+                      disabled={gcrSubmitting}
                     >
-                      {submitting
+                      {gcrSubmitting
                         ? t("getCreditReport.submitting")
                         : t("getCreditReport.submit")}
                     </button>

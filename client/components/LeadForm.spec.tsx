@@ -32,11 +32,14 @@ const event: PublicEventView = {
   cta: null,
 };
 
-const mount = (e: PublicEventView | null) =>
+const mount = (
+  e: PublicEventView | null,
+  opts?: { creditNextHref?: string },
+) =>
   render(
     <Provider store={store}>
       <MemoryRouter>
-        <LeadForm event={e} />
+        <LeadForm event={e} creditNextHref={opts?.creditNextHref} />
       </MemoryRouter>
     </Provider>,
   );
@@ -81,6 +84,23 @@ describe("LeadForm", () => {
       "href",
       "/get-credit-report",
     );
+  });
+
+  it("event success can deep-link to an on-page free-report hash", async () => {
+    vi.spyOn(api, "post").mockResolvedValue({
+      data: {
+        ok: true,
+        lead_id: 1,
+        message: "ok",
+        event_registration_status: "confirmed",
+        credit_cta_url: "/get-credit-report",
+      },
+    });
+    mount(event, { creditNextHref: "#free-report" });
+    await fillAndSubmit();
+    expect(
+      await screen.findByRole("link", { name: new RegExp(i18n.t("event.creditNext")) }),
+    ).toHaveAttribute("href", "#free-report");
   });
 
   it("standard mode keeps the soft-pull consent and omits event_id", async () => {

@@ -51,8 +51,16 @@ function normalizeCtaUrl(url: string): string {
 /**
  * Homepage / event-page lead form. With `event` it is an RSVP (mode=event, no
  * soft-pull consent, optional waitlist); without it, the standard soft-pull lead.
+ * `creditNextHref` overrides the post-RSVP free-report CTA (e.g. `#free-report`
+ * when this form is already on `/get-credit-report`).
  */
-export default function LeadForm({ event }: { event?: PublicEventView | null }) {
+export default function LeadForm({
+  event,
+  creditNextHref,
+}: {
+  event?: PublicEventView | null;
+  creditNextHref?: string;
+}) {
   const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
   const { submitting, submitted, error, eventRegistrationStatus, creditCtaUrl } =
@@ -63,7 +71,11 @@ export default function LeadForm({ event }: { event?: PublicEventView | null }) 
   if (submitted) {
     if (isEvent) {
       const waitlisted = eventRegistrationStatus === "waitlisted";
-      const next = normalizeCtaUrl(creditCtaUrl || "/get-credit-report");
+      const rawNext = creditNextHref || creditCtaUrl || "/get-credit-report";
+      const next = rawNext.startsWith("#")
+        ? rawNext
+        : normalizeCtaUrl(rawNext);
+      const hashOnly = next.startsWith("#");
       return (
         <div className="success-state" data-status={waitlisted ? "waitlisted" : "confirmed"}>
           <span className="success-icon">
@@ -73,14 +85,20 @@ export default function LeadForm({ event }: { event?: PublicEventView | null }) 
           <p>{waitlisted ? t("event.waitlistedBody") : t("event.confirmedBody")}</p>
           <p className="success-email-note">{t("form.successEmail")}</p>
           <p className="success-credit-hint">{t("event.creditNextHint")}</p>
-          {isInternalPath(next) ? (
+          {hashOnly || !isInternalPath(next) ? (
+            <a
+              className="button button-gold"
+              href={next}
+              {...(hashOnly
+                ? {}
+                : { target: "_blank", rel: "noreferrer" })}
+            >
+              {t("event.creditNext")} <ArrowRight size={16} />
+            </a>
+          ) : (
             <Link className="button button-gold" to={next}>
               {t("event.creditNext")} <ArrowRight size={16} />
             </Link>
-          ) : (
-            <a className="button button-gold" href={next} target="_blank" rel="noreferrer">
-              {t("event.creditNext")} <ArrowRight size={16} />
-            </a>
           )}
           <button
             className="text-link"
