@@ -95,9 +95,12 @@ export default function Contact() {
                 <MapPin size={12} aria-hidden /> {t("contact.metaAddress")}
               </span>
               <strong>
-                {SITE_ADDRESS_LINES[0]}
-                <br />
-                {SITE_ADDRESS_LINES[1]}
+                {SITE_ADDRESS_LINES.map((line, i) => (
+                  <span key={line}>
+                    {i > 0 ? <br /> : null}
+                    {line}
+                  </span>
+                ))}
               </strong>
             </div>
           </div>

@@ -3,11 +3,11 @@ export const SITE_PHONE_DISPLAY = "(949) 239-6358";
 export const SITE_PHONE_TEL = "+19492396358";
 export const SITE_EMAIL = "info@groundworkcapitalgroup.com";
 export const SITE_ADDRESS_LINES = [
-  "1234 Horizon Avenue",
-  "San Diego, CA 92121",
+  "2717 W Coast Hwy Ste C",
+  "Newport Beach, CA 92663",
 ] as const;
 export const SITE_ADDRESS_ONE_LINE =
-  "1234 Horizon Avenue, San Diego, CA 92121";
+  "2717 W Coast Hwy Ste C, Newport Beach, CA 92663";
 
 export const SITE_SOCIAL = {
   /** Live */

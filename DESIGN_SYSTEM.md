@@ -13,7 +13,7 @@ Canonical visual + product design contract. **Update this file whenever UI, bran
 - **Production domain:** `groundworkcapitalgroup.com` (`PUBLIC_APP_URL`)
 - **Support email:** `info@groundworkcapitalgroup.com` (override with `SUPPORT_EMAIL`)
 - **Support phone:** `(949) 239-6358`
-- **Office:** `1234 Horizon Avenue, San Diego, CA 92121`
+- **Office:** `2717 W Coast Hwy Ste C, Newport Beach, CA 92663`
 - **Social:** Instagram [`@groundworkcapitalgroupllc`](https://www.instagram.com/groundworkcapitalgroupllc) in the footer (Lucide icon). Facebook / TikTok URLs are reserved in `SITE_SOCIAL` but **not shown** until those profiles are public.
 
 ## Palette
