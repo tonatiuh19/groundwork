@@ -1,8 +1,23 @@
 -- Atomic draw budget counter (prevents concurrent over-draws on TiDB optimistic OC).
-ALTER TABLE `projects`
-  ADD COLUMN `draw_committed_cents` BIGINT UNSIGNED NOT NULL DEFAULT 0
-    COMMENT 'Sum of draft+submitted+approved+paid draw amounts'
-    AFTER `contractor_cost_cents`;
+-- Idempotent: skip ADD COLUMN when already present (re-runs / partially applied DBs).
+SET @db := DATABASE();
+
+SET @sql := (
+  SELECT IF(
+    EXISTS(
+      SELECT 1 FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = @db
+        AND TABLE_NAME = 'projects'
+        AND COLUMN_NAME = 'draw_committed_cents'
+    ),
+    'SELECT 1',
+    'ALTER TABLE `projects`
+       ADD COLUMN `draw_committed_cents` BIGINT UNSIGNED NOT NULL DEFAULT 0
+         COMMENT ''Sum of draft+submitted+approved+paid draw amounts''
+         AFTER `contractor_cost_cents`'
+  )
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 UPDATE `projects` p
 LEFT JOIN (

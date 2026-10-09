@@ -8,10 +8,12 @@ import {
   Home,
   LayoutTemplate,
   Loader2,
+  MailCheck,
   ShieldCheck,
   User,
   type LucideIcon,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import type { PublicAffiliateCard } from "@shared/api";
@@ -89,7 +91,7 @@ export default function EnrollWizard({
   const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
   const { plans } = useAppSelector((s) => s.affiliatePortal);
-  const { submitting, done, projectId, error } = useAppSelector((s) => s.enroll.enroll);
+  const { submitting, done, projectId, outcome, error } = useAppSelector((s) => s.enroll.enroll);
   const [step, setStep] = useState(0);
   const schema = useMemo(() => makeSchema(t, step), [t, step]);
   const showDevFill =
@@ -108,13 +110,29 @@ export default function EnrollWizard({
     return (
       <div className="enroll-layout enroll-layout--done">
         <div className="enroll-panel enroll-wizard enroll-wizard--done">
-          <CheckCircle2 size={40} className="enroll-done-icon" aria-hidden />
-          <h2>{t("enroll.doneTitle")}</h2>
-          <p>{t("enroll.doneBody")}</p>
-          {projectId ? (
-            <p className="enroll-done-id">{t("enroll.doneProject", { id: projectId })}</p>
-          ) : null}
-          <p className="enroll-done-hint">{t("enroll.doneInvite")}</p>
+          {outcome && outcome !== "created" ? (
+            <>
+              {/* Returning person: same calm success layout, never an error wall. */}
+              <MailCheck size={40} className="enroll-done-icon" aria-hidden />
+              <h2>{t(`enroll.outcome.${outcome}.title`)}</h2>
+              <p>{t(`enroll.outcome.${outcome}.body`)}</p>
+              {outcome === "exists" ? (
+                <Link className="button button-gold enroll-done-cta" to="/client/login">
+                  {t("portalAuth.signIn")}
+                </Link>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <CheckCircle2 size={40} className="enroll-done-icon" aria-hidden />
+              <h2>{t("enroll.doneTitle")}</h2>
+              <p>{t("enroll.doneBody")}</p>
+              {projectId ? (
+                <p className="enroll-done-id">{t("enroll.doneProject", { id: projectId })}</p>
+              ) : null}
+              <p className="enroll-done-hint">{t("enroll.doneInvite")}</p>
+            </>
+          )}
         </div>
       </div>
     );

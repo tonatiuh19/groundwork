@@ -3,6 +3,7 @@ import type {
   AffiliateClientRow,
   AffiliateCommissionRow,
   AffiliateOverview,
+  AffiliateTeamMember,
   PublicAduPlan,
   RegisterClientRequest,
 } from "@shared/api";
@@ -14,10 +15,18 @@ type State = {
   clients: AffiliateClientRow[];
   commissions: AffiliateCommissionRow[];
   plans: PublicAduPlan[];
+  team: AffiliateTeamMember[];
+  subClients: AffiliateClientRow[];
+  subCommissions: AffiliateCommissionRow[];
   loading: boolean;
+  teamLoading: boolean;
   error: string | null;
+  teamError: string | null;
   registering: boolean;
   registerError: string | null;
+  inviting: boolean;
+  inviteError: string | null;
+  teamMutating: boolean;
 };
 
 const initialState: State = {
@@ -25,10 +34,18 @@ const initialState: State = {
   clients: [],
   commissions: [],
   plans: [],
+  team: [],
+  subClients: [],
+  subCommissions: [],
   loading: false,
+  teamLoading: false,
   error: null,
+  teamError: null,
   registering: false,
   registerError: null,
+  inviting: false,
+  inviteError: null,
+  teamMutating: false,
 };
 
 const A = "affiliate" as const;
@@ -56,12 +73,61 @@ export const registerAffiliateClient = createApiThunk<
   (await api.post("/affiliate/clients", body)).data,
 );
 
+export const fetchAffiliateTeam = createApiThunk("affiliatePortal/team", A, async () =>
+  (await api.get<{ team: AffiliateTeamMember[] }>("/affiliate/team")).data.team,
+);
+export const inviteAffiliateSub = createApiThunk<
+  { affiliate_id: number },
+  {
+    first_name: string;
+    last_name: string;
+    email: string;
+    phone?: string;
+    company?: string;
+    preferred_language?: string;
+  }
+>("affiliatePortal/inviteSub", A, async (body) =>
+  (await api.post("/affiliate/team", body)).data,
+);
+export const resendAffiliateSubInvite = createApiThunk(
+  "affiliatePortal/resendSub",
+  A,
+  async (id: number) => (await api.post(`/affiliate/team/${id}/resend`)).data,
+);
+export const patchAffiliateSub = createApiThunk<
+  { ok: boolean },
+  { id: number; status: "active" | "inactive" }
+>("affiliatePortal/patchSub", A, async ({ id, status }) =>
+  (await api.patch(`/affiliate/team/${id}`, { status })).data,
+);
+export const fetchAffiliateSubClients = createApiThunk(
+  "affiliatePortal/subClients",
+  A,
+  async (id: number) =>
+    (await api.get<{ clients: AffiliateClientRow[] }>(`/affiliate/team/${id}/clients`)).data
+      .clients,
+);
+export const fetchAffiliateSubCommissions = createApiThunk(
+  "affiliatePortal/subCommissions",
+  A,
+  async (id: number) =>
+    (
+      await api.get<{ commissions: AffiliateCommissionRow[] }>(
+        `/affiliate/team/${id}/commissions`,
+      )
+    ).data.commissions,
+);
+
 const slice = createSlice({
   name: "affiliatePortal",
   initialState,
   reducers: {
     clearRegisterError(state) {
       state.registerError = null;
+    },
+    clearTeamError(state) {
+      state.teamError = null;
+      state.inviteError = null;
     },
   },
   extraReducers: (builder) => {
@@ -105,9 +171,60 @@ const slice = createSlice({
       .addCase(registerAffiliateClient.rejected, (s, a) => {
         s.registering = false;
         s.registerError = a.payload || "errors.server";
+      })
+      .addCase(fetchAffiliateTeam.pending, (s) => {
+        s.teamLoading = true;
+        s.teamError = null;
+      })
+      .addCase(fetchAffiliateTeam.fulfilled, (s, a) => {
+        s.teamLoading = false;
+        s.team = a.payload;
+      })
+      .addCase(fetchAffiliateTeam.rejected, (s, a) => {
+        s.teamLoading = false;
+        s.teamError = a.payload || "errors.server";
+      })
+      .addCase(inviteAffiliateSub.pending, (s) => {
+        s.inviting = true;
+        s.inviteError = null;
+      })
+      .addCase(inviteAffiliateSub.fulfilled, (s) => {
+        s.inviting = false;
+      })
+      .addCase(inviteAffiliateSub.rejected, (s, a) => {
+        s.inviting = false;
+        s.inviteError = a.payload || "errors.server";
+      })
+      .addCase(resendAffiliateSubInvite.pending, (s) => {
+        s.teamMutating = true;
+        s.teamError = null;
+      })
+      .addCase(resendAffiliateSubInvite.fulfilled, (s) => {
+        s.teamMutating = false;
+      })
+      .addCase(resendAffiliateSubInvite.rejected, (s, a) => {
+        s.teamMutating = false;
+        s.teamError = a.payload || "errors.server";
+      })
+      .addCase(patchAffiliateSub.pending, (s) => {
+        s.teamMutating = true;
+        s.teamError = null;
+      })
+      .addCase(patchAffiliateSub.fulfilled, (s) => {
+        s.teamMutating = false;
+      })
+      .addCase(patchAffiliateSub.rejected, (s, a) => {
+        s.teamMutating = false;
+        s.teamError = a.payload || "errors.server";
+      })
+      .addCase(fetchAffiliateSubClients.fulfilled, (s, a) => {
+        s.subClients = a.payload;
+      })
+      .addCase(fetchAffiliateSubCommissions.fulfilled, (s, a) => {
+        s.subCommissions = a.payload;
       });
   },
 });
 
-export const { clearRegisterError } = slice.actions;
+export const { clearRegisterError, clearTeamError } = slice.actions;
 export default slice.reducer;

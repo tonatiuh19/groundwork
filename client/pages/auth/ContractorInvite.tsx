@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthStage from "@/components/portal/AuthStage";
@@ -11,13 +11,19 @@ export default function ContractorInvite() {
   const { t } = useTranslation();
   const { token = "" } = useParams();
   const dispatch = useAppDispatch();
-  const { preview, loading, accepting, accepted, error } = useAppSelector(
+  const navigate = useNavigate();
+  const { preview, loading, accepting, accepted, applicationPath, error } = useAppSelector(
     (s) => s.onboarding.invite,
   );
 
   useEffect(() => {
     void dispatch(fetchContractorInvite(token));
   }, [dispatch, token]);
+
+  // Accepting an invite now opens the prequalification application.
+  useEffect(() => {
+    if (accepted && applicationPath) navigate(applicationPath, { replace: true });
+  }, [accepted, applicationPath, navigate]);
 
   return (
     <AuthStage

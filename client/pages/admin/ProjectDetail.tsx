@@ -312,18 +312,29 @@ export default function AdminProjectDetail() {
             </section>
           ) : null}
 
-          {d.commission ? (
+          {(d.commissions?.length ? d.commissions : d.commission ? [d.commission] : [])
+            .length > 0 ? (
             <section className="pf-section">
               <h2 className="pf-h2">{t("admin.affiliateCommission")}</h2>
-              <div className="pf-card pf-card-top">
-                <div>
-                  <strong>{fmt.money(d.commission.amount_cents)}</strong>{" "}
-                  <StatusBadge group="commStatus" value={d.commission.status} />
-                  <p className="pf-muted">
-                    {t("aff.expectedPay")}: {fmt.date(d.commission.paid_at || d.commission.expected_pay_at)}
-                  </p>
-                </div>
-                <CommissionActions commission={d.commission} onDone={reload} />
+              <div className="pf-section-stack">
+                {(d.commissions?.length ? d.commissions : d.commission ? [d.commission] : []).map(
+                  (c) => (
+                    <div key={c.id} className="pf-card pf-card-top">
+                      <div>
+                        <strong>{fmt.money(c.amount_cents)}</strong>{" "}
+                        {c.role ? <StatusBadge group="commRole" value={c.role} /> : null}{" "}
+                        <StatusBadge group="commStatus" value={c.status} />
+                        {c.affiliate_name ? (
+                          <p className="pf-muted">{c.affiliate_name}</p>
+                        ) : null}
+                        <p className="pf-muted">
+                          {t("aff.expectedPay")}: {fmt.date(c.paid_at || c.expected_pay_at)}
+                        </p>
+                      </div>
+                      <CommissionActions commission={c} onDone={reload} />
+                    </div>
+                  ),
+                )}
               </div>
             </section>
           ) : null}

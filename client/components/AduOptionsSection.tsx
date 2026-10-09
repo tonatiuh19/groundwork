@@ -2,19 +2,23 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Expand } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import ImageLightbox from "@/components/ImageLightbox";
+import PlanDetailLightbox from "@/components/PlanDetailLightbox";
 
 const PLAN_OPTIONS = [1, 2, 3] as const;
+const ASSET_V = "20261002i";
 
-/** Interactive ADU floor-plan picker — event-section layout language. */
+/** Interactive ADU floor-plan picker — 3D card preview; detail shows 3D + CAD. */
 export default function AduOptionsSection() {
   const { t } = useTranslation();
   const [activePlan, setActivePlan] =
     useState<(typeof PLAN_OPTIONS)[number]>(1);
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
-  const planSrc = `/adu/plan-${activePlan}.png`;
-  const planAlt = t(`options.plan${activePlan}Alt`);
+  const threeDSrc = `/adu/plan-3d-${activePlan}.jpg?v=${ASSET_V}`;
+  const cadSrc = `/adu/plan-cad-${activePlan}.png?v=${ASSET_V}`;
+  const planTitle = t(`options.plan${activePlan}Title`);
+  const threeDAlt = t(`options.plan${activePlan}Alt3d`);
+  const cadAlt = t(`options.plan${activePlan}AltCad`);
 
   return (
     <section
@@ -81,23 +85,21 @@ export default function AduOptionsSection() {
               type="button"
               className="adu-option-zoom"
               onClick={() => setLightboxOpen(true)}
-              aria-label={t("options.openLightbox", {
-                plan: t(`options.plan${activePlan}Title`),
-              })}
+              aria-label={t("options.openLightbox", { plan: planTitle })}
             >
               <img
                 key={activePlan}
-                src={planSrc}
-                alt={planAlt}
+                src={threeDSrc}
+                alt={threeDAlt}
                 loading="lazy"
               />
               <span className="adu-option-zoom-hint">
-                <Expand size={15} aria-hidden /> {t("options.viewLarger")}
+                <Expand size={15} aria-hidden /> {t("options.viewMoreDetails")}
               </span>
             </button>
           </figure>
           <div className="adu-option-card-meta">
-            <strong>{t(`options.plan${activePlan}Title`)}</strong>
+            <strong>{planTitle}</strong>
             <p>{t(`options.plan${activePlan}Body`)}</p>
           </div>
           <Link className="button button-ink adu-option-cta" to="/contact">
@@ -106,10 +108,13 @@ export default function AduOptionsSection() {
         </article>
       </div>
 
-      <ImageLightbox
+      <PlanDetailLightbox
         open={lightboxOpen}
-        src={planSrc}
-        alt={planAlt}
+        title={t("options.detailTitle", { plan: planTitle })}
+        threeDSrc={threeDSrc}
+        threeDAlt={threeDAlt}
+        cadSrc={cadSrc}
+        cadAlt={cadAlt}
         onClose={() => setLightboxOpen(false)}
       />
     </section>

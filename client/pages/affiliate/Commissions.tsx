@@ -40,6 +40,12 @@ export default function AffiliateCommissions() {
         columns={[
           { key: "project", headerKey: "pf.project", render: (c) => c.project_public_id },
           { key: "client", headerKey: "pf.client", render: (c) => c.client_name },
+          {
+            key: "role",
+            headerKey: "admin.commissionRole",
+            render: (c) =>
+              c.role ? <StatusBadge group="commRole" value={c.role} /> : "—",
+          },
           { key: "sqft", headerKey: "pf.sqft", render: (c) => c.sq_ft ?? "—" },
           { key: "amount", headerKey: "pf.amount", render: (c) => <strong>{fmt.money(c.amount_cents)}</strong> },
           { key: "status", headerKey: "pf.status", render: (c) => <StatusBadge group="commStatus" value={c.status} /> },

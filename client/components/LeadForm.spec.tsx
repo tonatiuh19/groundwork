@@ -73,12 +73,23 @@ describe("LeadForm", () => {
       },
     });
     mount(event);
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", { name: i18n.t("form.consent") }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: i18n.t("form.smsMarketingConsent") }),
+    ).not.toBeChecked();
     await fillAndSubmit();
     await waitFor(() => expect(post).toHaveBeenCalled());
     const body = post.mock.calls[0][1] as Record<string, unknown>;
     expect(post.mock.calls[0][0]).toBe("/public/leads");
-    expect(body).toMatchObject({ mode: "event", event_id: 7, event_city: "Fontana", soft_pull_consent: false });
+    expect(body).toMatchObject({
+      mode: "event",
+      event_id: 7,
+      event_city: "Fontana",
+      soft_pull_consent: false,
+      sms_marketing_consent: false,
+    });
     expect(await screen.findByText(i18n.t("event.waitlistedThanks"))).toBeInTheDocument();
     expect(screen.getByRole("link", { name: new RegExp(i18n.t("event.creditNext")) })).toHaveAttribute(
       "href",
@@ -106,11 +117,21 @@ describe("LeadForm", () => {
   it("standard mode keeps the soft-pull consent and omits event_id", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ok: true, lead_id: 2, message: "ok" } });
     mount(null);
-    expect(screen.getByRole("checkbox")).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: i18n.t("form.consent") }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: i18n.t("form.smsMarketingConsent") }),
+    ).not.toBeChecked();
     await fillAndSubmit();
     await waitFor(() => expect(post).toHaveBeenCalled());
     const body = post.mock.calls[0][1] as Record<string, unknown>;
-    expect(body).toMatchObject({ mode: "standard", event_id: null, soft_pull_consent: true });
+    expect(body).toMatchObject({
+      mode: "standard",
+      event_id: null,
+      soft_pull_consent: true,
+      sms_marketing_consent: false,
+    });
   });
 
   it("shows the closed message instead of the form when registration is closed", () => {

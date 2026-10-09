@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/anchor-sync",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/contractor-applications",
+      "schedule": "0 16 * * *"
     }
   ],
   "functions": {
@@ -29,7 +33,7 @@
       "dest": "/api/index.ts"
     },
     {
-      "src": "/(.*\\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot))",
+      "src": "/(.*\\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|webp|avif|mp4|webm|mov|mp3|pdf|txt|xml|webmanifest))",
       "dest": "/$1"
     },
     {

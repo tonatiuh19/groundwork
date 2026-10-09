@@ -1,0 +1,50 @@
+---
+description: Mandatory mobile responsiveness — no document horizontal scroll on any UI
+alwaysApply: true
+---
+
+# Mobile responsiveness (MANDATORY — no exceptions)
+
+Every public page, portal login/signup, admin/affiliate/contractor/client shell, form, table, modal, lightbox, wizard, and new feature **must** work on phones (~320–430px CSS px) and tablets.
+
+## Non-negotiable
+
+1. **No document-level horizontal scrolling** — `html` / `body` / `#root` / page shells stay within the viewport width. Users scroll **vertically only** at the document level.
+2. **Fit the screen** — layouts must not clip primary CTAs, labels, or inputs off-screen at ~320px+.
+3. **Contain intentional sideways scroll** — kanban boards, milestone trackers, wide tables: wrap in a local `overflow-x: auto` (or `overflow: auto`) region with `max-width: 100%` and `min-width: 0`. Never let that widen the page. Portal shell nav under 900px is an **off-canvas drawer**, not a page-widening chip strip.
+4. **Validate before finishing** — spot-check at **~320px and ~375px** (and a tablet width) after any UI change. Confirm `document.documentElement.scrollWidth <= clientWidth`.
+
+## Implementation standards
+
+- Prefer fluid widths: `%`, `minmax(0, 1fr)`, `clamp()`, `min(100%, …)`
+- Flex/grid children that shrink need `min-width: 0` (and often `max-width: 100%`)
+- Avoid fixed widths / `min-width` larger than the viewport unless inside a contained scroll wrapper
+- Do **not** use `100vw` for full-bleed layout (scrollbar can cause sideways spill) — prefer `width: 100%` / `100%`
+- Toolbars and action rows: `flex-wrap: wrap`; stack full-width buttons under ~640px when needed
+- Tables: use `.pf-table-wrap` (or equivalent) for scroll, or card/stack patterns under ~640px
+- Modals/lightboxes: `width: min(100%, …)` + safe-area padding; never wider than the viewport
+- Long emails/URLs/IDs: `overflow-wrap` / truncation inside the card — not page overflow
+- **CSS cascade:** put `@media (max-width: …)` overrides **after** base rules for the same selectors (or use mobile-first `min-width` queries)
+
+## Surfaces in scope
+
+| Surface | Notes |
+|---------|--------|
+| Marketing (`groundwork-page`) | Header, hero, forms, lightboxes, footer |
+| Portal logins / signups | Single column; no clipped fields |
+| Admin / affiliate / contractor / client shell | Under 900px: mobile top bar + off-canvas drawer (overlay + body scroll lock); desktop left rail; main `min-width: 0` |
+| Conversations / Campaigns / boards | Contained scroll regions only |
+| Shared kit (`pf-*`) | Headers, filters, tables, modals, pagers |
+
+## Anti-patterns
+
+- ❌ Shipping desktop-only grids that stay multi-column on phones
+- ❌ Absolute/fixed panels clipped or spilling past the viewport (prefer portaled + fixed positioning measured from the trigger)
+- ❌ Wide `min-width` tables/pre blocks without a scroll wrapper
+- ❌ Relying only on `overflow-x: hidden` on `body` to hide layout bugs — **fix the overflowing child**
+- ❌ “Looks fine on my laptop” without a narrow-viewport check
+
+## Docs
+
+- Keep `DESIGN_SYSTEM.md` → **Mobile responsiveness** section accurate when patterns change
+- Frontend detail also lives in `.cursor/rules/frontend.mdc` (globs `client/**`)

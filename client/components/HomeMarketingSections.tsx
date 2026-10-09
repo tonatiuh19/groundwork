@@ -11,6 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import AduDesignsStage from "@/components/AduDesignsStage";
 
 const BENEFIT_ICONS = [HandHelping, PiggyBank, Clock3, Home] as const;
 
@@ -169,29 +170,7 @@ export default function HomeMarketingSections() {
           <h2>{t("designs.title")}</h2>
           <p className="section-lead">{t("designs.lead")}</p>
         </div>
-        <div className="design-viz-grid">
-          <figure className="design-viz design-viz-a">
-            <img
-              src="/adu/design-viz-1.jpg"
-              alt={t("designs.alt1")}
-              loading="lazy"
-            />
-          </figure>
-          <figure className="design-viz design-viz-b">
-            <img
-              src="/adu/design-viz-2.jpg"
-              alt={t("designs.alt2")}
-              loading="lazy"
-            />
-          </figure>
-          <figure className="design-viz design-viz-c">
-            <img
-              src="/adu/design-viz-3.jpg"
-              alt={t("designs.alt3")}
-              loading="lazy"
-            />
-          </figure>
-        </div>
+        <AduDesignsStage />
         <div className="designs-cta-wrap">
           <Link className="button button-gold designs-cta" to="/contact">
             {t("designs.cta")} <ArrowRight size={15} />

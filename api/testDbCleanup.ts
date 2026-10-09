@@ -127,6 +127,7 @@ export async function cleanupPortalFixturesByPrefix(
     `DELETE FROM admin_notify_extra_emails WHERE LOWER(email) LIKE ?`,
     [like],
   );
+  await pool.execute(`DELETE FROM contacts WHERE LOWER(email) LIKE ?`, [like]);
   for (const table of ["clients", "affiliates", "contractors", "admins", "leads"]) {
     await pool.execute(`DELETE FROM \`${table}\` WHERE LOWER(email) LIKE ?`, [like]);
   }
@@ -137,4 +138,23 @@ export async function cleanupPortalFixturesByPrefix(
   ]);
   // Leads are gone, so test events (slug = prefix + suffix) can be removed safely.
   await cleanupMarketingEventsBySlugPrefix(pool, prefix);
+}
+
+/**
+ * Serialize tests that temporarily change global `system_settings` (shared DB).
+ * Without it, one suite can snapshot another suite's temporary values and
+ * "restore" them permanently (e.g. commission rates 999/1 leaking to prod).
+ */
+export async function withSystemSettingsLock<T>(pool: Pool, fn: () => Promise<T>): Promise<T> {
+  const conn = await pool.getConnection();
+  try {
+    const [rows] = await conn.query(`SELECT GET_LOCK('gw_test_system_settings', 120) AS ok`);
+    if (Number((rows as Array<{ ok: number }>)[0]?.ok) !== 1) {
+      throw new Error("[testDbCleanup] could not acquire system_settings test lock");
+    }
+    return await fn();
+  } finally {
+    await conn.query(`SELECT RELEASE_LOCK('gw_test_system_settings')`).catch(() => undefined);
+    conn.release();
+  }
 }

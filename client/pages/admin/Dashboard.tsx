@@ -33,8 +33,10 @@ export default function Dashboard() {
             ) : null}
             {canPeople ? (
               <>
-                <StatCard labelKey="admin.pendingAffiliates" value={data.affiliates_pending} to="/admin/affiliates" tone={data.affiliates_pending ? "alert" : undefined} />
-                <StatCard labelKey="admin.invitedContractors" value={data.contractors_invited} to="/admin/contractors" />
+                <StatCard labelKey="admin.pendingAffiliates" value={data.affiliates_pending} to="/admin/affiliates?status=pending" tone={data.affiliates_pending ? "alert" : undefined} />
+                <StatCard labelKey="admin.pendingClients" value={data.clients_pending} to="/admin/clients?status=pending" tone={data.clients_pending ? "alert" : undefined} />
+                <StatCard labelKey="admin.pendingContractors" value={data.contractors_pending} to="/admin/contractors?status=pending" tone={data.contractors_pending ? "alert" : undefined} />
+                <StatCard labelKey="admin.invitedContractors" value={data.contractors_invited} to="/admin/contractors?status=invited" />
               </>
             ) : null}
             <StatCard

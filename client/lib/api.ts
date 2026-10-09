@@ -34,6 +34,7 @@ export function translateApiError(
   error: string | null | undefined,
 ): string {
   if (!error) return "";
-  if (error.includes(".")) return t(error);
+  // i18n keys are dotted identifiers (no spaces); plain messages pass through.
+  if (/^[a-z][a-zA-Z0-9_.]*$/.test(error)) return t(error);
   return error;
 }

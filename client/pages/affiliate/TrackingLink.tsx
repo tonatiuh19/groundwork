@@ -101,10 +101,6 @@ export default function TrackingLink() {
               </div>
             ) : null}
           </div>
-
-          <p className="pf-muted">
-            {t("aff.codeLabel")}: <strong>{overview.affiliate.referral_code}</strong>
-          </p>
         </section>
       ) : null}
     </div>

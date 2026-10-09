@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
-import { Camera, Loader2, Sparkles } from "lucide-react";
+import { Camera, Loader2, PhoneForwarded, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -14,6 +14,10 @@ import {
   revokeMcpConnection,
 } from "@/store/slices/adminMcpSlice";
 import {
+  fetchVoiceCallForwarding,
+  saveVoiceCallForwarding,
+} from "@/store/slices/voiceSlice";
+import {
   ErrorNote,
   PageHeader,
   SelectField,
@@ -21,6 +25,7 @@ import {
   TextField,
 } from "@/components/portal/kit";
 import AvatarCropModal from "@/components/portal/AvatarCropModal";
+import MyNotificationPrefsPanel from "@/components/admin/MyNotificationPrefsPanel";
 import { logger } from "@/utils/logger";
 import { translateApiError } from "@/lib/api";
 
@@ -34,12 +39,15 @@ export default function AdminProfile() {
     revokingId,
     error: mcpError,
   } = useAppSelector((s) => s.adminMcp);
+  const callForwarding = useAppSelector((s) => s.voice.callForwarding);
   const fileRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [cropSrc, setCropSrc] = useState<string | null>(null);
+  const [fwdSaved, setFwdSaved] = useState(false);
+  const [fwdError, setFwdError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -52,6 +60,12 @@ export default function AdminProfile() {
       void dispatch(fetchMcpConnections());
     }
   }, [dispatch, user?.role]);
+
+  useEffect(() => {
+    if (user?.conversations_enabled) {
+      void dispatch(fetchVoiceCallForwarding());
+    }
+  }, [dispatch, user?.conversations_enabled]);
 
   if (!user) return null;
 
@@ -188,6 +202,104 @@ export default function AdminProfile() {
           </Form>
         </Formik>
       </section>
+
+      <MyNotificationPrefsPanel className="mt-6" />
+
+      {user.conversations_enabled ? (
+        <section className="pf-card mt-6">
+          <div className="flex items-start gap-3 mb-4">
+            <PhoneForwarded
+              className="h-5 w-5 text-accent shrink-0 mt-0.5"
+              aria-hidden
+            />
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-foreground">
+                {t("conversations.callForwardingTitle")}
+              </h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                {t("conversations.callForwardingLead")}
+              </p>
+            </div>
+          </div>
+          <ErrorNote error={fwdError} />
+          {fwdSaved ? (
+            <p className="pf-success-inline">{t("pf.saved")}</p>
+          ) : null}
+          {callForwarding.loading ? (
+            <p className="text-sm text-muted-foreground">{t("pf.loading")}</p>
+          ) : (
+            <Formik
+              enableReinitialize
+              initialValues={{
+                enabled: callForwarding.enabled,
+                phone: callForwarding.phone || user.phone || "",
+              }}
+              validationSchema={Yup.object({
+                phone: Yup.string()
+                  .trim()
+                  .test("phone", t("validation.phoneMin"), (v, ctx) => {
+                    if (!ctx.parent.enabled) return true;
+                    if (!v) return false;
+                    return v.replace(/\D/g, "").length >= 10;
+                  }),
+              })}
+              onSubmit={async (values) => {
+                setFwdSaved(false);
+                setFwdError(null);
+                const r = await dispatch(
+                  saveVoiceCallForwarding({
+                    enabled: values.enabled,
+                    phone: values.phone.trim() || undefined,
+                  }),
+                );
+                if (saveVoiceCallForwarding.fulfilled.match(r)) {
+                  dispatch(
+                    setPortalUser({
+                      actor: "admin",
+                      user: {
+                        ...user,
+                        call_forwarding_enabled: r.payload.enabled,
+                        call_forwarding_phone: r.payload.phone,
+                      },
+                    }),
+                  );
+                  setFwdSaved(true);
+                } else {
+                  setFwdError(
+                    typeof r.payload === "string"
+                      ? r.payload
+                      : "errors.server",
+                  );
+                }
+              }}
+            >
+              {({ values, setFieldValue }) => (
+                <Form className="pf-form">
+                  <label className="gw-fwd-toggle">
+                    <input
+                      type="checkbox"
+                      checked={values.enabled}
+                      onChange={(e) =>
+                        void setFieldValue("enabled", e.target.checked)
+                      }
+                    />
+                    <span>{t("conversations.callForwardingEnabled")}</span>
+                  </label>
+                  <TextField
+                    name="phone"
+                    labelKey="conversations.callForwardingPhone"
+                    disabled={!values.enabled}
+                  />
+                  <SubmitButton
+                    busy={callForwarding.saving}
+                    labelKey="pf.save"
+                  />
+                </Form>
+              )}
+            </Formik>
+          )}
+        </section>
+      ) : null}
 
       {user.role === "super_admin" ? (
         <section className="pf-card mt-6">

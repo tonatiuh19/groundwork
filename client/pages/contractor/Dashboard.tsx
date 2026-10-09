@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchContractorDraws, fetchContractorProjects } from "@/store/slices/contractorPortalSlice";
 import { DataTable, ErrorNote, PageHeader, StatCard, StatusBadge } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
+import PrequalificationBanner from "@/components/contractorApplication/PrequalificationBanner";
 
 export default function Dashboard() {
   const { t } = useTranslation();
@@ -23,6 +24,7 @@ export default function Dashboard() {
   return (
     <div className="portal-page">
       <PageHeader titleKey="portalDash.contractorTitle" leadKey="portalDash.contractorBody" />
+      <PrequalificationBanner />
       <ErrorNote error={error} />
       <div className="pf-stats">
         <StatCard labelKey="ctr.activeProjects" value={active.length} to="/contractor/projects" />

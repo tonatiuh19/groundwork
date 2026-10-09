@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Check } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Check, MessageSquare, Phone } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import DuplicatesPanel from "@/components/admin/DuplicatesPanel";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearAdminSaveError,
@@ -10,7 +11,6 @@ import {
 } from "@/store/slices/adminPortalSlice";
 import {
   BusyButton,
-  CopyButton,
   DataTable,
   ErrorNote,
   FilterSelect,
@@ -19,11 +19,22 @@ import {
   PageHeader,
   SearchBox,
   StatusBadge,
+  TrackingLinkChip,
   enumOptions,
   useRowBusy,
 } from "@/components/portal/kit";
+import {
+  ConfirmStatusChangeModal,
+  type PendingStatusChange,
+} from "@/components/portal/ConfirmStatusChangeModal";
 import { useFormatters } from "@/lib/format";
 import { useAdminCan } from "@/hooks/useAdminCan";
+import { useStatusQueryParam } from "@/hooks/useStatusQueryParam";
+import { isDemotingAccountStatus } from "@/lib/accountStatus";
+import {
+  conversationsComposeUrl,
+  conversationsDialUrl,
+} from "@/lib/conversationDeepLink";
 
 const STATUSES = ["pending", "active", "inactive", "suspended"] as const;
 const PAGE_SIZE = 50;
@@ -37,9 +48,12 @@ export default function AdminAffiliates() {
   const { saveError } = useAppSelector((s) => s.adminPortal);
   const canApprove = useAdminCan("approvals");
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useStatusQueryParam(STATUSES);
   const [offset, setOffset] = useState(0);
   const rowBusy = useRowBusy();
+  const [pendingDemote, setPendingDemote] = useState<PendingStatusChange | null>(
+    null,
+  );
 
   useEffect(() => {
     setOffset(0);
@@ -72,9 +86,23 @@ export default function AdminAffiliates() {
     );
   };
 
+  const requestStatusChange = (
+    id: number,
+    from: string,
+    to: string,
+    name: string,
+  ) => {
+    if (isDemotingAccountStatus(from, to)) {
+      setPendingDemote({ id, from, to, name });
+      return;
+    }
+    void setStatusFor(id, to);
+  };
+
   return (
     <div className="portal-page">
       <PageHeader titleKey="portalNav.affiliates" leadKey="admin.affiliatesLead" />
+      <DuplicatesPanel entity="affiliate" />
       <div className="pf-filters">
         <SearchBox onSearch={setQ} />
         <FilterSelect
@@ -105,13 +133,36 @@ export default function AdminAffiliates() {
             ),
           },
           { key: "company", headerKey: "pf.company", render: (a) => a.company || "—" },
-          { key: "code", headerKey: "aff.codeLabel", render: (a) => <code>{a.referral_code}</code> },
+          {
+            key: "link",
+            headerKey: "admin.trackingLinkCol",
+            className: "pf-col-tracking",
+            render: (a) => (
+              <TrackingLinkChip slug={a.slug} referralCode={a.referral_code} />
+            ),
+          },
+          {
+            key: "parent",
+            headerKey: "admin.parentAffiliate",
+            render: (a) =>
+              a.parent_name ? (
+                <span className="pf-muted">{a.parent_name}</span>
+              ) : (
+                t("admin.topLevelAffiliate")
+              ),
+          },
+          {
+            key: "subs",
+            headerKey: "admin.subCount",
+            render: (a) => a.sub_count ?? 0,
+          },
           { key: "clicks", headerKey: "aff.clicks", render: (a) => a.click_count },
           { key: "clients", headerKey: "aff.clients", render: (a) => a.client_count },
           { key: "date", headerKey: "pf.created", render: (a) => fmt.date(a.created_at) },
           {
             key: "status",
             headerKey: "pf.status",
+            className: "pf-col-status",
             render: (a) =>
               canApprove ? (
                 <InlineSelect
@@ -119,7 +170,14 @@ export default function AdminAffiliates() {
                   value={rowBusy.isDone(a.id, "approve") ? "active" : a.status}
                   options={enumOptions(t, "accountStatus", STATUSES)}
                   disabled={rowBusy.isRowLocked(a.id)}
-                  onChange={(v) => void setStatusFor(a.id, v)}
+                  onChange={(v) =>
+                    requestStatusChange(
+                      a.id,
+                      rowBusy.isDone(a.id, "approve") ? "active" : a.status,
+                      v,
+                      `${a.first_name} ${a.last_name}`.trim(),
+                    )
+                  }
                 />
               ) : (
                 <StatusBadge group="accountStatus" value={a.status} />
@@ -128,24 +186,53 @@ export default function AdminAffiliates() {
           {
             key: "actions",
             headerKey: "pf.actions",
+            className: "pf-col-actions",
             render: (a) => {
-              if (rowBusy.isDone(a.id, "approve") || (a.status === "pending" && canApprove)) {
-                return (
-                  <BusyButton
-                    tone="gold"
-                    icon={Check}
-                    stopPropagation
-                    label={t("admin.approve")}
-                    busyLabel={t("pf.busy.approving")}
-                    doneLabel={t("pf.done.approved")}
-                    busy={rowBusy.isBusy(a.id, "approve")}
-                    done={rowBusy.isDone(a.id, "approve")}
-                    onClick={() => void setStatusFor(a.id, "active")}
-                  />
-                );
-              }
+              const name = `${a.first_name} ${a.last_name}`.trim();
+              const showApprove =
+                rowBusy.isDone(a.id, "approve") ||
+                (a.status === "pending" && canApprove);
               return (
-                <CopyButton value={`${window.location.origin}/r/${a.slug || a.referral_code}`} />
+                <div
+                  className="pf-table-actions gw-people-actions"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {a.phone ? (
+                    <>
+                      <Link
+                        className="pf-btn pf-btn--sm pf-btn--nowrap"
+                        to={conversationsComposeUrl({
+                          phone: a.phone,
+                          name,
+                        })}
+                      >
+                        <MessageSquare size={14} aria-hidden />
+                        {t("conversations.messageClient")}
+                      </Link>
+                      <Link
+                        className="pf-btn pf-btn--sm pf-btn--nowrap"
+                        to={conversationsDialUrl({ phone: a.phone })}
+                      >
+                        <Phone size={14} aria-hidden />
+                        {t("conversations.callClient")}
+                      </Link>
+                    </>
+                  ) : null}
+                  {showApprove ? (
+                    <BusyButton
+                      className="pf-btn--nowrap pf-btn--sm"
+                      tone="gold"
+                      icon={Check}
+                      stopPropagation
+                      label={t("admin.approve")}
+                      busyLabel={t("pf.busy.approving")}
+                      doneLabel={t("pf.done.approved")}
+                      busy={rowBusy.isBusy(a.id, "approve")}
+                      done={rowBusy.isDone(a.id, "approve")}
+                      onClick={() => void setStatusFor(a.id, "active")}
+                    />
+                  ) : null}
+                </div>
               );
             },
           },
@@ -157,6 +244,26 @@ export default function AdminAffiliates() {
         offset={offset}
         loading={loading}
         onPageChange={setOffset}
+      />
+
+      <ConfirmStatusChangeModal
+        pending={pendingDemote}
+        busy={
+          pendingDemote
+            ? rowBusy.isBusy(pendingDemote.id, "status")
+            : false
+        }
+        onCancel={() => {
+          if (pendingDemote && rowBusy.isBusy(pendingDemote.id, "status")) {
+            return;
+          }
+          setPendingDemote(null);
+        }}
+        onConfirm={() => {
+          if (!pendingDemote) return;
+          const { id, to } = pendingDemote;
+          void setStatusFor(id, to).then(() => setPendingDemote(null));
+        }}
       />
     </div>
   );

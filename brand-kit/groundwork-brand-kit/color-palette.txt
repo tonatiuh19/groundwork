@@ -1,0 +1,14 @@
+Groundwork Capital – Color palette
+
+Ink (navy)      #0e2a4a   rgb(14, 42, 74)     Primary color, headings, buttons
+Gold            #d9a441   rgb(217, 164, 65)   CTAs and accents
+Clay            #c1633b   rgb(193, 99, 59)    Sparse emphasis / alerts
+Paper (cream)   #f8f5ef   rgb(248, 245, 239)  Backgrounds
+Charcoal        #1f2430   rgb(31, 36, 48)     Body text
+Pine (green)    #1f4a3a   rgb(31, 74, 58)     Success / contractor accent
+Black           #000000   rgb(0, 0, 0)        Favicon only
+
+Logos
+- logos/groundwork-logo.png  378x106 transparent PNG (mark + wordmark, gold + charcoal)
+- logos/favicon.ico          site favicon (black plate)
+Use the logo on light backgrounds; no white/dark variant exists yet.

@@ -8,6 +8,7 @@ import AuthStage from "@/components/portal/AuthStage";
 import { ErrorNote, SubmitButton, TextField } from "@/components/portal/kit";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { resetAffiliateSignup, submitAffiliateSignup } from "@/store/slices/onboardingSlice";
+import { yupPhoneRequired } from "@/lib/validation";
 
 export default function AffiliateSignup() {
   const { t, i18n } = useTranslation();
@@ -22,7 +23,7 @@ export default function AffiliateSignup() {
     first_name: Yup.string().trim().required(t("validation.firstNameRequired")),
     last_name: Yup.string().trim().required(t("validation.lastNameRequired")),
     email: Yup.string().trim().email(t("validation.emailInvalid")).required(t("validation.emailRequired")),
-    phone: Yup.string().trim().min(10, t("validation.phoneMin")).required(t("validation.phoneRequired")),
+    phone: yupPhoneRequired(t("validation.phoneMin"), t("validation.phoneRequired")),
     company: Yup.string().trim().max(200),
   });
 

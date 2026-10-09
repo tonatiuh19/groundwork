@@ -9,6 +9,7 @@ export type AffiliateProfilePatch = {
   company?: string | null;
   preferred_language?: "en" | "es";
   bio?: string | null;
+  slug?: string | null;
 };
 
 export const fetchAffiliateProfile = createApiThunk<AffiliateProfile, void>(

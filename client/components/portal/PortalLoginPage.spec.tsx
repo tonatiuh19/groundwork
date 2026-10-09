@@ -102,7 +102,28 @@ describe("PortalLoginPage", () => {
       { withCredentials: true },
     );
     expect(screen.getByText(i18n.t("portalAuth.codeHint", { email: "ctr@example.com" }))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("portalAuth.codeHintDetail"))).toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("portalAuth.codeNoAccountAffiliate"))).toBeNull();
     expect(screen.getByRole("group", { name: i18n.t("portalAuth.codeLabel") })).toBeInTheDocument();
+  });
+
+  it("shows affiliate no-account guidance on the code step without claiming a definite send", async () => {
+    vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true, sent: true } });
+    mount("affiliate");
+    await screen.findByLabelText(i18n.t("form.email"));
+    await reachCodeStep("teamdc@encoremortgage.org");
+    expect(
+      screen.getByText(
+        i18n.t("portalAuth.codeHint", { email: "teamdc@encoremortgage.org" }),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("portalAuth.codeHintDetail"))).toBeInTheDocument();
+    expect(
+      screen.getByText(i18n.t("portalAuth.codeNoAccountAffiliate"), { exact: false }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("link", { name: i18n.t("portalAuth.becomeAffiliate") }).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("shows a pending-approval legend and stays on email when the affiliate is pending", async () => {

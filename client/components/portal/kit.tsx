@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ComponentType, type MouseEvent, type ReactNode, type SVGProps } from "react";
 import { Link } from "react-router-dom";
 import { Field, useField } from "formik";
-import { ArrowLeft, Check, Copy, FileDown, Loader2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, FileDown, Link2, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { MILESTONES, type ProjectMilestone } from "@shared/api";
 import PageMeta from "@/components/PageMeta";
 import { translateApiError } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { buildAffiliateTrackingUrl } from "@/lib/referral";
 
 export { Modal } from "@/components/portal/Modal";
 
@@ -260,15 +262,17 @@ export function HeaderAction({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
+  const label = t(labelKey);
   return (
     <button
       type="button"
       className="button button-gold"
       onClick={onClick}
       disabled={disabled}
+      aria-label={label}
     >
       {Icon ? <Icon size={16} aria-hidden /> : null}
-      {t(labelKey)}
+      <span className="button-label">{label}</span>
     </button>
   );
 }
@@ -373,6 +377,7 @@ export function EmptyState({ messageKey }: { messageKey?: string }) {
 
 const GOOD = [
   "active",
+  "accepted",
   "paid",
   "approved",
   "closed",
@@ -385,6 +390,8 @@ const GOOD = [
 const WARN = [
   "pending",
   "submitted",
+  "in_review",
+  "needs_info",
   "invited",
   "prospect",
   "new",
@@ -504,6 +511,11 @@ export function TextField({
   rows,
   placeholder,
   disabled,
+  required,
+  hintKey,
+  inputMode,
+  autoComplete,
+  className,
 }: {
   name: string;
   labelKey: string;
@@ -512,12 +524,22 @@ export function TextField({
   rows?: number;
   placeholder?: string;
   disabled?: boolean;
+  /** Shows a required marker (validation stays in the form schema). */
+  required?: boolean;
+  hintKey?: string;
+  inputMode?: "text" | "numeric" | "decimal" | "tel" | "email" | "url";
+  autoComplete?: string;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const [, meta] = useField(name);
+  const invalid = !!(meta.touched && meta.error);
   return (
-    <label className="pf-field">
-      <span>{t(labelKey)}</span>
+    <label className={cn("pf-field", invalid && "pf-field--invalid", className)}>
+      <span>
+        {t(labelKey)}
+        {required ? <em className="pf-req" aria-hidden> *</em> : null}
+      </span>
       <Field
         name={name}
         type={as ? undefined : type}
@@ -525,11 +547,116 @@ export function TextField({
         rows={rows}
         placeholder={placeholder}
         disabled={disabled}
+        inputMode={inputMode}
+        autoComplete={autoComplete}
+        aria-invalid={invalid || undefined}
+        aria-required={required || undefined}
       />
-      {meta.touched && meta.error ? (
-        <span className="form-error">{meta.error}</span>
-      ) : null}
+      {hintKey ? <small className="pf-hint">{t(hintKey)}</small> : null}
+      {invalid ? <span className="form-error">{meta.error}</span> : null}
     </label>
+  );
+}
+
+/** Formik-bound Yes / No segmented radio (values `"yes"` | `"no"`, empty = unanswered). */
+export function YesNoField({
+  name,
+  labelKey,
+  required,
+  disabled,
+}: {
+  name: string;
+  labelKey: string;
+  required?: boolean;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [field, meta, helpers] = useField<string>(name);
+  const invalid = !!(meta.touched && meta.error);
+  const labelId = `${useId()}-label`;
+  return (
+    <div className={cn("pf-yesno", invalid && "pf-field--invalid")}>
+      <span id={labelId} className="pf-yesno-label">
+        {t(labelKey)}
+        {required ? <em className="pf-req" aria-hidden> *</em> : null}
+      </span>
+      <div
+        className="pf-yesno-options"
+        role="radiogroup"
+        aria-labelledby={labelId}
+        aria-invalid={invalid || undefined}
+        aria-required={required || undefined}
+      >
+        {(["yes", "no"] as const).map((v) => (
+          <label key={v} className={cn("pf-yesno-option", field.value === v && "is-on")}>
+            <input
+              type="radio"
+              name={name}
+              value={v}
+              checked={field.value === v}
+              disabled={disabled}
+              onChange={() => {
+                helpers.setTouched(true, false);
+                helpers.setValue(v);
+              }}
+            />
+            <span>{t(v === "yes" ? "pf.yes" : "pf.no")}</span>
+          </label>
+        ))}
+      </div>
+      {invalid ? <span className="form-error">{meta.error}</span> : null}
+    </div>
+  );
+}
+
+/** Formik-bound checkbox group over a string array. */
+export function MultiCheckField({
+  name,
+  labelKey,
+  options,
+  optionGroup,
+  required,
+  disabled,
+}: {
+  name: string;
+  labelKey: string;
+  options: readonly string[];
+  /** i18n group for option labels (`${optionGroup}.${value}`). */
+  optionGroup: string;
+  required?: boolean;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [field, meta, helpers] = useField<string[]>(name);
+  const value = field.value || [];
+  const invalid = !!(meta.touched && meta.error);
+  return (
+    <fieldset className={cn("pf-multicheck", invalid && "pf-field--invalid")}>
+      <legend>
+        {t(labelKey)}
+        {required ? <em className="pf-req" aria-hidden> *</em> : null}
+      </legend>
+      <div className="pf-multicheck-options">
+        {options.map((o) => {
+          const on = value.includes(o);
+          return (
+            <label key={o} className={cn("pf-chip-check", on && "is-on")}>
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={disabled}
+                onChange={() => {
+                  helpers.setTouched(true, false);
+                  helpers.setValue(on ? value.filter((x) => x !== o) : [...value, o]);
+                }}
+              />
+              <span>{t(`${optionGroup}.${o}`)}</span>
+            </label>
+          );
+        })}
+      </div>
+      {invalid ? <span className="form-error">{meta.error}</span> : null}
+    </fieldset>
   );
 }
 
@@ -538,17 +665,22 @@ export function SelectField({
   labelKey,
   options,
   disabled,
+  required,
 }: {
   name: string;
   labelKey: string;
   options: Array<{ value: string | number; label: string }>;
   disabled?: boolean;
+  required?: boolean;
 }) {
   const { t } = useTranslation();
   const [, meta] = useField(name);
   return (
-    <label className="pf-field">
-      <span>{t(labelKey)}</span>
+    <label className={cn("pf-field", meta.touched && meta.error && "pf-field--invalid")}>
+      <span>
+        {t(labelKey)}
+        {required ? <em className="pf-req" aria-hidden> *</em> : null}
+      </span>
       <Field as="select" name={name} disabled={disabled}>
         {options.map((o) => (
           <option key={String(o.value)} value={o.value}>
@@ -688,13 +820,23 @@ export function FileField({
   );
 }
 
-export function CopyButton({ value }: { value: string }) {
+export function CopyButton({
+  value,
+  compact,
+}: {
+  value: string;
+  /** Tighter control for table action columns (no wrap). */
+  compact?: boolean;
+}) {
   const { t } = useTranslation();
   const [done, setDone] = useState(false);
+  const label = t(done ? "pf.copied" : "pf.copy");
   return (
     <button
       type="button"
-      className="pf-btn"
+      className={cn("pf-btn", "pf-btn--nowrap", compact && "pf-btn--sm")}
+      aria-label={label}
+      title={label}
       onClick={async (e) => {
         e.stopPropagation();
         try {
@@ -706,8 +848,59 @@ export function CopyButton({ value }: { value: string }) {
         }
       }}
     >
-      {done ? <Check size={15} /> : <Copy size={15} />}{" "}
-      {t(done ? "pf.copied" : "pf.copy")}
+      {done ? <Check size={15} aria-hidden /> : <Copy size={15} aria-hidden />}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+/**
+ * Vanity tracking path chip — gold rail, truncate long slugs, click to copy full URL.
+ * Referral codes stay out of the UI (attribution-only under the hood).
+ */
+export function TrackingLinkChip({
+  slug,
+  referralCode,
+}: {
+  slug?: string | null;
+  referralCode: string;
+}) {
+  const { t } = useTranslation();
+  const [done, setDone] = useState(false);
+  const pathKey = String(slug || referralCode).trim();
+  const fullUrl = buildAffiliateTrackingUrl({
+    referral_code: referralCode,
+    slug,
+  });
+  const label = done
+    ? t("pf.copied")
+    : t("admin.copyTrackingLink", { path: `/r/${pathKey}` });
+
+  return (
+    <button
+      type="button"
+      className={cn("pf-tracking-chip", done && "is-copied")}
+      aria-label={label}
+      title={fullUrl}
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(fullUrl);
+          setDone(true);
+          window.setTimeout(() => setDone(false), 1600);
+        } catch {
+          setDone(false);
+        }
+      }}
+    >
+      <Link2 size={14} className="pf-tracking-chip__icon" aria-hidden />
+      <span className="pf-tracking-chip__path">
+        <span className="pf-tracking-chip__prefix">/r/</span>
+        <span className="pf-tracking-chip__slug">{pathKey}</span>
+      </span>
+      <span className="pf-tracking-chip__action" aria-hidden>
+        {done ? <Check size={14} /> : <Copy size={14} />}
+      </span>
     </button>
   );
 }

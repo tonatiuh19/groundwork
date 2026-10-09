@@ -109,11 +109,13 @@ describe("PortalShell guard", () => {
     expect(await screen.findByText(i18n.t("portalNav.dashboard"))).toBeInTheDocument();
     expect(screen.queryByText(i18n.t("portalNav.staff"))).toBeNull(); // super_admin only
     expect(screen.queryByText(i18n.t("portalNav.settings"))).toBeNull(); // super_admin / finance
-    expect(screen.getByText(i18n.t("role.agent"))).toHaveClass("portal-role");
+    expect(screen.getByText(i18n.t("role.agent"))).toHaveClass(
+      "portal-account-role",
+    );
     expect(screen.getByText("no-finance")).toBeInTheDocument();
     const profile = screen.getByRole("link", { name: i18n.t("admin.profileNav") });
     expect(profile).toHaveAttribute("href", "/admin/profile");
-    expect(profile).toHaveClass("portal-sidebar-user--link");
+    expect(profile).toHaveClass("portal-account-profile");
   });
 
   it("super admins see everything; finance sees settings but not staff", async () => {
@@ -152,5 +154,21 @@ describe("PortalShell guard", () => {
     await waitFor(() => expect(screen.getByText("LOGIN PAGE")).toBeInTheDocument());
     expect(post).toHaveBeenCalledWith("/api/admin/auth/logout", {}, { withCredentials: true });
     expect(store.getState().portalAuth.admin.user).toBeNull();
+  });
+
+  it("toggles the mobile nav drawer open and closed", async () => {
+    signIn("admin", admin("super_admin"));
+    mount();
+    const shell = (await screen.findByText("Bo Ss")).closest(".portal-shell");
+    expect(shell).toBeTruthy();
+    expect(shell).not.toHaveClass("is-nav-open");
+    const toggle = document.querySelector(
+      ".portal-menu-toggle",
+    ) as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    await userEvent.click(toggle);
+    expect(shell).toHaveClass("is-nav-open");
+    await userEvent.click(toggle);
+    expect(shell).not.toHaveClass("is-nav-open");
   });
 });

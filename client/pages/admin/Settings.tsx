@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
-import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { adminCan } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearAdminSaveError,
-  createNotifyExtra,
-  deleteNotifyExtra,
   fetchAdminSettings,
   saveAdminSettings,
-  updateNotifyExtra,
 } from "@/store/slices/adminPortalSlice";
-import { ErrorNote, Loading, PageHeader, SubmitButton, TextField, BusyButton, useRowBusy } from "@/components/portal/kit";
+import {
+  ErrorNote,
+  Loading,
+  PageHeader,
+  SubmitButton,
+  TextField,
+} from "@/components/portal/kit";
+import { TeamNotificationsPanel } from "@/components/admin/TeamNotificationsPanel";
+import { AdminPhoneNumbersPanel } from "@/components/admin/AdminPhoneNumbersPanel";
 import { centsToDollars, dollarsToCents } from "@/lib/format";
 
 export default function AdminSettings() {
@@ -20,31 +25,26 @@ export default function AdminSettings() {
   const dispatch = useAppDispatch();
   const { data, loading, error } = useAppSelector((s) => s.adminPortal.settings);
   const { saving, saveError } = useAppSelector((s) => s.adminPortal);
+  const me = useAppSelector((s) => s.portalAuth.admin.user);
   const [saved, setSaved] = useState(false);
-  const rowBusy = useRowBusy();
 
   const reload = () => void dispatch(fetchAdminSettings());
-
   useEffect(() => {
     dispatch(clearAdminSaveError());
     reload();
   }, [dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const commissionSchema = Yup.object({
-    days: Yup.number().integer().min(0).max(365).required(t("validation.invalidField")),
-    rate: Yup.string().required(t("validation.invalidField")),
-  });
-
-  const extraSchema = Yup.object({
-    email: Yup.string()
-      .trim()
-      .email(t("validation.emailInvalid"))
-      .required(t("validation.emailRequired")),
-    label: Yup.string().trim(),
+    days: Yup.number().min(0).required(t("validation.invalidField")),
+    direct: Yup.string().required(t("validation.invalidField")),
+    closer: Yup.string().required(t("validation.invalidField")),
+    parent: Yup.string().required(t("validation.invalidField")),
   });
 
   const settings = data?.settings;
-  const extras = data?.notify_extra_emails || [];
+  const showPhonePanel =
+    me?.role === "super_admin" || me?.role === "admin";
+  const showTeamNotify = adminCan(me?.role, "settings");
 
   return (
     <div className="portal-page">
@@ -57,7 +57,12 @@ export default function AdminSettings() {
             enableReinitialize
             initialValues={{
               days: settings.commission_payout_days_after_loan_close,
-              rate: centsToDollars(settings.commission_cents_per_sqft),
+              direct: centsToDollars(
+                settings.commission_direct_cents_per_sqft ??
+                  settings.commission_cents_per_sqft,
+              ),
+              closer: centsToDollars(settings.commission_closer_cents_per_sqft),
+              parent: centsToDollars(settings.commission_parent_cents_per_sqft),
             }}
             validationSchema={commissionSchema}
             onSubmit={async (v) => {
@@ -65,7 +70,9 @@ export default function AdminSettings() {
               const r = await dispatch(
                 saveAdminSettings({
                   commission_payout_days_after_loan_close: Number(v.days),
-                  commission_cents_per_sqft: dollarsToCents(v.rate) ?? 0,
+                  commission_direct_cents_per_sqft: dollarsToCents(v.direct) ?? 0,
+                  commission_closer_cents_per_sqft: dollarsToCents(v.closer) ?? 0,
+                  commission_parent_cents_per_sqft: dollarsToCents(v.parent) ?? 0,
                 }),
               );
               if (saveAdminSettings.fulfilled.match(r)) {
@@ -79,8 +86,12 @@ export default function AdminSettings() {
               <h3>{t("admin.commissionRules")}</h3>
               <TextField name="days" labelKey="admin.payoutDays" type="number" />
               <p className="pf-muted">{t("admin.payoutDaysHelp")}</p>
-              <TextField name="rate" labelKey="admin.ratePerSqft" />
-              <p className="pf-muted">{t("admin.ratePerSqftHelp")}</p>
+              <TextField name="direct" labelKey="admin.rateDirect" />
+              <p className="pf-muted">{t("admin.rateDirectHelp")}</p>
+              <TextField name="closer" labelKey="admin.rateCloser" />
+              <p className="pf-muted">{t("admin.rateCloserHelp")}</p>
+              <TextField name="parent" labelKey="admin.rateParent" />
+              <p className="pf-muted">{t("admin.rateParentHelp")}</p>
               <SubmitButton busy={saving} labelKey="pf.save" />
               {saved ? <p className="pf-success-inline">{t("pf.saved")}</p> : null}
             </Form>
@@ -88,105 +99,12 @@ export default function AdminSettings() {
         </section>
       ) : null}
 
-      {data ? (
-        <section className="pf-card pf-card--narrow pf-section">
-          <h3>{t("admin.notifyExtrasTitle")}</h3>
-          <p className="pf-muted">{t("admin.notifyExtrasLead")}</p>
-          {extras.length === 0 ? (
-            <p className="pf-muted">{t("admin.noNotifyExtras")}</p>
-          ) : (
-            <ul className="pf-notify-list">
-              {extras.map((extra) => (
-                <li key={extra.id} className="pf-notify-row">
-                  <div>
-                    <strong>{extra.email}</strong>
-                    {extra.label ? (
-                      <>
-                        <br />
-                        <span className="pf-muted">{extra.label}</span>
-                      </>
-                    ) : null}
-                  </div>
-                  <label className="pf-check-inline">
-                    <input
-                      type="checkbox"
-                      checked={extra.is_active}
-                      disabled={saving || rowBusy.isRowLocked(extra.id)}
-                      onChange={(e) => {
-                        const next = e.target.checked;
-                        void rowBusy.run(
-                          extra.id,
-                          "toggle",
-                          async () => {
-                            const r = await dispatch(
-                              updateNotifyExtra({
-                                id: extra.id,
-                                patch: { is_active: next },
-                              }),
-                            );
-                            return updateNotifyExtra.fulfilled.match(r);
-                          },
-                          { onFlashEnd: reload },
-                        );
-                      }}
-                    />
-                    {t("admin.notifyExtraActive")}
-                  </label>
-                  <BusyButton
-                    icon={Trash2}
-                    label={t("admin.notifyExtraDelete")}
-                    busyLabel={t("pf.busy.removing")}
-                    doneLabel={t("pf.done.removed")}
-                    busy={rowBusy.isBusy(extra.id, "delete")}
-                    done={rowBusy.isDone(extra.id, "delete")}
-                    disabled={
-                      saving ||
-                      (rowBusy.isRowLocked(extra.id) &&
-                        !rowBusy.isBusy(extra.id, "delete") &&
-                        !rowBusy.isDone(extra.id, "delete"))
-                    }
-                    onClick={() => {
-                      void rowBusy.run(
-                        extra.id,
-                        "delete",
-                        async () => {
-                          const r = await dispatch(deleteNotifyExtra(extra.id));
-                          return deleteNotifyExtra.fulfilled.match(r);
-                        },
-                        { flash: true, onFlashEnd: reload },
-                      );
-                    }}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-          <Formik
-            initialValues={{ email: "", label: "" }}
-            validationSchema={extraSchema}
-            onSubmit={async (v, { resetForm }) => {
-              const r = await dispatch(
-                createNotifyExtra({
-                  email: v.email.trim(),
-                  label: v.label.trim() || null,
-                }),
-              );
-              if (createNotifyExtra.fulfilled.match(r)) {
-                resetForm();
-                reload();
-              }
-            }}
-          >
-            <Form className="pf-form">
-              <ErrorNote error={saveError} />
-              <div className="pf-form-grid">
-                <TextField name="email" labelKey="form.email" type="email" />
-                <TextField name="label" labelKey="admin.notifyExtraLabel" />
-              </div>
-              <SubmitButton busy={saving} labelKey="admin.notifyExtrasAdd" />
-            </Form>
-          </Formik>
-        </section>
+      {showTeamNotify ? (
+        <TeamNotificationsPanel className="pf-section" />
+      ) : null}
+
+      {showPhonePanel ? (
+        <AdminPhoneNumbersPanel className="pf-section gw-phone-panel" />
       ) : null}
     </div>
   );

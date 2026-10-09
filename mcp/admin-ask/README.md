@@ -72,6 +72,11 @@ Then Customize → MCP → Connect → same consent flow.
 | `list_events` / `get_event` | Marketing events |
 | `search_staff` | Admin staff |
 | `list_plans` | ADU plans |
+| `search_contacts` / `get_contact` | CRM Contacts address book (not pipeline clients) |
+| `list_sms` / `get_texts` / `get_conversation` | Conversations hub timeline for a client |
+| `get_call_insights` | Call/voicemail rows + Twilio `transcript_full` when ready (no AI summaries) |
+| `list_brand_phone_numbers` / `list_ofg_phone_numbers` | Brand Twilio lines + `acting_admin_from` |
+| `list_whatsapp` | Stub — WhatsApp not configured (use `list_sms`) |
 
 ### Writes (dry-run then confirm)
 
@@ -79,14 +84,22 @@ Always call with `confirm=false` (or omit) first; show the preview; then re-call
 
 | Tool | Notes |
 |---|---|
-| `convert_lead` | Lead → client + project + portal invite |
+| `convert_lead` | Lead → `client` (project + invite), `affiliate`, or `contractor` (same as Admin Convert; supports `status` + `confirm_phone_link`) |
 | `update_project_milestone` | Uses `assertMilestoneTransition` |
 | `approve_affiliate` | pending → active |
+| `approve_client` | pending homeowner signup → prospect + portal invite |
+| `approve_contractor` | pending contractor signup → active + login email |
 | `invite_contractor` | Invite-only contractor portal |
 | `invite_client_portal` | Re-send client portal invite |
 | `update_draw_status` | approved / rejected / paid |
 | `update_commission_status` | approved / paid / void |
 | `create_staff` | Invite staff (`admin`/`agent`/`finance`/`content` only — not `super_admin`) |
+| `create_contact` / `update_contact` | CRM address book; use `confirm_duplicate=true` when phone/email matches |
+| `convert_contact` | Contact → client prospect (phone and/or email); re-links Conversations |
+| `send_sms` / `send_text` | Twilio SMS to client or staff; From = assigned brand line (or `from_*` override) |
+| `send_contact_sms` | SMS CRM contact; logs hub + contact notes |
+| `send_contact_email` | Branded Resend email to CRM contact + notes stamp |
+| `send_whatsapp` / `send_wa` / `send_contact_whatsapp` | Stub — returns `whatsapp_not_configured` |
 
 ## Auth
 

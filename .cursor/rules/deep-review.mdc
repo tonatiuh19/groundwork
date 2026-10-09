@@ -10,7 +10,7 @@ When a turn **implements, fixes, refactors, or changes API/DB/UI behavior**, do 
 ## Required checklist
 
 1. **Gaps** — missing wires (API → Redux → UI), i18n (EN+ES), **`api/swagger.yaml`**, **`DESIGN_SYSTEM.md`**, migrations + `schema.sql`, env/docs
-2. **Issues** — null/auth/role edge cases, timezone/date, race conditions, clutter/flood, stale field names, security, **mobile fit (~320px+) and no document horizontal scroll**
+2. **Issues** — null/auth/role edge cases, timezone/date, race conditions, clutter/flood, stale field names, security, **mobile fit (~320px+ and ~375px): no document horizontal scroll, no clipped CTAs/forms, contained sideways regions only**
 3. **Breaking changes** — confirm none, or call out explicitly with migration path
 4. **Tests** — run related unit + integration suites (including edge cases). Prefer a regression test for any bug found in review. Confirm Vitest dry-runs emails and cleans TiDB fixtures.
 5. **Missed** — chat history + prior review notes; do not reintroduce fixed issues
@@ -30,4 +30,5 @@ When a turn **implements, fixes, refactors, or changes API/DB/UI behavior**, do 
 - ❌ Leaving known gaps as “follow-up” when they can be closed now
 - ❌ API route changes without swagger updates
 - ❌ Visual/email/flow changes without `DESIGN_SYSTEM.md` updates
-- ❌ Shipping UI that causes document-level horizontal scroll or unusable layouts under ~375px
+- ❌ Shipping UI that causes document-level horizontal scroll or unusable layouts under ~375px (also check ~320px)
+- ❌ Using body `overflow-x: hidden` alone to mask an overflowing child instead of fixing the layout

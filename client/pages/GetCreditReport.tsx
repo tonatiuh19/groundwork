@@ -1,6 +1,6 @@
 import { Formik, Form, Field } from "formik";
 import * as Yup from "yup";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useEffect, useMemo } from "react";
@@ -62,6 +62,7 @@ function makeGcrSchema(t: TFunction) {
  */
 export default function GetCreditReport() {
   const { t, i18n } = useTranslation();
+  const location = useLocation();
   const dispatch = useAppDispatch();
   const fmt = useFormatters();
   const lang = i18n.language?.startsWith("es") ? "es" : "en";
@@ -91,6 +92,18 @@ export default function GetCreditReport() {
   const current =
     event && loadedSlug === FONTANA_EVENT_SLUG ? event : null;
   const missing = !current && !loading && error !== null;
+
+  // Event content loads async — re-scroll when #free-report is present (e.g. from /join).
+  useEffect(() => {
+    if (!current) return;
+    if (location.hash !== "#free-report") return;
+    const el = document.getElementById("free-report");
+    if (!el) return;
+    const id = window.setTimeout(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [current, location.hash]);
 
   if (missing) {
     return (

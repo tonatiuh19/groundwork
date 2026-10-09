@@ -18,12 +18,16 @@ import GetCreditReport from "./pages/GetCreditReport";
 import About from "./pages/About";
 import Partners from "./pages/Partners";
 import Contact from "./pages/Contact";
+import Join from "./pages/Join";
 import NotFound from "./pages/NotFound";
+import ScrollToTop from "./components/ScrollToTop";
 import AdminLogin from "./pages/auth/AdminLogin";
 import AffiliateLogin from "./pages/auth/AffiliateLogin";
 import ContractorLogin from "./pages/auth/ContractorLogin";
 import ClientLogin from "./pages/auth/ClientLogin";
 import AffiliateSignup from "./pages/auth/AffiliateSignup";
+import ContractorSignup from "./pages/auth/ContractorSignup";
+import ContractorApply from "./pages/contractor/Apply";
 import ContractorInvite from "./pages/auth/ContractorInvite";
 import ClientInvite from "./pages/auth/ClientInvite";
 import Start from "./pages/Start";
@@ -49,10 +53,14 @@ import AdminStaff from "./pages/admin/Staff";
 import AdminSettings from "./pages/admin/Settings";
 import AdminProfile from "./pages/admin/Profile";
 import AdminMcpConsent from "./pages/admin/McpConsent";
+import AdminConversations from "./pages/admin/Conversations";
+import AdminContacts from "./pages/admin/Contacts";
+import AdminCampaigns from "./pages/admin/Campaigns";
 import AffiliateLayout from "./pages/affiliate/AffiliateLayout";
 import AffiliateDashboard from "./pages/affiliate/Dashboard";
 import AffiliateClients from "./pages/affiliate/Clients";
 import AffiliateCommissions from "./pages/affiliate/Commissions";
+import AffiliateTeam from "./pages/affiliate/Team";
 import AffiliateTrackingLink from "./pages/affiliate/TrackingLink";
 import AffiliateProfile from "./pages/affiliate/Profile";
 import ContractorLayout from "./pages/contractor/ContractorLayout";
@@ -93,6 +101,7 @@ export default function App() {
       <HelmetProvider>
         <BrowserRouter>
           <DocumentLang />
+          <ScrollToTop />
           <ReferralCapture />
           <Routes>
             <Route path="/" element={<Index />} />
@@ -100,6 +109,7 @@ export default function App() {
             <Route path="/about" element={<About />} />
             <Route path="/partners" element={<Partners />} />
             <Route path="/contact" element={<Contact />} />
+            <Route path="/join" element={<Join />} />
             <Route path="/get-credit-report" element={<GetCreditReport />} />
             <Route path="/start" element={<Start />} />
             <Route path="/r/expired" element={<ReferralExpired />} />
@@ -110,11 +120,14 @@ export default function App() {
             <Route path="/affiliate/login" element={<AffiliateLogin />} />
             <Route path="/affiliate/signup" element={<AffiliateSignup />} />
             <Route path="/contractor/login" element={<ContractorLogin />} />
+            <Route path="/contractor/signup" element={<ContractorSignup />} />
             <Route
               path="/contractor/invite/:token"
               element={<ContractorInvite />}
             />
+            <Route path="/contractor/apply/:token" element={<ContractorApply />} />
             <Route path="/client/login" element={<ClientLogin />} />
+            <Route path="/client/signup" element={<Start canonical="/client/signup" />} />
             <Route path="/client/invite/:token" element={<ClientInvite />} />
 
             <Route path="/admin" element={<AdminLayout />}>
@@ -123,6 +136,7 @@ export default function App() {
               <Route path="leads" element={<AdminLeads />} />
               <Route path="events" element={<AdminEvents />} />
               <Route path="events/:id" element={<AdminEventDetail />} />
+              <Route path="campaigns" element={<AdminCampaigns />} />
               <Route path="projects" element={<AdminProjects />} />
               <Route
                 path="projects/:publicId"
@@ -137,6 +151,8 @@ export default function App() {
               <Route path="draws" element={<AdminDraws />} />
               <Route path="commissions" element={<AdminCommissions />} />
               <Route path="plans" element={<AdminPlans />} />
+              <Route path="conversations" element={<AdminConversations />} />
+              <Route path="contacts" element={<AdminContacts />} />
               <Route path="staff" element={<AdminStaff />} />
               <Route path="settings" element={<AdminSettings />} />
             </Route>
@@ -144,6 +160,7 @@ export default function App() {
             <Route path="/affiliate" element={<AffiliateLayout />}>
               <Route index element={<AffiliateDashboard />} />
               <Route path="clients" element={<AffiliateClients />} />
+              <Route path="team" element={<AffiliateTeam />} />
               <Route path="commissions" element={<AffiliateCommissions />} />
               <Route path="link" element={<AffiliateTrackingLink />} />
               <Route path="profile" element={<AffiliateProfile />} />

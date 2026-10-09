@@ -1,6 +1,6 @@
 /** Canonical public site contact + social (matches adu-ez.com). */
-export const SITE_PHONE_DISPLAY = "(949) 239-6358";
-export const SITE_PHONE_TEL = "+19492396358";
+export const SITE_PHONE_DISPLAY = "+1 562 573 5110";
+export const SITE_PHONE_TEL = "+15625735110";
 export const SITE_EMAIL = "info@groundworkcapitalgroup.com";
 export const SITE_ADDRESS_LINES = [
   "2717 W Coast Hwy Ste C",

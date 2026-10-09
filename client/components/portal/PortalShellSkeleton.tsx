@@ -14,6 +14,15 @@ export default function PortalShellSkeleton({ actor }: { actor: PortalActor }) {
       aria-live="polite"
     >
       <p className="portal-skel-sr">{t("portalAuth.loading")}</p>
+      <header className="portal-mobile-bar" aria-hidden>
+        <div className="portal-mobile-brand">
+          <img src="/logos/groundwork-logo.png" alt="" />
+          <span className="portal-skel-kicker" />
+        </div>
+        <div className="portal-mobile-bar-actions">
+          <div className="portal-skel-nav" style={{ width: "2.4rem", height: "2.4rem" }} />
+        </div>
+      </header>
       <aside className="portal-sidebar" aria-hidden>
         <div className="portal-sidebar-brand">
           <img src="/logos/groundwork-logo.png" alt="" />

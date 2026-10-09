@@ -1,4 +1,10 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -8,16 +14,23 @@ export function Modal({
   titleKey,
   onClose,
   children,
+  initialFocusRef,
 }: {
   open: boolean;
   titleKey: string;
   onClose: () => void;
   children: ReactNode;
+  /** When set, focus this element on open instead of the close button. */
+  initialFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const { t } = useTranslation();
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const initialFocusRefStable = useRef(initialFocusRef);
+  initialFocusRefStable.current = initialFocusRef;
 
   useEffect(() => {
     if (!open) return;
@@ -28,7 +41,7 @@ export function Modal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !panelRef.current) return;
@@ -48,16 +61,24 @@ export function Modal({
     };
     window.addEventListener("keydown", onKey);
 
-    // Focus the close control first so keyboard users land in the dialog.
-    const closeBtn = panelRef.current?.querySelector<HTMLElement>(".pf-icon-btn");
-    window.requestAnimationFrame(() => closeBtn?.focus());
+    // Focus once on open — do not re-run when parent re-renders (new onClose).
+    window.requestAnimationFrame(() => {
+      const preferred = initialFocusRefStable.current?.current;
+      if (preferred) {
+        preferred.focus();
+        return;
+      }
+      const closeBtn =
+        panelRef.current?.querySelector<HTMLElement>(".pf-icon-btn");
+      closeBtn?.focus();
+    });
 
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
       previouslyFocused.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

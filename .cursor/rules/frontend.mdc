@@ -17,14 +17,15 @@ alwaysApply: false
 - Brand logo: `/logos/groundwork-logo.png`
 
 ## Mobile responsiveness (mandatory on every UI change)
+- Full standard: **`.cursor/rules/mobile-responsive.mdc`** (alwaysApply) — follow it on every `client/` change
 - Design and verify for phones (~320–430px CSS px) and tablets — not desktop-only then “hope”
-- **No document-level horizontal scrolling** (`html`/`body`/`#root` stay within viewport width)
+- **No document-level horizontal scrolling** (`html`/`body`/`#root` stay within viewport width; vertical-only page scroll)
 - Prefer `minmax(0, 1fr)`, `width: 100%`, `max-width: 100%`, wrapping flex (`flex-wrap`), and single-column grids under ~760–900px
-- Avoid fixed widths that exceed the viewport; long text uses `overflow-wrap` / truncation inside cards
-- Intentional sideways scroll (admin board columns, compact trackers, sidebar chip nav) MUST live inside a local `overflow-x: auto` wrapper — never leak to the page
-- Touch targets: keep primary actions tappable; stack footer actions on small screens when needed
+- Avoid fixed widths / large `min-width` that exceed the viewport; long text uses `overflow-wrap` / truncation inside cards
+- Intentional sideways scroll (admin board columns, compact trackers, wide tables) MUST live inside a local `overflow-x: auto` wrapper with `max-width: 100%` — never leak to the page. Portal nav under 900px is an off-canvas drawer (not a chip strip).
+- Touch targets: keep primary actions tappable; stack footer/header actions on small screens when needed
 - **CSS cascade:** put responsive overrides **after** the base rules for the same selectors (or use mobile-first `min-width` queries). An early `@media (max-width: …)` block is overridden by later unscoped rules with equal specificity — that caused ADU options to stay 2-column on phones
-- Before finishing a UI change: spot-check at ~375px width for overflow, clipped CTAs, and unusable tables/forms
+- Before finishing a UI change: spot-check at **~320px and ~375px** for overflow (`scrollWidth <= clientWidth`), clipped CTAs, and unusable tables/forms/modals
 
 ## i18n (mandatory on every UI change)
 - **Never hardcode** user-visible strings in components (including buttons, labels, empty states, errors, Yup messages, `aria-label`, PageMeta title/description)

@@ -1,5 +1,6 @@
+import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach } from "vitest";
 import { I18nextProvider } from "react-i18next";
@@ -71,5 +72,47 @@ describe("portal Modal", () => {
     const onClose = mount();
     await user.click(screen.getByRole("button", { name: i18n.t("pf.close") }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not steal focus back to close when onClose identity changes", async () => {
+    const inputRef = createRef<HTMLInputElement>();
+    const { rerender } = render(
+      <I18nextProvider i18n={i18n}>
+        <Modal
+          open
+          titleKey="admin.newProject"
+          onClose={() => undefined}
+          initialFocusRef={inputRef}
+        >
+          <input ref={inputRef} aria-label="dial" defaultValue="" />
+        </Modal>
+      </I18nextProvider>,
+    );
+    await waitFor(() => {
+      expect(document.activeElement).toBe(inputRef.current);
+    });
+    await user.type(inputRef.current!, "55");
+    expect(inputRef.current?.value).toBe("55");
+    expect(document.activeElement).toBe(inputRef.current);
+
+    // Parent re-render with a new inline onClose (common pattern) must not
+    // re-focus the close control mid-typing.
+    rerender(
+      <I18nextProvider i18n={i18n}>
+        <Modal
+          open
+          titleKey="admin.newProject"
+          onClose={() => undefined}
+          initialFocusRef={inputRef}
+        >
+          <input ref={inputRef} aria-label="dial" defaultValue="55" />
+        </Modal>
+      </I18nextProvider>,
+    );
+    await user.type(inputRef.current!, "6");
+    expect(document.activeElement).toBe(inputRef.current);
+    expect(
+      screen.getByRole("button", { name: i18n.t("pf.close") }),
+    ).not.toHaveFocus();
   });
 });

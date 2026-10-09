@@ -19,6 +19,9 @@ import {
   TextField,
 } from "@/components/portal/kit";
 import AvatarCropModal from "@/components/portal/AvatarCropModal";
+import { slugifyAffiliate } from "@/lib/affiliateSlug";
+import { buildAffiliateTrackingUrl } from "@/lib/referral";
+import { yupAffiliateSlug, yupPhoneOptional } from "@/lib/validation";
 
 export default function AffiliateProfile() {
   const { t, i18n } = useTranslation();
@@ -33,6 +36,8 @@ export default function AffiliateProfile() {
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [bio, setBio] = useState<string | null>(null);
   const [company, setCompany] = useState<string | null>(null);
+  const [slug, setSlug] = useState<string | null>(null);
+  const [referralCode, setReferralCode] = useState("");
 
   useEffect(() => {
     void dispatch(fetchAffiliateProfile())
@@ -40,6 +45,8 @@ export default function AffiliateProfile() {
       .then((p) => {
         setBio(p.bio);
         setCompany(p.company);
+        setSlug(p.slug);
+        setReferralCode(p.referral_code);
       })
       .catch(() => {})
       .finally(() => setLoadingProfile(false));
@@ -128,6 +135,7 @@ export default function AffiliateProfile() {
             phone: user.phone || "",
             company: company || "",
             bio: bio || "",
+            slug: slug || "",
             preferred_language: user.preferred_language || "en",
             email: user.email,
           }}
@@ -138,20 +146,22 @@ export default function AffiliateProfile() {
             last_name: Yup.string()
               .trim()
               .required(t("validation.lastNameRequired")),
-            phone: Yup.string()
-              .trim()
-              .test("phone", t("validation.phoneMin"), (v) => {
-                if (!v) return true;
-                return v.replace(/\D/g, "").length >= 10;
-              }),
+            phone: yupPhoneOptional(t("validation.phoneMin")),
             company: Yup.string().trim().max(200),
             bio: Yup.string().trim().max(500),
+            slug: yupAffiliateSlug(
+              t("validation.slugFormat"),
+              t("validation.slugReserved"),
+            ),
             preferred_language: Yup.string().oneOf(["en", "es"]).required(),
           })}
           onSubmit={async (values) => {
             setSaving(true);
             setSaved(false);
             setError(null);
+            const nextSlug = values.slug.trim()
+              ? slugifyAffiliate(values.slug.trim())
+              : null;
             const result = await dispatch(
               updateAffiliateProfile({
                 first_name: values.first_name.trim(),
@@ -159,6 +169,7 @@ export default function AffiliateProfile() {
                 phone: values.phone.trim() || null,
                 company: values.company.trim() || null,
                 bio: values.bio.trim() || null,
+                slug: nextSlug,
                 preferred_language: values.preferred_language as "en" | "es",
               }),
             );
@@ -172,6 +183,8 @@ export default function AffiliateProfile() {
               );
               setCompany(result.payload.profile.company);
               setBio(result.payload.profile.bio);
+              setSlug(result.payload.profile.slug);
+              setReferralCode(result.payload.profile.referral_code);
               const next = result.payload.user.preferred_language;
               const cur = i18n.language?.startsWith("es") ? "es" : "en";
               if (next !== cur) void i18n.changeLanguage(next);
@@ -181,30 +194,54 @@ export default function AffiliateProfile() {
             }
           }}
         >
-          <Form className="pf-form pf-profile-form">
-            <TextField name="email" labelKey="form.email" disabled />
-            <div className="pf-form-grid">
-              <TextField name="first_name" labelKey="form.firstName" />
-              <TextField name="last_name" labelKey="form.lastName" />
-            </div>
-            <TextField name="phone" labelKey="form.phone" />
-            <TextField name="company" labelKey="affSignup.company" />
-            <TextField
-              name="bio"
-              labelKey="aff.profileBio"
-              as="textarea"
-              rows={4}
-            />
-            <SelectField
-              name="preferred_language"
-              labelKey="admin.profileLanguage"
-              options={[
-                { value: "en", label: t("lang.en") },
-                { value: "es", label: t("lang.es") },
-              ]}
-            />
-            <SubmitButton busy={saving} labelKey="pf.save" />
-          </Form>
+          {({ values }) => {
+            const previewUrl = referralCode
+              ? buildAffiliateTrackingUrl({
+                  referral_code: referralCode,
+                  slug: values.slug.trim()
+                    ? slugifyAffiliate(values.slug.trim())
+                    : null,
+                })
+              : "";
+            return (
+              <Form className="pf-form pf-profile-form">
+                <TextField name="email" labelKey="form.email" disabled />
+                <div className="pf-form-grid">
+                  <TextField name="first_name" labelKey="form.firstName" />
+                  <TextField name="last_name" labelKey="form.lastName" />
+                </div>
+                <TextField name="phone" labelKey="form.phone" />
+                <TextField name="company" labelKey="affSignup.company" />
+                <TextField
+                  name="slug"
+                  labelKey="aff.profileSlug"
+                  placeholder={t("admin.slugPlaceholder")}
+                />
+                <p className="pf-muted">{t("aff.profileSlugHelp")}</p>
+                {previewUrl ? (
+                  <p className="pf-muted pf-slug-preview">
+                    {t("aff.profileSlugPreview")}:{" "}
+                    <code className="pf-code">{previewUrl}</code>
+                  </p>
+                ) : null}
+                <TextField
+                  name="bio"
+                  labelKey="aff.profileBio"
+                  as="textarea"
+                  rows={4}
+                />
+                <SelectField
+                  name="preferred_language"
+                  labelKey="admin.profileLanguage"
+                  options={[
+                    { value: "en", label: t("lang.en") },
+                    { value: "es", label: t("lang.es") },
+                  ]}
+                />
+                <SubmitButton busy={saving} labelKey="pf.save" />
+              </Form>
+            );
+          }}
         </Formik>
       </section>
 

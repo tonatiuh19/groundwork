@@ -1,9 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Formik, Form } from "formik";
 import { ArrowRightCircle, NotebookPen } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { AdminLead } from "@shared/api";
+import DuplicatesPanel from "@/components/admin/DuplicatesPanel";
+import type {
+  AdminLead,
+  LeadConvertPhoneMatch,
+  LeadConvertStatus,
+  LeadConvertTarget,
+} from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearAdminSaveError,
@@ -31,10 +37,29 @@ import {
 } from "@/components/portal/kit";
 import { LEAD_MODES } from "@/lib/eventOptions";
 import { useFormatters } from "@/lib/format";
+import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
 import { useAdminCan } from "@/hooks/useAdminCan";
+import {
+  leadAlreadyConverted,
+  smartLeadConvertTarget,
+} from "@/lib/leadConvertTarget";
 
 const STATUSES = ["new", "contacted", "qualified", "closed", "spam"] as const;
 const PAGE_SIZE = 50;
+
+function pickDefaultTarget(
+  lead: AdminLead,
+  canClient: boolean,
+  canApprovals: boolean,
+): LeadConvertTarget {
+  const smart = smartLeadConvertTarget(lead);
+  if (smart === "client" && canClient) return "client";
+  if (smart === "affiliate" && canApprovals) return "affiliate";
+  if (smart === "contractor" && canApprovals) return "contractor";
+  if (canClient) return "client";
+  if (canApprovals) return "affiliate";
+  return "client";
+}
 
 export default function AdminLeads() {
   const { t, i18n } = useTranslation();
@@ -45,7 +70,9 @@ export default function AdminLeads() {
   const { saving, saveError } = useAppSelector((s) => s.adminPortal);
   const plans = useAppSelector((s) => s.adminPortal.plans.items);
   const events = useAppSelector((s) => s.adminPortal.events.items);
-  const canConvert = useAdminCan("projects.write");
+  const canClientConvert = useAdminCan("projects.write");
+  const canApprovalsConvert = useAdminCan("approvals");
+  const canShowConvert = canClientConvert || canApprovalsConvert;
   const [status, setStatus] = useState("");
   const [mode, setMode] = useState("");
   const [eventId, setEventId] = useState("");
@@ -53,13 +80,18 @@ export default function AdminLeads() {
   const [offset, setOffset] = useState(0);
   const [noteLead, setNoteLead] = useState<AdminLead | null>(null);
   const [convertLead, setConvertLead] = useState<AdminLead | null>(null);
+  const [phoneMatch, setPhoneMatch] = useState<LeadConvertPhoneMatch | null>(null);
+  const [pendingConvert, setPendingConvert] = useState<{
+    target: LeadConvertTarget;
+    adu_plan_id: number | null;
+    status: LeadConvertStatus;
+  } | null>(null);
   const rowBusy = useRowBusy();
 
   useEffect(() => {
     setOffset(0);
   }, [status, q, mode, eventId]);
 
-  // Event filter options (newest first); failure just leaves the picker empty.
   useEffect(() => {
     void dispatch(fetchAdminEvents({ limit: 100 }));
   }, [dispatch]);
@@ -82,8 +114,73 @@ export default function AdminLeads() {
 
   const openConvert = (lead: AdminLead) => {
     dispatch(clearAdminSaveError());
+    setPhoneMatch(null);
+    setPendingConvert(null);
     void dispatch(fetchAdminPlans());
     setConvertLead(lead);
+  };
+
+  const convertInitial = useMemo(() => {
+    if (!convertLead) {
+      return {
+        target: "client" as LeadConvertTarget,
+        adu_plan_id: "",
+        status: "active" as LeadConvertStatus,
+      };
+    }
+    const target = pickDefaultTarget(convertLead, canClientConvert, canApprovalsConvert);
+    return {
+      target,
+      adu_plan_id: "",
+      status: (target === "contractor" ? "pending" : "active") as LeadConvertStatus,
+    };
+  }, [convertLead, canClientConvert, canApprovalsConvert]);
+
+  const lastConvert = useRef<Parameters<typeof runConvert>[0] | null>(null);
+  const runConvert = async (opts: {
+    target: LeadConvertTarget;
+    adu_plan_id: number | null;
+    status: LeadConvertStatus;
+    confirm_phone_link?: boolean;
+    shared_phone_reason?: string;
+  }) => {
+    if (!convertLead) return;
+    lastConvert.current = opts;
+    const r = await dispatch(
+      convertAdminLead({
+        id: convertLead.id,
+        target: opts.target,
+        adu_plan_id: opts.target === "client" ? opts.adu_plan_id : null,
+        status: opts.target === "client" ? undefined : opts.status,
+        confirm_phone_link: opts.confirm_phone_link,
+        shared_phone_reason: opts.shared_phone_reason,
+      }),
+    );
+    if (convertAdminLead.fulfilled.match(r)) {
+      setConvertLead(null);
+      setPhoneMatch(null);
+      setPendingConvert(null);
+      const payload = r.payload;
+      if (payload.target === "client" && payload.project_public_id) {
+        navigate(`/admin/projects/${payload.project_public_id}`);
+      } else if (payload.target === "affiliate" && payload.affiliate_id) {
+        navigate(`/admin/affiliates/${payload.affiliate_id}`);
+      } else if (payload.target === "contractor" && payload.contractor_id) {
+        navigate(`/admin/contractors/${payload.contractor_id}`);
+      } else {
+        load();
+      }
+      return;
+    }
+    if (convertAdminLead.rejected.match(r) && r.payload?.phone_match) {
+      dispatch(clearAdminSaveError());
+      setPhoneMatch(r.payload.phone_match);
+      setPendingConvert({
+        target: opts.target,
+        adu_plan_id: opts.adu_plan_id,
+        status: opts.status,
+      });
+    }
   };
 
   const modalOpen = Boolean(noteLead || convertLead);
@@ -91,6 +188,7 @@ export default function AdminLeads() {
   return (
     <div className="portal-page">
       <PageHeader titleKey="portalNav.leads" leadKey="admin.leadsLead" />
+      <DuplicatesPanel entity="lead" />
       <div className="pf-filters">
         <SearchBox onSearch={setQ} />
         <FilterSelect
@@ -171,7 +269,23 @@ export default function AdminLeads() {
               ),
           },
           { key: "aff", headerKey: "admin.affiliate", render: (l) => l.affiliate_name || "—" },
-          { key: "date", headerKey: "pf.created", render: (l) => fmt.date(l.created_at) },
+          {
+            key: "date",
+            headerKey: "pf.created",
+            render: (l) => (
+              <>
+                {fmt.date(l.last_submitted_at || l.created_at)}
+                {l.submission_count && l.submission_count > 1 ? (
+                  <>
+                    <br />
+                    <span className="lead-repeat" title={t("admin.leadRepeatHint")}>
+                      {t("admin.leadRepeat", { count: l.submission_count })}
+                    </span>
+                  </>
+                ) : null}
+              </>
+            ),
+          },
           {
             key: "notes",
             headerKey: "pf.notes",
@@ -216,12 +330,12 @@ export default function AdminLeads() {
             key: "convert",
             headerKey: "pf.actions",
             render: (l) =>
-              canConvert && !l.client_id ? (
+              canShowConvert && !leadAlreadyConverted(l) ? (
                 <button type="button" className="pf-btn" onClick={() => openConvert(l)}>
                   <ArrowRightCircle size={15} /> {t("admin.convert")}
                 </button>
-              ) : l.client_id ? (
-                <span className="pf-muted">{t("admin.converted")}</span>
+              ) : leadAlreadyConverted(l) ? (
+                <LeadPersonLink lead={l} />
               ) : null,
           },
         ]}
@@ -263,46 +377,199 @@ export default function AdminLeads() {
       </Modal>
 
       <Modal
-        open={Boolean(convertLead)}
+        open={Boolean(convertLead) && !phoneMatch}
         titleKey="admin.convertLeadTitle"
-        onClose={() => setConvertLead(null)}
+        onClose={() => {
+          setConvertLead(null);
+          setPendingConvert(null);
+        }}
       >
         {convertLead ? (
           <Formik
-            initialValues={{ adu_plan_id: "" }}
+            enableReinitialize
+            initialValues={convertInitial}
             onSubmit={async (v) => {
-              const r = await dispatch(
-                convertAdminLead({
-                  id: convertLead.id,
-                  adu_plan_id: v.adu_plan_id ? Number(v.adu_plan_id) : null,
-                }),
-              );
-              if (convertAdminLead.fulfilled.match(r)) {
-                setConvertLead(null);
-                navigate(`/admin/projects/${r.payload.project_public_id}`);
-              }
+              await runConvert({
+                target: v.target,
+                adu_plan_id: v.adu_plan_id ? Number(v.adu_plan_id) : null,
+                status: v.status,
+              });
             }}
           >
-            <Form className="pf-form">
-              <ErrorNote error={saveError} />
-              <p className="pf-muted">
-                {t("admin.convertLeadHelp", { name: convertLead.full_name })}
-              </p>
-              <SelectField
-                name="adu_plan_id"
-                labelKey="pf.plan"
-                options={[
-                  { value: "", label: t("aff.planUnknown") },
-                  ...plans
-                    .filter((p) => p.is_active)
-                    .map((p) => ({ value: p.id, label: p.name })),
-                ]}
-              />
-              <SubmitButton busy={saving} labelKey="admin.convert" />
-            </Form>
+            {({ values, setFieldValue }) => (
+              <Form className="pf-form">
+                <ErrorNote error={saveError} />
+                <PersonConflictNotice
+                  busy={saving}
+                  onOverride={(reason) =>
+                    lastConvert.current &&
+                    void runConvert({ ...lastConvert.current, shared_phone_reason: reason })
+                  }
+                />
+                <p className="pf-muted">
+                  {t("admin.convertLeadHelp", { name: convertLead.full_name })}
+                </p>
+                <fieldset className="pf-fieldset">
+                  <legend>{t("admin.convertTarget")}</legend>
+                  <div className="pf-radio-stack">
+                    {canClientConvert ? (
+                      <label className="pf-radio">
+                        <input
+                          type="radio"
+                          name="target"
+                          checked={values.target === "client"}
+                          onChange={() => {
+                            void setFieldValue("target", "client");
+                          }}
+                        />
+                        {t("admin.convertTargetClient")}
+                      </label>
+                    ) : null}
+                    {canApprovalsConvert ? (
+                      <label className="pf-radio">
+                        <input
+                          type="radio"
+                          name="target"
+                          checked={values.target === "affiliate"}
+                          onChange={() => {
+                            void setFieldValue("target", "affiliate");
+                            void setFieldValue("status", "active");
+                          }}
+                        />
+                        {t("admin.convertTargetAffiliate")}
+                      </label>
+                    ) : null}
+                    {canApprovalsConvert ? (
+                      <label className="pf-radio">
+                        <input
+                          type="radio"
+                          name="target"
+                          checked={values.target === "contractor"}
+                          onChange={() => {
+                            void setFieldValue("target", "contractor");
+                            void setFieldValue("status", "pending");
+                          }}
+                        />
+                        {t("admin.convertTargetContractor")}
+                      </label>
+                    ) : null}
+                  </div>
+                </fieldset>
+                {values.target === "client" ? (
+                  <SelectField
+                    name="adu_plan_id"
+                    labelKey="pf.plan"
+                    options={[
+                      { value: "", label: t("aff.planUnknown") },
+                      ...plans
+                        .filter((p) => p.is_active)
+                        .map((p) => ({ value: p.id, label: p.name })),
+                    ]}
+                  />
+                ) : (
+                  <>
+                    <p className="pf-muted">
+                      {values.target === "contractor"
+                        ? t("admin.convertContractorStatusHelp")
+                        : t("admin.convertAffiliateStatusHelp")}
+                    </p>
+                    <fieldset className="pf-fieldset">
+                      <legend>{t("admin.convertStatus")}</legend>
+                      <div className="pf-radio-stack">
+                        <label className="pf-radio">
+                          <input
+                            type="radio"
+                            name="status"
+                            checked={values.status === "active"}
+                            onChange={() => void setFieldValue("status", "active")}
+                          />
+                          {t("admin.convertStatusActive")}
+                        </label>
+                        <label className="pf-radio">
+                          <input
+                            type="radio"
+                            name="status"
+                            checked={values.status === "pending"}
+                            onChange={() => void setFieldValue("status", "pending")}
+                          />
+                          {t("admin.convertStatusPending")}
+                        </label>
+                      </div>
+                    </fieldset>
+                  </>
+                )}
+                <SubmitButton busy={saving} labelKey="admin.convert" />
+              </Form>
+            )}
           </Formik>
         ) : null}
       </Modal>
+
+      <Modal
+        open={Boolean(phoneMatch && convertLead && pendingConvert)}
+        titleKey="admin.convertPhoneLinkTitle"
+        onClose={() => {
+          setPhoneMatch(null);
+          setPendingConvert(null);
+        }}
+      >
+        {phoneMatch && pendingConvert ? (
+          <div className="pf-form">
+            <ErrorNote error={saveError} />
+            <p>
+              {t("admin.convertPhoneLinkHelp", {
+                name: phoneMatch.name,
+                email: phoneMatch.email,
+                entity: t(`admin.convertPhoneEntity.${phoneMatch.entity}`),
+              })}
+            </p>
+            <div className="pf-actions" style={{ flexWrap: "wrap", gap: 8 }}>
+              <button
+                type="button"
+                className="pf-btn pf-btn-primary"
+                disabled={saving}
+                onClick={() =>
+                  void runConvert({
+                    ...pendingConvert,
+                    confirm_phone_link: true,
+                  })
+                }
+              >
+                {t("admin.convertPhoneLinkConfirm")}
+              </button>
+              <button
+                type="button"
+                className="pf-btn"
+                disabled={saving}
+                onClick={() => {
+                  setPhoneMatch(null);
+                  setPendingConvert(null);
+                }}
+              >
+                {t("admin.convertPhoneLinkCancel")}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </div>
+  );
+}
+
+/** "Already a client / affiliate / contractor" link for leads that point at a person. */
+function LeadPersonLink({ lead }: { lead: AdminLead }) {
+  const { t } = useTranslation();
+  const target = lead.client_id
+    ? { path: `/admin/clients/${lead.client_id}`, role: "client" }
+    : lead.converted_affiliate_id
+      ? { path: `/admin/affiliates/${lead.converted_affiliate_id}`, role: "affiliate" }
+      : lead.converted_contractor_id
+        ? { path: `/admin/contractors/${lead.converted_contractor_id}`, role: "contractor" }
+        : null;
+  if (!target) return <span className="pf-muted">{t("admin.converted")}</span>;
+  return (
+    <Link className={`lead-person is-${target.role}`} to={target.path}>
+      {t(`admin.leadIsRole.${target.role}`)}
+    </Link>
   );
 }

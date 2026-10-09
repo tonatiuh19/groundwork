@@ -1,0 +1,48 @@
+/**
+ * Canonical reserved affiliate vanity slugs (blocked for /r/{slug}).
+ * Client imports this module. API keeps an inline copy (Vercel monolith —
+ * no shared runtime imports); `client/lib/affiliateSlug.reserved.spec.ts`
+ * fails if the two lists drift.
+ */
+export const AFFILIATE_RESERVED_SLUGS = [
+  "admin",
+  "admins",
+  "affiliate",
+  "affiliates",
+  "api",
+  "app",
+  "assets",
+  "auth",
+  "client",
+  "clients",
+  "contact",
+  "contractor",
+  "contractors",
+  "cron",
+  "enroll",
+  "event",
+  "events",
+  "expired",
+  "get-credit-report",
+  "health",
+  "home",
+  "invite",
+  "join",
+  "login",
+  "logout",
+  "mcp",
+  "null",
+  "oauth",
+  "partners",
+  "portal",
+  "public",
+  "r",
+  "signup",
+  "static",
+  "support",
+  "team",
+  "undefined",
+  "webhook",
+  "webhooks",
+  "www",
+] as const;

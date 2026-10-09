@@ -10,6 +10,7 @@ import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import HomeMarketingSections from "@/components/HomeMarketingSections";
 import AduOptionsSection from "@/components/AduOptionsSection";
+import HeroCommercial from "@/components/HeroCommercial";
 import PageMeta, {
   financialServiceSchema,
   organizationSchema,
@@ -48,9 +49,7 @@ export default function Index() {
         ogType="website"
         jsonLd={[
           organizationSchema(i18n.language?.startsWith("es") ? "es" : "en"),
-          financialServiceSchema(
-            i18n.language?.startsWith("es") ? "es" : "en",
-          ),
+          financialServiceSchema(i18n.language?.startsWith("es") ? "es" : "en"),
           websiteSchema,
         ]}
       />
@@ -97,25 +96,7 @@ export default function Index() {
               <ShieldCheck size={17} /> {t("hero.trust")}
             </div>
           </div>
-          <div className="hero-art">
-            <video
-              className="hero-image hero-video"
-              autoPlay
-              muted
-              loop
-              playsInline
-              poster="https://images.pexels.com/photos/16787453/pexels-photo-16787453.png"
-              aria-label={t("hero.videoAria")}
-            >
-              <source
-                src="https://videos.pexels.com/video-files/19119229/19119229-sd_426_240_25fps.mp4"
-                type="video/mp4"
-              />
-            </video>
-            <div className="photo-wash" aria-hidden="true" />
-            <div className="art-label art-label-top">{t("hero.artTop")}</div>
-            <div className="art-label art-label-bottom">{t("hero.artBottom")}</div>
-          </div>
+          <HeroCommercial />
         </section>
 
         <HomeMarketingSections />
@@ -198,13 +179,18 @@ export default function Index() {
                   <strong>{event.location_label || event.city}</strong>
                 </div>
               </div>
-              <Link className="text-link event-more" to={`/events/${event.slug}`}>
+              <Link
+                className="text-link event-more"
+                to={`/events/${event.slug}`}
+              >
                 {t("event.moreDetails")} <ArrowRight size={15} />
               </Link>
             </div>
             <div className="event-card">
               <div className="event-card-top">
-                <span className="calendar-mark">{eventDayOfMonth(event.starts_at)}</span>
+                <span className="calendar-mark">
+                  {eventDayOfMonth(event.starts_at)}
+                </span>
                 <span>
                   {t("event.cardLine1")}
                   <br />

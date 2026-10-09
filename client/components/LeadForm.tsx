@@ -145,6 +145,7 @@ export default function LeadForm({
         email: "",
         property_address: "",
         soft_pull_consent: true,
+        sms_marketing_consent: false,
       }}
       validationSchema={schema}
       onSubmit={async (values) => {
@@ -156,6 +157,7 @@ export default function LeadForm({
             property_address: values.property_address,
             // Not collected for events; the credit report is a separate CTA.
             soft_pull_consent: event ? false : values.soft_pull_consent,
+            sms_marketing_consent: values.sms_marketing_consent,
             preferred_language: i18n.language?.startsWith("es") ? "es" : "en",
             mode: event ? "event" : "standard",
             event_id: event ? event.id : null,
@@ -237,6 +239,17 @@ export default function LeadForm({
               ) : null}
             </>
           ) : null}
+          <label className="consent">
+            <input
+              type="checkbox"
+              name="sms_marketing_consent"
+              checked={values.sms_marketing_consent}
+              onChange={(e) =>
+                setFieldValue("sms_marketing_consent", e.target.checked)
+              }
+            />
+            <span>{t("form.smsMarketingConsent")}</span>
+          </label>
           <button className="button button-gold form-submit" type="submit" disabled={submitting}>
             {submitting
               ? t("form.submitting")

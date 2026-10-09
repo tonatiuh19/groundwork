@@ -206,7 +206,9 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
                 <Form className="portal-login-form">
                   <h2>{t("portalAuth.emailStep")}</h2>
                   <p className="portal-login-hint">{t("portalAuth.emailHint")}</p>
-                  {actor === "affiliate" ? (
+                  {actor === "affiliate" ||
+                  actor === "client" ||
+                  actor === "contractor" ? (
                     <p className="portal-login-legend">{t("portalAuth.pendingLegend")}</p>
                   ) : null}
                   {error ? (
@@ -264,6 +266,33 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
                   <p className="portal-login-hint">
                     {t("portalAuth.codeHint", { email })}
                   </p>
+                  <p className="portal-login-hint portal-login-hint--secondary">
+                    {t("portalAuth.codeHintDetail")}
+                  </p>
+                  {actor === "affiliate" ? (
+                    <p className="portal-login-legend">
+                      {t("portalAuth.codeNoAccountAffiliate")}{" "}
+                      <Link className="text-link" to="/affiliate/signup">
+                        {t("portalAuth.becomeAffiliate")}
+                      </Link>
+                    </p>
+                  ) : null}
+                  {actor === "client" ? (
+                    <p className="portal-login-legend">
+                      {t("portalAuth.codeNoAccountClient")}{" "}
+                      <Link className="text-link" to="/client/signup">
+                        {t("portalAuth.createClientAccount")}
+                      </Link>
+                    </p>
+                  ) : null}
+                  {actor === "contractor" ? (
+                    <p className="portal-login-legend">
+                      {t("portalAuth.codeNoAccountContractor")}{" "}
+                      <Link className="text-link" to="/contractor/signup">
+                        {t("portalAuth.createContractorAccount")}
+                      </Link>
+                    </p>
+                  ) : null}
                   {error ? (
                     <p className="form-error" role="alert">
                       {translateApiError(t, error)}
@@ -345,6 +374,22 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
               {t("portalAuth.newAffiliate")}{" "}
               <Link className="text-link" to="/affiliate/signup">
                 {t("portalAuth.becomeAffiliate")}
+              </Link>
+            </p>
+          ) : null}
+          {actor === "client" ? (
+            <p className="portal-login-hint portal-login-alt">
+              {t("portalAuth.newClient")}{" "}
+              <Link className="text-link" to="/client/signup">
+                {t("portalAuth.createClientAccount")}
+              </Link>
+            </p>
+          ) : null}
+          {actor === "contractor" ? (
+            <p className="portal-login-hint portal-login-alt">
+              {t("portalAuth.newContractor")}{" "}
+              <Link className="text-link" to="/contractor/signup">
+                {t("portalAuth.createContractorAccount")}
               </Link>
             </p>
           ) : null}

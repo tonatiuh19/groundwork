@@ -13,11 +13,11 @@
 - **if any update is made to api/index.ts, ALWAYS update `api/swagger.yaml` in the same change**
 - **if any UI, branding, email chrome, or public-flow change is made, ALWAYS update `DESIGN_SYSTEM.md` in the same change**
 - **Always think about mobile responsiveness and cool, engaging UI/UX when making frontend changes**
-- **Mobile (mandatory, no exceptions):** every public page, portal shell, form, table, modal, and wizard MUST work on phones (~320–430px) and tablets without layout breaks, clipped controls, or **document-level horizontal scrolling**. Prefer fluid widths (`minmax(0, …)`, `%`, `clamp`), collapsing grids, and wrapping toolbars. If a region must scroll sideways (e.g. kanban board, milestone tracker), contain it with `overflow-x: auto` on an inner wrapper — never let the page itself scroll horizontally. Validate new UI at a narrow viewport before finishing.
+- **Mobile (mandatory, no exceptions):** every public page, portal shell, form, table, modal, and wizard MUST work on phones (~320–430px) and tablets without layout breaks, clipped controls, or **document-level horizontal scrolling** (vertical scroll only at the page level). Prefer fluid widths (`minmax(0, …)`, `%`, `clamp`), collapsing grids, and wrapping toolbars. If a region must scroll sideways (e.g. kanban board, milestone tracker, wide table), contain it with `overflow-x: auto` + `max-width: 100%` on an inner wrapper — never let the page itself scroll horizontally. Fix overflowing children; do not rely on body `overflow-x: hidden` alone. Validate at **~320px and ~375px** before finishing. Full agent standard: `.cursor/rules/mobile-responsive.mdc`.
 - **if there is an opportunity to add reusable components or utilities, do it immediately to avoid technical debt**
 - **Avoid any breaking changes**
 - **i18n: When making any UI change that introduces new user-visible strings, ALWAYS add the corresponding key to BOTH `client/locales/en/translation.json` AND `client/locales/es/translation.json`, and use `t('key')` via `useTranslation()` — NEVER hardcode user-facing strings in components. Browser language is detected when possible; fallback is English.**
-- **Tests: `VITEST=true` must never send live Resend email. Integration tests that write to TiDB must clean fixtures in `afterAll` using `api/testDbCleanup.ts` (only `@example.com` / `@example.test`).**
+- **Tests & local QA: never send real notifications.** `VITEST=true` must never send live Resend email, Twilio SMS, Ably publishes, or in-app `admin_notifications` to real staff — staff fan-out in tests is limited to `@example.com` / `@example.test` fixtures. Integration tests that write to TiDB must clean fixtures in `afterAll` using `api/testDbCleanup.ts` (only `@example.com` / `@example.test`). Enforced in code by `notifySandbox()` in `api/index.ts` (on for every Vitest run): email / SMS / Ably are dry-run and staff fan-out skips non-test admins. Manual QA on the dev server delivers for real unless you set `NOTIFY_SANDBOX=true` in `.env` — always do that before QA, and only use `@example.com` fixtures. New outbound channels MUST check `notifySandbox()`.
 - **Always review the chat history before making changes to understand what has already been fixed or implemented, and avoid reintroducing previously resolved issues**
 - **All required API logic should remain inline within api/index.ts, as the application is deployed on Vercel using a serverless architecture**
 - **NO EXCEPTIONS to these rules**
@@ -40,6 +40,8 @@
 ```bash
 npm run db:migrate
 ```
+
+`scripts/apply-migrations.sh` records each file in `schema_migrations` and skips already-applied ones. Legacy re-applies that hit duplicate column/key errors are recorded and continued; other SQL errors still abort.
 
 Or apply a single file:
 
@@ -78,11 +80,12 @@ Preflight: api inline check → typecheck → vitest → `vercel --prod` → sta
 
 ### Staff notify
 
-Active `admins` with any role (`super_admin` | `admin` | `agent` | `finance` | `content`) receive staff notify events via Resend, plus any `admin_notify_extra_emails` rows.
+Active `admins` with any role (`super_admin` | `admin` | `agent` | `finance` | `content`) receive staff notify events via Resend (honoring `notification_prefs_json`), plus any `admin_notify_extra_emails` rows. Settings → Team notifications manages staff Email/In-app/SMS prefs and extras.
 
 ### Remote MCP (super_admin)
 
 - Streamable HTTP at `/api/mcp` + OAuth under `/api/mcp/oauth/*` (tables `mcp_oauth_*` → `admins.id`).
 - Always on (no kill switch). Logic stays **inline** in `api/index.ts`. Writes need dry-run then `confirm=true` + `confirm_phrase=CONFIRM`.
+- Includes Conversations/Contacts tools (`search_contacts`, `send_sms` / `send_contact_sms`, `list_sms`, `get_call_insights` with Twilio transcripts, `list_brand_phone_numbers`, etc.). WhatsApp tools stubbed until a WA channel ships.
 - See `mcp/admin-ask/README.md` and `.cursor/mcp.json`.
 

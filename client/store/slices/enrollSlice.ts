@@ -1,6 +1,7 @@
 import { createSlice } from "@reduxjs/toolkit";
 import type {
   ClientInvitePreview,
+  EnrollOutcome,
   EnrollRequest,
   EnrollResponse,
   PortalAuthResponse,
@@ -20,6 +21,7 @@ type State = {
     submitting: boolean;
     done: boolean;
     projectId: string | null;
+    outcome: EnrollOutcome | null;
     error: string | null;
   };
   clientInvite: {
@@ -33,7 +35,7 @@ type State = {
 
 const initialState: State = {
   affiliate: { data: null, loading: false, inactive: false, error: null },
-  enroll: { submitting: false, done: false, projectId: null, error: null },
+  enroll: { submitting: false, done: false, projectId: null, outcome: null, error: null },
   clientInvite: {
     preview: null,
     loading: false,
@@ -79,7 +81,7 @@ const slice = createSlice({
   initialState,
   reducers: {
     resetEnrollForm(state) {
-      state.enroll = { submitting: false, done: false, projectId: null, error: null };
+      state.enroll = { submitting: false, done: false, projectId: null, outcome: null, error: null };
     },
     clearPublicAffiliate(state) {
       state.affiliate = { data: null, loading: false, inactive: false, error: null };
@@ -115,6 +117,7 @@ const slice = createSlice({
         s.enroll.submitting = false;
         s.enroll.done = true;
         s.enroll.projectId = a.payload.project_public_id;
+        s.enroll.outcome = a.payload.outcome ?? "created";
       })
       .addCase(submitEnroll.rejected, (s, a) => {
         s.enroll.submitting = false;

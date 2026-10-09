@@ -15,6 +15,11 @@ type Props = {
   affiliate?: PublicAffiliateCard | null;
   /** When true, hide the close/home control (e.g. loading). */
   hideClose?: boolean;
+  /** Header product line + subtitle (defaults to homeowner enrollment copy). */
+  productKey?: string;
+  subtitleKey?: string;
+  /** Footer trust line (defaults to the homeowner soft-pull note). */
+  trustKey?: string;
 };
 
 /**
@@ -29,6 +34,9 @@ export default function EnrollApp({
   noIndex,
   affiliate,
   hideClose,
+  productKey = "enroll.appTitle",
+  subtitleKey = "enroll.appSubtitle",
+  trustKey = "enroll.trustLine",
 }: Props) {
   const { t } = useTranslation();
   const affiliateName = affiliate
@@ -52,7 +60,7 @@ export default function EnrollApp({
           />
         </Link>
         <div className="enroll-app-context">
-          <p className="enroll-app-product">{t("enroll.appTitle")}</p>
+          <p className="enroll-app-product">{t(productKey)}</p>
           {affiliateName ? (
             <p className="enroll-app-with">
               {t("enroll.appWith")}{" "}
@@ -62,7 +70,7 @@ export default function EnrollApp({
               ) : null}
             </p>
           ) : (
-            <p className="enroll-app-with">{t("enroll.appSubtitle")}</p>
+            <p className="enroll-app-with">{t(subtitleKey)}</p>
           )}
         </div>
         <div className="enroll-app-top-actions">
@@ -80,7 +88,7 @@ export default function EnrollApp({
       </header>
       <div className="enroll-app-body">{children}</div>
       <footer className="enroll-app-foot">
-        <p className="enroll-app-trust">{t("enroll.trustLine")}</p>
+        <p className="enroll-app-trust">{t(trustKey)}</p>
         <p className="enroll-app-copy">{t("enroll.copyright", { year: new Date().getFullYear() })}</p>
       </footer>
     </div>

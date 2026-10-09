@@ -32,8 +32,12 @@ paths:
     get:
       summary: Current admin
       tags: [portal-auth]
+      description: |
+        Includes Conversations fields when a brand Twilio line is assigned:
+        conversations_enabled, assigned_phone_numbers, voice_available,
+        call_forwarding_enabled, call_forwarding_phone.
       responses:
-        "200": { description: Admin user }
+        "200": { description: Admin user (+ conversations_* when numbered) }
         "401": { description: Unauthorized }
   /api/admin/auth/logout:
     post:
@@ -367,6 +371,9 @@ paths:
   /api/public/contact:
     post:
       summary: Public contact form (SMS consent fields)
+      description: |
+        Most intents create a lead. intent=partner creates a pending affiliate (no lead),
+        same as /api/public/partner-referral, and accepts optional referral_code.
       requestBody:
         required: true
         content:
@@ -397,25 +404,40 @@ paths:
                   type: boolean
                 sms_marketing_consent:
                   type: boolean
+                referral_code:
+                  type: string
+                  nullable: true
       responses:
         "201":
-          description: Contact lead stored; confirmation + staff notify (live when RESEND_API_KEY is set; dry-run under Vitest)
+          description: |
+            Lead stored (most intents) or pending affiliate when intent=partner.
+            Confirmation + staff notify (dry-run under Vitest).
           content:
             application/json:
               schema:
-                type: object
-                required: [ok, lead_id, message]
-                properties:
-                  ok: { type: boolean }
-                  lead_id: { type: integer }
-                  message: { type: string }
+                oneOf:
+                  - type: object
+                    required: [ok, lead_id, message]
+                    properties:
+                      ok: { type: boolean }
+                      lead_id: { type: integer }
+                      message: { type: string }
+                  - type: object
+                    required: [ok, affiliate_id, kind, message]
+                    properties:
+                      ok: { type: boolean }
+                      affiliate_id: { type: integer }
+                      kind: { type: string, enum: [partner_affiliate] }
+                      message: { type: string }
         "400":
           description: Validation error
+        "409":
+          description: errors.affiliateExists / errors.emailExists* (intent=partner)
         "429":
           description: Rate limited
   /api/public/partner-referral:
     post:
-      summary: Partner / referral program signup
+      summary: Partner / referral program signup (creates pending affiliate, not a lead)
       requestBody:
         required: true
         content:
@@ -432,20 +454,26 @@ paths:
                 preferred_language:
                   type: string
                   enum: [en, es]
+                referral_code:
+                  type: string
+                  nullable: true
+                  description: From /r/:code or ?ref= — sets parent_affiliate_id when active
       responses:
         "201":
-          description: Partner lead stored; confirmation + staff notify
+          description: Pending affiliate created; confirmation + staff notify (partner_referral event key)
           content:
             application/json:
               schema:
                 type: object
-                required: [ok, lead_id, message]
+                required: [ok, affiliate_id, message]
                 properties:
                   ok: { type: boolean }
-                  lead_id: { type: integer }
+                  affiliate_id: { type: integer }
                   message: { type: string }
         "400":
           description: Validation error
+        "409":
+          description: errors.affiliateExists / errors.emailExistsClient / errors.emailExistsContractor
         "429":
           description: Rate limited
   /api/public/plans:
@@ -476,6 +504,58 @@ paths:
         "201": { description: "Application stored; staff notified (live when RESEND_API_KEY is set; dry-run under Vitest)" }
         "400": { description: "Validation error (i18n key in error)" }
         "409": { description: "errors.affiliateExists" }
+        "429": { description: "Rate limited" }
+  /api/public/client/signup:
+    post:
+      summary: "Homeowner portal self-signup (pending until staff approves → prospect + portal invite)"
+      tags: [portal-public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, phone]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                address_line1: { type: string, nullable: true }
+                city: { type: string, nullable: true }
+                zip: { type: string, nullable: true }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "201":
+          description: "{ ok, outcome: created } — applicant + staff notified"
+        "200":
+          description: "Duplicate email soft outcomes — outcome resent | invite_resent | ready (no enumeration)"
+        "400": { description: "Validation error (i18n key in error)" }
+        "429": { description: "Rate limited" }
+  /api/public/contractor/signup:
+    post:
+      summary: "Contractor portal self-signup (pending; emails the prequalification application link — approving the application activates the login)"
+      tags: [portal-public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, phone]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                company: { type: string, nullable: true }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "201":
+          description: "{ ok, outcome: created } — applicant + staff notified"
+        "200":
+          description: "Duplicate email soft outcomes — outcome resent | invite_resent | ready"
+        "400": { description: "Validation error (i18n key in error)" }
         "429": { description: "Rate limited" }
   /api/public/affiliates/by-code/{code}:
     get:
@@ -533,9 +613,9 @@ paths:
                 homeowner_consent: { type: boolean }
                 referral_code: { type: string, nullable: true }
       responses:
-        "201": { description: "{ ok, project_public_id, invite_sent }" }
-        "400": { description: "Validation error" }
-        "409": { description: "errors.clientExists" }
+        "201": { description: "{ ok, outcome: created, project_public_id, invite_sent } — lead + prospect client + project; portal magic link emailed" }
+        "200": { description: "Returning person (no new records): outcome invite_resent (pending/prospect homeowner, fresh portal link) | exists (active homeowner or another role; staff get duplicate_blocked)" }
+        "400": { description: "Validation error (i18n key in error)" }
         "429": { description: "Rate limited" }
   /api/public/client-invite/{token}:
     get:
@@ -582,7 +662,7 @@ paths:
         "404": { description: "errors.inviteInvalid" }
   /api/public/contractor-invite/accept:
     post:
-      summary: "Accept a contractor invitation (contractor becomes active)"
+      summary: "Accept a contractor invitation → starts the prequalification (contractor becomes pending; returns next=application + application_path). Already-approved applications activate (next=login)."
       tags: [portal-public]
       requestBody:
         required: true
@@ -598,12 +678,84 @@ paths:
         "404": { description: "errors.inviteInvalid" }
   /api/affiliate/overview:
     get:
-      summary: "Affiliate profile, tracking URL and stats (clicks, leads, clients, pipeline counts, commission totals, payout_days). Includes first_name, last_name, avatar_url, bio for the public card."
+      summary: "Affiliate profile, tracking URL and stats (clicks, leads, clients, pipeline counts, commission totals, payout_days). Includes first_name, last_name, avatar_url, bio, parent_affiliate_id, can_manage_team for the public card / nav."
       tags: [portal-affiliate]
-      description: "Requires the gw_affiliate_sid session cookie. Default tracking_url is SPA /r/{slug|code} (enrollment landing)."
+      description: "Requires the gw_affiliate_sid session cookie. Default tracking_url is SPA /r/{slug|code} (enrollment landing; slug auto-defaults from first-last name on create, with -2/-3 on collision). can_manage_team is true only for top-level affiliates (no parent)."
       responses:
         "200": { description: "OK" }
         "401": { description: "Not signed in" }
+  /api/affiliate/team:
+    get:
+      summary: "List sub-affiliates for this top-level affiliate"
+      tags: [portal-affiliate]
+      description: "Requires gw_affiliate_sid. Sub-affiliates receive errors.subCannotInvite / 403."
+      responses:
+        "200": { description: "{ ok, team[] }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "errors.subCannotInvite or inactive" }
+    post:
+      summary: "Invite a sub-affiliate (activates immediately with welcome email)"
+      tags: [portal-affiliate]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email]
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string }
+                company: { type: string }
+                preferred_language: { type: string, enum: [en, es] }
+      responses:
+        "201": { description: "{ ok, affiliate_id }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "errors.subCannotInvite" }
+        "409": { description: "errors.affiliateExists" }
+  /api/affiliate/team/{id}:
+    patch:
+      summary: "Activate or deactivate an owned sub-affiliate"
+      tags: [portal-affiliate]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [active, inactive] }
+      responses:
+        "200": { description: "OK" }
+        "403": { description: "Not owner / sub cannot manage team" }
+  /api/affiliate/team/{id}/resend:
+    post:
+      summary: "Resend sub-affiliate welcome email"
+      tags: [portal-affiliate]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+  /api/affiliate/team/{id}/clients:
+    get:
+      summary: "Clients closed by an owned sub-affiliate"
+      tags: [portal-affiliate]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, clients[] }" }
+  /api/affiliate/team/{id}/commissions:
+    get:
+      summary: "Commissions for an owned sub-affiliate"
+      tags: [portal-affiliate]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, commissions[] }" }
   /api/affiliate/me:
     get:
       summary: "Affiliate self profile (company, bio, referral_code, slug, avatar)"
@@ -612,7 +764,7 @@ paths:
         "200": { description: "{ ok, profile }" }
         "401": { description: "Not signed in" }
     patch:
-      summary: "Update affiliate profile fields (name, phone, company, language, bio)"
+      summary: "Update affiliate profile fields (name, phone, company, language, bio, slug)"
       tags: [portal-affiliate]
       requestBody:
         required: true
@@ -627,9 +779,14 @@ paths:
                 company: { type: string, nullable: true }
                 preferred_language: { type: string, enum: [en, es] }
                 bio: { type: string, nullable: true, maxLength: 500 }
+                slug:
+                  type: string
+                  nullable: true
+                  description: "Vanity /r/{slug}. Slugified server-side; null/empty clears (falls back to referral_code). Reserved words → validation.slugReserved; taken → errors.slugTaken."
       responses:
         "200": { description: "{ ok, user, profile }" }
-        "400": { description: "validation.invalidField / validation.phoneMin" }
+        "400": { description: "validation.invalidField / validation.phoneMin / validation.slugFormat / validation.slugReserved" }
+        "409": { description: "errors.slugTaken" }
   /api/affiliate/me/avatar:
     post:
       summary: "Upload cropped affiliate avatar (raw JPEG/PNG/WebP ≤4MB) to Vercel Blob"
@@ -844,7 +1001,8 @@ paths:
       tags: [portal-admin]
       description: "Requires gw_admin_sid (any admin role)."
       responses:
-        "200": { description: "OK" }
+        "200":
+          description: "OK — leads_new, affiliates_pending, clients_pending, contractors_pending, contractors_invited, draws_*, projects_by_milestone; finance when role has finance.read"
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/admin/me:
@@ -884,6 +1042,144 @@ paths:
         "401": { description: "Not signed in" }
         "413": { description: "errors.payloadTooLarge" }
         "503": { description: "errors.storageNotConfigured" }
+  /api/admin/me/notification-prefs:
+    get:
+      summary: "Get signed-in admin notification preferences"
+      tags: [portal-admin]
+      description: "Any active admin. Returns prefs (email/in_app/sms × event keys), channel availability, and event catalog."
+      responses:
+        "200": { description: "OK { prefs, channels, events }" }
+        "401": { description: "Not signed in" }
+    put:
+      summary: "Update signed-in admin notification preferences"
+      tags: [portal-admin]
+      description: "Accepts channel_masters and/or per-channel event patches. SMS writes ignored when SMS channel unavailable (no Twilio or no assigned brand number)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel_masters:
+                  type: object
+                  properties:
+                    email: { type: boolean }
+                    in_app: { type: boolean }
+                    sms: { type: boolean }
+                email:
+                  type: object
+                  additionalProperties: { type: boolean }
+                in_app:
+                  type: object
+                  additionalProperties: { type: boolean }
+                sms:
+                  type: object
+                  additionalProperties: { type: boolean }
+      responses:
+        "200": { description: "OK { prefs, channels, events }" }
+        "401": { description: "Not signed in" }
+  /api/admin/me/notifications:
+    get:
+      summary: "List signed-in admin in-app notifications"
+      tags: [portal-admin]
+      description: "Inbox from admin_notifications. Query limit 1–50 (default 20). Includes unread_count."
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 50 } }
+      responses:
+        "200": { description: "OK { notifications, unread_count }" }
+        "401": { description: "Not signed in" }
+  /api/admin/me/notifications/read:
+    post:
+      summary: "Mark in-app notifications read"
+      tags: [portal-admin]
+      description: "Body { all: true } or { ids: number[] }. Returns updated unread_count."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                all: { type: boolean }
+                ids:
+                  type: array
+                  items: { type: integer }
+      responses:
+        "200": { description: "OK { unread_count }" }
+        "401": { description: "Not signed in" }
+  /api/admin/me/ably-token:
+    get:
+      summary: "Mint Ably TokenRequest for admin bell (and conversations when unlocked)"
+      tags: [portal-admin]
+      description: "Any active admin. Always includes subscribe on admin:{id}:notifications. Adds admin:{id}:conversations (subscribe+presence) when the admin has an assigned brand phone number. Softphone ringing uses Twilio Device SDK, not Ably."
+      responses:
+        "200": { description: "OK { tokenRequest }" }
+        "401": { description: "Not signed in" }
+        "503": { description: "ably_not_configured" }
+  /api/admin/campaigns:
+    get:
+      summary: "List marketing campaigns"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `campaigns`."
+      responses:
+        "200": { description: "OK { campaigns }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Missing campaigns permission" }
+    post:
+      summary: "Create a draft campaign"
+      tags: [portal-admin]
+      description: "Body: name, audience_kind (leads|affiliates|contractors), audience_filter, channels, optional preset=fontana_followup (seeds bilingual CTA opener + reply_1..4; when event_id omitted, resolves marketing event slug fontana-oct-6)."
+      responses:
+        "201": { description: "Created { campaign }" }
+        "400": { description: "validation.invalidField" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Missing campaigns permission" }
+  /api/admin/campaigns/{id}:
+    get:
+      summary: "Get one campaign with templates"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { campaign }" }
+        "404": { description: "errors.notFound" }
+    patch:
+      summary: "Update draft campaign filter/channels/templates"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { campaign }" }
+        "409": { description: "errors.conflict when not draft/failed" }
+    delete:
+      summary: "Delete a campaign (not while sending)"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+  /api/admin/campaigns/{id}/preview:
+    post:
+      summary: "Preview audience counts and recipient list for review"
+      tags: [portal-admin]
+      description: "Returns totals (email/SMS eligibility, EN/ES) plus `sample` recipients (up to 1000) and `sample_truncated` when capped."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: "OK { preview: { total, email_eligible, sms_eligible, sms_skipped_no_consent, by_lang, sample[], sample_truncated } }"
+  /api/admin/campaigns/{id}/send:
+    post:
+      summary: "Dry-run or live-send a campaign"
+      tags: [portal-admin]
+      description: "Body { dry_run: true } or { confirm: true }. Live email uses Resend transactional sends (personalized opener per recipient). SMS requires sms_marketing_consent and a brand From number."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { dry_run, stats, campaign }" }
+        "400": { description: "confirm required for live send" }
+        "409": { description: "errors.conflict" }
   /api/admin/plans:
     get:
       summary: "List ADU plans (all, including inactive)"
@@ -1104,9 +1400,13 @@ paths:
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/admin/leads/{id}/convert:
     post:
-      summary: "Convert a lead into client + project (keeps referral attribution)"
+      summary: "Convert a lead to client/homeowner, affiliate, or contractor"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `projects.write`."
+      description: |
+        Requires gw_admin_sid. Target `client` needs `projects.write` (creates client + project + invite).
+        Targets `affiliate` / `contractor` need `approvals`. Default target is `client` for backward compatibility.
+        Phone match with a different email returns 409 `errors.phoneLinkConfirmRequired` + `phone_match`;
+        retry with `confirm_phone_link: true` to link that person.
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -1116,10 +1416,36 @@ paths:
             schema:
               type: object
               properties:
+                target:
+                  type: string
+                  enum: [client, affiliate, contractor]
+                  default: client
                 adu_plan_id: { type: integer, nullable: true }
+                status:
+                  type: string
+                  enum: [pending, active]
+                  description: Affiliate/contractor confirm dialog (affiliate defaults active; contractor defaults pending)
+                confirm_phone_link: { type: boolean }
       responses:
-        "201": { description: "Created" }
-        "409": { description: "errors.leadAlreadyConverted" }
+        "201":
+          description: Converted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, target]
+                properties:
+                  ok: { type: boolean }
+                  target: { type: string, enum: [client, affiliate, contractor] }
+                  client_id: { type: integer }
+                  project_public_id: { type: string }
+                  affiliate_id: { type: integer }
+                  contractor_id: { type: integer }
+                  invite_sent: { type: boolean }
+        "409":
+          description: |
+            errors.leadAlreadyConverted | errors.emailExists* | errors.phoneLinkConfirmRequired
+            (phone link includes phone_match object)
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/admin/affiliates:
@@ -1129,7 +1455,7 @@ paths:
       description: "Requires gw_admin_sid and permission `people.read`."
       parameters:
         - { name: status, in: query, required: false, schema: { type: string, enum: [pending, active, inactive, suspended] } }
-        - { name: q, in: query, required: false, schema: { type: string } }
+        - { name: q, in: query, required: false, schema: { type: string }, description: "Matches name, email, company, slug, referral_code" }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
         - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
       responses:
@@ -1161,14 +1487,19 @@ paths:
               description: "Any subset of fields"
               properties:
                 status: { type: string, enum: [pending, active, inactive, suspended] }
-                slug: { type: string }
+                slug:
+                  type: string
+                  nullable: true
+                  description: "Vanity /r/{slug}. Auto-defaults from name on create; admin/affiliate may customize. Slugified; null clears. Reserved → validation.slugReserved; taken → errors.slugTaken. Old slug stops resolving; referral_code always works."
                 notes: { type: string }
                 company: { type: string }
                 phone: { type: string }
       responses:
         "200": { description: "OK" }
+        "400": { description: "validation.invalidField / validation.slugFormat / validation.slugReserved" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+        "409": { description: "errors.slugTaken" }
   /api/admin/assignees:
     get:
       summary: "Active staff for project/client assignment (people.read)"
@@ -1180,11 +1511,12 @@ paths:
         "403": { description: "Forbidden" }
   /api/admin/contractors:
     get:
-      summary: "List contractors (query: status, q, limit, offset) — returns total"
+      summary: "List contractors (query: status, application_status, q, limit, offset) — returns total"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `people.read`."
+      description: "Requires gw_admin_sid and permission `people.read`. Rows include application_status / application_number / application_submitted_at / application_due_at (null = never sent)."
       parameters:
-        - { name: status, in: query, required: false, schema: { type: string, enum: [invited, active, inactive, suspended] } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, invited, active, inactive, suspended] } }
+        - { name: application_status, in: query, required: false, schema: { type: string, enum: [none, draft, submitted, in_review, needs_info, approved, denied] } }
         - { name: q, in: query, required: false, schema: { type: string } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
         - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
@@ -1196,7 +1528,7 @@ paths:
     post:
       summary: "Invite a contractor by email (invite-only onboarding)"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `approvals`."
+      description: "Requires gw_admin_sid and permission `approvals`. The email carries the prequalification application link; opening it accepts the invite (invited → pending)."
       requestBody:
         required: true
         content:
@@ -1231,7 +1563,7 @@ paths:
     patch:
       summary: "Update contractor"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `approvals`."
+      description: "Requires gw_admin_sid and permission `approvals`. Setting status from pending → active requires an approved prequalification application; a super_admin may pass `override_reason` (5+ chars, audited on the application). Emails a portal login notice. Invited rows cannot change status via PATCH (use invite flow)."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -1242,22 +1574,24 @@ paths:
               type: object
               description: "Any subset of fields"
               properties:
-                status: { type: string, enum: [active, inactive, suspended] }
+                status: { type: string, enum: [pending, active, inactive, suspended] }
                 notes: { type: string }
                 company: { type: string }
                 license_number: { type: string }
                 phone: { type: string }
+                override_reason: { type: string, description: "super_admin only: activate without an approved prequalification" }
       responses:
         "200": { description: "OK" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+        "409": { description: "errors.contractorInvited when patching status on an invited row; errors.contractorApplicationRequired / errors.contractorOverrideReasonRequired when activating without an approved prequalification" }
   /api/admin/clients:
     get:
       summary: "List clients (query: status, q, limit, offset) — returns total"
       tags: [portal-admin]
       description: "Requires gw_admin_sid and permission `people.read`."
       parameters:
-        - { name: status, in: query, required: false, schema: { type: string, enum: [prospect, active, inactive, suspended] } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, prospect, active, inactive, suspended] } }
         - { name: q, in: query, required: false, schema: { type: string } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
         - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0 } }
@@ -1304,7 +1638,7 @@ paths:
     patch:
       summary: "Update client"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `people.write`."
+      description: "Requires gw_admin_sid and permission `people.write`. Setting status from pending → prospect also requires `approvals` and issues a portal invite email."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -1317,8 +1651,9 @@ paths:
               properties:
                 first_name: { type: string }
                 last_name: { type: string }
+                email: { type: string, nullable: true, description: "Portal login email; null clears. Must be unique when set." }
                 phone: { type: string }
-                status: { type: string, enum: [prospect, active, inactive, suspended] }
+                status: { type: string, enum: [pending, prospect, active, inactive, suspended] }
                 address_line1: { type: string }
                 city: { type: string }
                 zip: { type: string }
@@ -1327,7 +1662,9 @@ paths:
                 admin_notes: { type: string }
                 preferred_language: { type: string, enum: [en, es] }
       responses:
-        "200": { description: "OK" }
+        "200": { description: "OK — invite_sent true when approving pending → prospect" }
+        "400": { description: "validation.invalidField | validation.emailRequired (approve without email)" }
+        "409": { description: "errors.duplicate (email already used by another client)" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/admin/clients/{id}/portal-invite:
@@ -1339,6 +1676,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
         "200": { description: "{ ok, invite_sent }" }
+        "400": { description: "validation.emailRequired when client has no email" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
         "409": { description: "errors.authInactive" }
@@ -1406,13 +1744,13 @@ paths:
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/admin/projects/{publicId}:
     get:
-      summary: "Project detail: project, contracts, draws, photos, milestone events, commission"
+      summary: "Project detail: project, contracts, draws, photos, milestone events, commission(s)"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `projects.read`."
+      description: "Requires gw_admin_sid and permission `projects.read`. Finance roles get `commission` (primary closer/direct) plus `commissions[]` for split closer+parent rows. Project may include frozen `commission_rate_*_cents_per_sqft` after loan finalize."
       parameters:
         - { name: publicId, in: path, required: true, schema: { type: string } }
       responses:
-        "200": { description: "OK" }
+        "200": { description: "OK { project, photos, draws, contracts, events, commission, commissions }" }
         "404": { description: "errors.notFound" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
@@ -1475,6 +1813,329 @@ paths:
         "200": { description: Batch result }
         "401": { description: Unauthorized }
         "503": { description: Anchor not configured }
+  /api/cron/contractor-applications:
+    get:
+      summary: "Daily prequalification sweep (Vercel Cron)"
+      tags: [cron]
+      description: "Authorization Bearer CRON_SECRET. Draft / needs-info reminders (new: day 3/7/14; existing contractors: 7/14/25), missing-document nudges after submit (day 7/13), soft-deadline flags to staff (`contractor_compliance_alert`, access unchanged), and expiring license/bond/COI reminders at 30/7/0 days on approved files. Each step caps its batch."
+      responses:
+        "200": { description: "{ ok, reminders, missing_docs, overdue, expiring }" }
+        "401": { description: Unauthorized }
+    post:
+      summary: "Manual run of the prequalification sweep"
+      tags: [cron]
+      description: "Same as GET (Authorization Bearer CRON_SECRET)."
+      responses:
+        "200": { description: "{ ok, reminders, missing_docs, overdue, expiring }" }
+        "401": { description: Unauthorized }
+  /api/public/contractor-application/resend:
+    post:
+      summary: "Email a fresh prequalification link"
+      tags: [portal-public]
+      description: "Always answers { ok: true } (no account enumeration). Sends only when a non-suspended contractor with a non-denied application exists for the email."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200": { description: "{ ok: true }" }
+        "400": { description: "validation.emailInvalid" }
+        "429": { description: "Rate limited" }
+  /api/public/contractor-application/{token}:
+    get:
+      summary: "Load the prequalification application for a magic link"
+      tags: [portal-public]
+      description: "Token = 64 hex chars from the emailed `/contractor/apply/{token}` link (stored hashed, 30-day TTL; several may be live). Opening it as an `invited` contractor accepts the invite (→ pending). `?lang=en|es` picks the certification text. Returns ContractorApplicationPublicView (shared/contractorApplication.ts)."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "{ ok, application, contractor, documents, requirements, templates }" }
+        "404": { description: "errors.applicationLinkInvalid" }
+    put:
+      summary: "Autosave answers (draft / needs_info only)"
+      tags: [portal-public]
+      description: "Body { data, current_step }. Data is whitelisted onto the stored draft (unknown keys dropped, enums/dates/lengths enforced)."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data: { type: object }
+                current_step: { type: integer, minimum: 0 }
+      responses:
+        "200": { description: "{ ok, requirements }" }
+        "404": { description: "errors.applicationLinkInvalid" }
+        "409": { description: "errors.applicationLocked" }
+  /api/public/contractor-application/{token}/upload-token:
+    post:
+      summary: "Mint a pathname-scoped client token for a direct private Blob upload"
+      tags: [portal-public]
+      description: "Body { doc_type, content_type (pdf/jpeg/png/webp), size_bytes ≤ 25MB }. Requires BLOB_PRIVATE_READ_WRITE_TOKEN (private store). After approval only expiring-document renewals are accepted."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, client_token, pathname }" }
+        "400": { description: "validation.documentFile | validation.documentTooLarge | validation.invalidField" }
+        "409": { description: "errors.applicationLocked | errors.documentLimit" }
+        "503": { description: "errors.storageNotConfigured" }
+  /api/public/contractor-application/{token}/documents:
+    post:
+      summary: "Register an uploaded document"
+      tags: [portal-public]
+      description: "Body { doc_type, pathname, file_name, expires_on? }. Pathname must belong to this application + doc type; size and magic bytes (PDF / image) are verified server-side (bad files are deleted). Single-file types replace the previous upload. Expiring types require expires_on (YYYY-MM-DD)."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "{ ok, document }" }
+        "400": { description: "validation.documentFile | validation.expirationRequired" }
+        "409": { description: "errors.applicationLocked | errors.duplicate" }
+  /api/public/contractor-application/{token}/documents/{docId}:
+    patch:
+      summary: "Update a document's expiration date"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: docId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "400": { description: "validation.expirationRequired" }
+        "409": { description: "errors.applicationLocked" }
+    delete:
+      summary: "Remove an uploaded document (not once accepted)"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: docId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.applicationLocked" }
+  /api/public/contractor-application/{token}/documents/{docId}/file:
+    get:
+      summary: "302 to a 5-minute presigned URL for the contractor's own upload"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: docId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "302": { description: "Redirect to presigned private Blob URL" }
+        "404": { description: "errors.notFound" }
+  /api/public/contractor-application/{token}/submit:
+    post:
+      summary: "E-sign and submit the application"
+      tags: [portal-public]
+      description: "Body { signer_name, signer_title, signer_email, signer_phone, signature_image (PNG data URL), certify: true, lang }. Requires every required answer and every applicable core document. Records IP, user agent, timestamp, certification version + SHA-256 of the certified text. Emails the contractor and notifies staff (`contractor_application_submitted`)."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, status: submitted, missing_docs[] (approval-level docs still owed) }" }
+        "400": { description: "validation.applicationIncomplete { missing_fields } | validation.applicationDocsMissing { missing_docs } | validation.signatureRequired | validation.certifyRequired" }
+        "409": { description: "errors.applicationLocked" }
+  /api/contractor/application:
+    get:
+      summary: "Signed-in contractor's prequalification summary (portal banner)"
+      tags: [portal-contractor]
+      description: "Requires gw_contractor_sid."
+      responses:
+        "200": { description: "{ ok, application: { application_number, status, due_at, submitted_at } | null }" }
+        "401": { description: "Not signed in" }
+  /api/contractor/application/link:
+    post:
+      summary: "Mint a fresh magic link for the signed-in contractor"
+      tags: [portal-contractor]
+      description: "Creates the application if missing. Returns the SPA path /contractor/apply/{token}."
+      responses:
+        "200": { description: "{ ok, path }" }
+        "401": { description: "Not signed in" }
+        "409": { description: "errors.applicationLocked (denied)" }
+  /api/admin/cpq-templates:
+    get:
+      summary: "Blank forms contractors sign (MCA, background check authorization)"
+      tags: [portal-admin]
+      description: "Requires `people.read`."
+      responses:
+        "200": { description: "{ ok, templates }" }
+  /api/admin/cpq-templates/{kind}:
+    post:
+      summary: "Upload a blank template PDF (raw application/pdf body, ≤4MB)"
+      tags: [portal-admin]
+      description: "Requires `approvals`. kind = master_contractor_agreement | background_check_authorization. Once published, the signed copy becomes required to submit."
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [master_contractor_agreement, background_check_authorization] } }
+      requestBody:
+        required: true
+        content:
+          application/pdf:
+            schema: { type: string, format: binary }
+      responses:
+        "200": { description: "{ ok, templates }" }
+        "400": { description: "validation.pdfFile" }
+    delete:
+      summary: "Unpublish a template"
+      tags: [portal-admin]
+      description: "Requires `approvals`."
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, templates }" }
+  /api/admin/contractors/application/send-bulk:
+    post:
+      summary: "Send the prequalification to every active contractor without one"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Without { confirm: true } returns a dry run { count, sample }. Sends up to 200 per call with a 30-day soft deadline (portal access unaffected)."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm: { type: boolean }
+      responses:
+        "200": { description: "{ ok, dry_run, count, sample? , sent?, failed?, remaining? }" }
+  /api/admin/contractors/{id}/application:
+    get:
+      summary: "Prequalification review payload"
+      tags: [portal-admin]
+      description: "Requires `people.read`. Without `finance.read` the financial section is emptied (`financial_redacted`) and sensitive documents (W-9, financials, bank / surety letters, background authorization) are redacted."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "AdminContractorApplicationView (application null when never sent)" }
+        "404": { description: "errors.notFound" }
+  /api/admin/contractors/{id}/application/documents/{docId}/file:
+    get:
+      summary: "302 to a presigned URL for a document"
+      tags: [portal-admin]
+      description: "Requires `people.read`; sensitive document types also need `finance.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: docId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "302": { description: "Redirect" }
+        "403": { description: "errors.forbidden" }
+        "404": { description: "errors.notFound" }
+  /api/admin/contractors/{id}/application/pdf:
+    get:
+      summary: "Application PDF (paper-form layout, EN/ES via ?lang=)"
+      tags: [portal-admin]
+      description: "Requires `people.read`. Financials redacted without `finance.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "application/pdf" }
+        "404": { description: "errors.applicationNotFound" }
+  /api/admin/contractors/{id}/application/send:
+    post:
+      summary: "Create (if needed) and email the application link"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Active contractors get a 30-day soft deadline. Copy adapts to status (new / reminder / info request / missing documents)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, application_number, status }" }
+        "409": { description: "errors.applicationLocked (denied) | errors.contractorSuspended" }
+  /api/admin/contractors/{id}/application/review:
+    patch:
+      summary: "Office-use fields"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body subset of { license_verified, insurance_verified (true|false|null), decision_notes }. Moves submitted → in_review."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.applicationLocked" }
+  /api/admin/contractors/{id}/application/documents/{docId}:
+    patch:
+      summary: "Accept / reject a document"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { status: accepted|rejected|uploaded, review_note } — reject needs a note (shown to the contractor)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: docId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "400": { description: "validation.rejectNoteRequired" }
+  /api/admin/contractors/{id}/application/request-info:
+    post:
+      summary: "Send the application back for more info"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { note (5+ chars), doc_types[] }. Status → needs_info; contractor emailed a fresh link."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "400": { description: "validation.infoRequestNoteRequired" }
+        "409": { description: "errors.applicationLocked" }
+  /api/admin/contractors/{id}/application/decision:
+    post:
+      summary: "Approve or deny"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { decision: approved|denied, notes, message, allow_missing }. Approve needs license + insurance verified and every applicable document, unless allow_missing with notes (5+). Approving activates pending / invited contractors (login email); denying a pending one sets it inactive."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, status, contractor_status }" }
+        "409": { description: "errors.applicationVerifyFirst | errors.applicationDocsMissing { missing_docs } | errors.applicationLocked" }
+  /api/admin/contractors/{id}/application/reopen:
+    post:
+      summary: "Reopen for edits + re-signature"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { note }. Clears the signature; a denied + inactive contractor returns to pending."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.applicationLocked (already draft)" }
+  /api/admin/duplicates:
+    get:
+      summary: "Duplicate review queue (one role per person; email OR phone)"
+      tags: [portal-admin]
+      description: "Requires `people.read`. Groups leads / clients / affiliates / contractors sharing an email or last-10-digit phone into clusters (kind same_role | cross_role | lead_of_person | repeat_leads) with linked-row counts and delete blockers. Clusters marked \"not duplicates\" are hidden until a new member appears."
+      responses:
+        "200": { description: "{ ok, clusters[], total }" }
+  /api/admin/duplicates/merge:
+    post:
+      summary: "Merge one duplicate into a survivor of the same role"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { entity: lead|client|affiliate|contractor, keep_id, remove_id, reason?, dry_run? }. Moves every reference (projects, commissions, conversations, leads, invites, campaign history…), fills the survivor's blanks, deletes the duplicate, audits to people_dedupe_log. dry_run returns { moves, blockers, warnings }."
+      responses:
+        "200": { description: "{ ok, dry_run, moves, blockers, warnings }" }
+        "409": { description: "errors.mergeBlocked { blockers[] }" }
+  /api/admin/duplicates/delete:
+    post:
+      summary: "Delete a duplicate record when nothing meaningful is linked"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { entity, id, reason?, dry_run? }. Clients may drop empty pipeline projects (lead/cancelled, no contract/draw/photo/commission) with them."
+      responses:
+        "200": { description: "{ ok, dry_run, blockers, removed_projects }" }
+        "409": { description: "errors.deleteBlocked { blockers[] }" }
+  /api/admin/duplicates/dismiss:
+    post:
+      summary: "Mark a cluster as not duplicates"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { signature, reason (5+) }."
+      responses:
+        "200": { description: "OK" }
+        "400": { description: "validation.dismissReasonRequired" }
+  /api/admin/duplicates/link-lead:
+    post:
+      summary: "Point a lead at the person it belongs to"
+      tags: [portal-admin]
+      description: "Requires `leads`. Body { lead_id, entity: client|affiliate|contractor, id }."
+      responses:
+        "200": { description: "OK" }
+        "404": { description: "errors.notFound" }
   /api/admin/projects/{publicId}/contracts:
     post:
       summary: "Generate a contract record (stores a payload snapshot; the PDF is rendered on demand from it)"
@@ -1555,11 +2216,13 @@ paths:
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/admin/commissions:
     get:
-      summary: "List affiliate commissions (query: status)"
+      summary: "List affiliate commissions (query: status, role, affiliate_id)"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `finance.read`."
+      description: "Requires gw_admin_sid and permission `finance.read`. Each row includes role (direct|closer|parent)."
       parameters:
-        - { name: status, in: query, required: false, schema: { type: string } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, approved, paid, void] } }
+        - { name: role, in: query, required: false, schema: { type: string, enum: [direct, closer, parent] } }
+        - { name: affiliate_id, in: query, required: false, schema: { type: integer } }
       responses:
         "200": { description: "OK" }
         "401": { description: "Not signed in" }
@@ -1661,7 +2324,10 @@ paths:
                     type: object
                     properties:
                       commission_payout_days_after_loan_close: { type: integer }
-                      commission_cents_per_sqft: { type: integer }
+                      commission_cents_per_sqft: { type: integer, description: "Legacy alias of direct rate" }
+                      commission_direct_cents_per_sqft: { type: integer }
+                      commission_closer_cents_per_sqft: { type: integer }
+                      commission_parent_cents_per_sqft: { type: integer }
                   notify_extra_emails:
                     type: array
                     items:
@@ -1671,8 +2337,16 @@ paths:
                         email: { type: string, format: email }
                         label: { type: string, nullable: true }
                         is_active: { type: boolean }
-                        events_json: { type: string, nullable: true }
+                        events:
+                          type: array
+                          nullable: true
+                          description: "null = all alert types; else selected AdminNotifyEventKey values"
+                          items: { type: string }
                         created_at: { type: string }
+                  notify_event_keys:
+                    type: array
+                    description: "Catalog of AdminNotifyEventKey values for Settings toggles"
+                    items: { type: string }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
     put:
@@ -1687,7 +2361,10 @@ paths:
               type: object
               properties:
                 commission_payout_days_after_loan_close: { type: integer, minimum: 0, maximum: 365 }
-                commission_cents_per_sqft: { type: integer, minimum: 0 }
+                commission_cents_per_sqft: { type: integer, minimum: 0, description: "Legacy; mirrored to direct when direct omitted" }
+                commission_direct_cents_per_sqft: { type: integer, minimum: 0 }
+                commission_closer_cents_per_sqft: { type: integer, minimum: 0 }
+                commission_parent_cents_per_sqft: { type: integer, minimum: 0 }
       responses:
         "200": { description: "OK" }
         "401": { description: "Not signed in" }
@@ -1709,8 +2386,9 @@ paths:
                 label: { type: string }
                 events:
                   type: array
+                  nullable: true
                   items: { type: string }
-                  description: "Optional event filter; omit for all events"
+                  description: "Optional event filter; omit defaults to all types except inbound_sms; null = all events; [] = none"
       responses:
         "201": { description: "Created { ok, id }" }
         "409": { description: "errors.duplicate" }
@@ -1754,6 +2432,89 @@ paths:
         "404": { description: "errors.notFound" }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/notify-recipients:
+    get:
+      summary: "Team notifications recipients (staff prefs + extra emails)"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`. Returns active staff with notification_prefs_json + channel availability, plus extra emails."
+      responses:
+        "200":
+          description: "OK { staff, extras, events }"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  staff:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        email: { type: string }
+                        first_name: { type: string }
+                        last_name: { type: string }
+                        role: { type: string }
+                        phone: { type: string, nullable: true }
+                        prefs:
+                          type: object
+                          description: "email / in_app / sms → per AdminNotifyEventKey booleans"
+                        channels:
+                          type: object
+                          description: "email / in_app / sms → { available, disabled_reason }"
+                  extras:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        email: { type: string }
+                        label: { type: string, nullable: true }
+                        is_active: { type: boolean }
+                        events:
+                          type: array
+                          nullable: true
+                          items: { type: string }
+                  events:
+                    type: array
+                    items: { type: string }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/admins/{id}/notification-prefs:
+    put:
+      summary: "Update a staff member's notification preferences"
+      tags: [portal-admin]
+      description: "Requires gw_admin_sid and permission `settings`. Accepts channel_masters and/or per-channel event patches. SMS writes ignored when SMS channel unavailable."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel_masters:
+                  type: object
+                  properties:
+                    email: { type: boolean }
+                    in_app: { type: boolean }
+                    sms: { type: boolean }
+                email:
+                  type: object
+                  additionalProperties: { type: boolean }
+                in_app:
+                  type: object
+                  additionalProperties: { type: boolean }
+                sms:
+                  type: object
+                  additionalProperties: { type: boolean }
+      responses:
+        "200": { description: "OK { staff }" }
+        "404": { description: "errors.notFound" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
   /api/mcp:
     post:
       summary: "Remote MCP Streamable HTTP (super_admin OAuth Bearer or gw_admin_sid)"
@@ -1762,6 +2523,8 @@ paths:
         Claude/Cursor MCP endpoint. Auth: Bearer mcp_oauth_tokens access token
         or admin session cookie. Must be role=super_admin and status=active.
         Writes require confirm=true + confirm_phrase=CONFIRM (dry-run otherwise).
+        Tool surface includes ADU ops plus Conversations/Contacts (SMS, CRM contacts,
+        brand phone numbers; WhatsApp tools stubbed as not configured).
       responses:
         "200": { description: "JSON-RPC MCP response" }
         "401": { description: "Unauthorized (WWW-Authenticate challenge)" }
@@ -1855,6 +2618,12 @@ paths:
   /api/admin/mcp/tools:
     get:
       summary: "List Groundwork MCP tools (super_admin)"
+      description: >
+        Includes ADU ops tools plus Conversations/Contacts parity tools:
+        search_contacts, get_contact, create_contact, update_contact, convert_contact,
+        send_sms/send_text, send_contact_sms, send_contact_email, list_sms/get_texts/get_conversation,
+        get_call_insights, list_brand_phone_numbers/list_ofg_phone_numbers, and WhatsApp stubs.
+        Writes require dry-run then confirm=true + confirm_phrase=CONFIRM.
       tags: [mcp]
       responses:
         "200": { description: "{ tools[] }" }
@@ -1906,6 +2675,589 @@ paths:
       tags: [mcp]
       responses:
         "200": { description: "PRM JSON" }
+
+  # ── Conversations Contact Hub ───────────────────────────────────────────────
+  /api/admin/conversations/access:
+    get:
+      summary: Conversations access gate (assigned brand number required)
+      tags: [conversations]
+      responses:
+        "200": { description: "{ enabled, numbers[] }" }
+        "401": { description: Unauthorized }
+  /api/admin/conversations/badge:
+    get:
+      summary: Nav unread badge total
+      tags: [conversations]
+      responses:
+        "200": { description: "{ unread_total }" }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/ably-token:
+    get:
+      summary: Mint Ably token request for Conversations realtime
+      tags: [conversations]
+      responses:
+        "200": { description: "{ tokenRequest }" }
+        "403": { description: conversations_number_required }
+        "503": { description: ably_not_configured }
+  /api/admin/conversations:
+    get:
+      summary: Contact-centric inbox (client + CRM contact + unknown)
+      tags: [conversations]
+      description: |
+        True SQL pagination via UNION ALL of client, CRM contact, and unknown
+        hub rows (shared columns), ORDER BY last_message_at DESC, with separate
+        COUNT for total. Supports view + q filters.
+      parameters:
+        - in: query
+          name: view
+          schema:
+            {
+              type: string,
+              enum: [all, mine, unassigned, unread, unknown, open, closed],
+            }
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Server-side search across name/phone/email/preview
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: limit
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ contacts[], pagination }" }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/media/upload:
+    post:
+      summary: Upload MMS media to Vercel Blob
+      tags: [conversations]
+      description: |
+        Raw body with Content-Type set to the media MIME type (image/*, video/mp4, audio/*, application/pdf).
+        Optional X-Filename header. Returns public Blob URL in url/cdn_url.
+      responses:
+        "200": { description: "{ success, url, cdn_url, content_type, id }" }
+        "400": { description: validation.invalidField }
+        "403": { description: conversations_number_required }
+  /api/conversations/media:
+    get:
+      summary: Proxy Twilio or Vercel Blob conversation media
+      tags: [conversations]
+      description: |
+        Authenticated staff proxy for MMS/recording URLs. Only allows
+        `https://api.twilio.com/...` (fetched with account Basic auth) and
+        Vercel Blob hosts. Rejects other origins (SSRF guard).
+      parameters:
+        - in: query
+          name: url
+          required: true
+          schema: { type: string, format: uri }
+      responses:
+        "200": { description: Binary media stream }
+        "400": { description: validation.invalidField }
+        "401": { description: Unauthorized }
+        "503": { description: Twilio credentials missing for Twilio URL }
+  /api/conversations/media/public/{id}:
+    get:
+      summary: Public MMS media by id (expiring Blob/local fallback)
+      tags: [conversations]
+      description: |
+        Unauthenticated fetch for a single `mms_media` row by UUID.
+        Redirects to `cdn_url` when present; otherwise streams stored bytes.
+        Returns 404 when missing or expired.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Binary media stream }
+        "302": { description: Redirect to Vercel Blob CDN URL }
+        "400": { description: Invalid media ID }
+        "404": { description: Not found or expired }
+  /api/admin/conversations/contact/client/{id}/assign:
+    post:
+      summary: Assign open client conversation threads (default assign-to-me)
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assigned_admin_id:
+                  type: integer
+                  nullable: true
+      responses:
+        "200": { description: "{ ok, assigned_admin_id }" }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/unknown/{id}/link:
+    post:
+      summary: Link unknown contact thread to a client
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: integer }
+      responses:
+        "200": { description: "{ ok, client_id }" }
+  /api/admin/conversations/unknown/{id}/create-prospect:
+    post:
+      summary: Create client prospect from unknown contact and link threads
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ ok, client_id }" }
+        "409": { description: duplicate_phone / duplicate_email }
+  /api/admin/conversations/unknown/{id}/dismiss:
+    post:
+      summary: Dismiss unknown contact from inbox
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ ok: true }" }
+  /api/admin/conversations/lookup-contact:
+    get:
+      summary: Resolve phone to client/contact for softphone UI
+      tags: [conversations]
+      parameters:
+        - in: query
+          name: phone
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: "{ found, client_id?, client_name?, kind? }" }
+  /api/admin/conversations/send:
+    post:
+      summary: Send SMS (or internal note) on an existing thread
+      tags: [conversations]
+      description: |
+        Body requires exactly one of client_id, unknown_contact_id, contact_id plus body and/or media_url.
+        Under VITEST=true Twilio SMS always dry-runs (provider_message_id dry-run-*).
+      responses:
+        "200": { description: Send result }
+        "400": { description: validation.invalidField }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/start:
+    post:
+      summary: Start SMS by phone (client → contact → unknown)
+      tags: [conversations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: { type: string }
+                body: { type: string, description: Required unless media_url set }
+                media_url:
+                  type: string
+                  description: Vercel Blob HTTPS URL or mms_media UUID
+                media_content_type: { type: string }
+                ofg_number_id: { type: integer }
+      responses:
+        "200": { description: "{ kind, conversation_id, ... }" }
+        "400": { description: validation.invalidField }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/contact/{kind}/{id}/read:
+    post:
+      summary: Mark contact thread(s) read (clear unread)
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { type: string, enum: [client, contact, unknown] }
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ ok: true }" }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/contact/{kind}/{id}/status:
+    post:
+      summary: Close or reopen conversation threads
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { type: string, enum: [client, contact, unknown] }
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [open, closed] }
+      responses:
+        "200": { description: "{ ok, status }" }
+        "403": { description: conversations_number_required }
+  /api/admin/conversations/contact/{kind}/{id}/timeline:
+    get:
+      summary: Thread timeline (also clears unread)
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: kind
+          required: true
+          schema: { type: string, enum: [client, contact, unknown] }
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ kind, contact, threads, messages }" }
+        "403": { description: conversations_number_required }
+  /api/admin/conversation-templates:
+    get:
+      summary: List SMS conversation templates
+      tags: [conversations]
+      parameters:
+        - in: query
+          name: all
+          schema: { type: string, enum: ["1"] }
+          description: Include inactive templates when all=1
+      responses:
+        "200":
+          description: "{ templates[] }"
+        "401": { description: Unauthorized }
+    post:
+      summary: Create conversation template (admin/super_admin + people.write)
+      tags: [conversations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body_en]
+              properties:
+                title: { type: string }
+                body_en: { type: string }
+                body_es: { type: string, nullable: true }
+                sort_order: { type: integer }
+      responses:
+        "201": { description: "{ template }" }
+        "403": { description: Forbidden }
+  /api/admin/conversation-templates/{id}:
+    patch:
+      summary: Update conversation template
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ template }" }
+        "404": { description: Not found }
+    delete:
+      summary: Delete conversation template
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ ok: true }" }
+        "404": { description: Not found }
+  /api/admin/contacts:
+    get:
+      summary: List CRM contacts
+      tags: [conversations]
+      responses:
+        "200": { description: "{ contacts[], pagination }" }
+    post:
+      summary: Create CRM contact
+      tags: [conversations]
+      responses:
+        "201": { description: "{ contact }" }
+        "400": { description: validation error }
+  /api/admin/contacts/{id}:
+    get:
+      summary: Get CRM contact
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ contact }" }
+        "404": { description: errors.notFound }
+    put:
+      summary: Update CRM contact
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ contact }" }
+    delete:
+      summary: Soft-delete CRM contact
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ ok: true }" }
+  /api/admin/contacts/{id}/convert:
+    post:
+      summary: Convert CRM contact to client prospect (or link existing)
+      description: >
+        Requires phone and/or email on the contact. Creates a prospect client
+        (clients.email may be null for phone-only) or links an existing client
+        matched by phone/email without creating a twin. Re-links Conversations
+        from contact_id → client_id.
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "{ ok, client_id, contact_id, existing?, linked_existing? }" }
+        "400": { description: "Missing phone and email, or invalid email" }
+        "404": { description: "Contact not found / already converted" }
+  /api/admin/phone-numbers:
+    get:
+      summary: List brand Twilio numbers (all for admin/super_admin; mine for others)
+      tags: [conversations]
+      responses:
+        "200": { description: "{ numbers[] }" }
+  /api/admin/phone-numbers/sync-twilio:
+    post:
+      summary: Upsert Twilio IncomingPhoneNumbers (super_admin / staff)
+      tags: [conversations]
+      description: Under VITEST returns dry_run without calling Twilio.
+      responses:
+        "200": { description: "{ ok, upserted, numbers[] }" }
+        "403": { description: errors.forbidden }
+  /api/admin/phone-numbers/{id}:
+    patch:
+      summary: Assign brand number to admin (admin or super_admin)
+      tags: [conversations]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assigned_admin_id: { type: integer, nullable: true }
+                friendly_name: { type: string, nullable: true }
+      responses:
+        "200": { description: "{ number }" }
+  /api/voice/token:
+    post:
+      summary: Mint Twilio Voice SDK access token (identity admin_{id})
+      tags: [conversations]
+      responses:
+        "200": { description: "{ success, token }" }
+        "503": { description: Twilio / TwiML App unavailable }
+  /api/voice/twiml:
+    post:
+      summary: TwiML App voice webhook for outbound softphone dials
+      tags: [conversations]
+      responses:
+        "200": { description: TwiML XML }
+  /api/voice/availability:
+    post:
+      summary: Toggle admin softphone availability (voice_available)
+      tags: [conversations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [available]
+              properties:
+                available: { type: boolean }
+      responses:
+        "200": { description: "{ success, available }" }
+  /api/voice/voicemail-settings:
+    get:
+      summary: Admin + tenant voicemail settings
+      tags: [conversations]
+      responses:
+        "200": { description: "{ success, admin, tenant }" }
+    put:
+      summary: Update admin voicemail override
+      tags: [conversations]
+      responses:
+        "200": { description: "{ success: true }" }
+  /api/voice/log:
+    post:
+      summary: Log inbound/outbound call into conversation_messages
+      tags: [conversations]
+      responses:
+        "200": { description: "{ success }" }
+  /api/voice/call-answered:
+    post:
+      summary: Mark call message answered
+      tags: [conversations]
+      responses:
+        "200": { description: "{ success }" }
+  /api/voice/recording-status:
+    post:
+      summary: Twilio recording status callback
+      tags: [conversations]
+      description: |
+        On RecordingStatus=completed, stores recording_url, merges metadata
+        `{ recording_sid, transcript_status: pending }`, and requests a Twilio
+        Recording Transcription (skipped under VITEST). Publishes Ably `call_recording`.
+      responses:
+        "204": { description: No content }
+        "403": { description: Invalid Twilio signature }
+  /api/voice/call-transcript:
+    post:
+      summary: Twilio Voice v3 transcription callback
+      tags: [conversations]
+      description: |
+        Callback set on the `groundwork_call_transcript` transcription
+        configuration (Deepgram nova-3, language multi = EN/ES auto, channel 1
+        Caller / 2 Agent), created through the API on first use. Payload is only
+        a pointer (`id`): the job is re-fetched from voice.twilio.com with our
+        credentials and must match the message's recording_sid; then
+        `{ transcript, transcript_status: ready|failed }` is stored (voicemail
+        preview + assignee email) and Ably `call_transcript` is published.
+      responses:
+        "200": { description: "{ ok: true } (always, so Twilio doesn't retry forever)" }
+  /api/admin/conversations/messages/{id}/transcribe:
+    post:
+      summary: Start / retry a transcript for a recorded call
+      tags: [conversations]
+      description: Requires Conversations access. If a job exists and is pending, re-reads it (recovers a missed webhook); otherwise submits the recording_sid to Twilio Voice v3 Transcriptions.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, transcript_status: pending|ready|failed }" }
+        "404": { description: errors.notFound }
+        "409": { description: "errors.noRecording | errors.transcriptReady" }
+        "503": { description: errors.transcriptionNotConfigured }
+  /api/voice/transcription:
+    post:
+      summary: Legacy Twilio <Record transcribe> callback (kept for in-flight callbacks)
+      tags: [conversations]
+      description: |
+        On TranscriptionStatus completed|failed, finds the call message by
+        RecordingSid in metadata_json or CallSid = provider_message_id, merges
+        `{ transcript, transcript_status: ready|failed, recording_sid }`, and
+        optionally updates voicemail body preview. For voicemail only, emails
+        the conversation assignee the transcript (or a listen-in-inbox note if
+        transcription failed). Answered-call transcripts are not emailed.
+        Retries skip when `voicemail_transcript_emailed_at` is already set.
+        Publishes Ably `call_transcript`.
+      responses:
+        "204": { description: No content }
+        "403": { description: Invalid Twilio signature }
+  /api/voice/dial-status:
+    post:
+      summary: Twilio Dial action callback (voicemail fallback)
+      tags: [conversations]
+      responses:
+        "200": { description: TwiML XML }
+  /api/voice/call-forwarding:
+    get:
+      summary: Get call-forwarding settings for numbered staff
+      tags: [conversations]
+      responses:
+        "200": { description: "{ success, call_forwarding_enabled, call_forwarding_phone }" }
+        "403": { description: conversations_number_required }
+    put:
+      summary: Update call-forwarding (personal cell simultaneous ring)
+      tags: [conversations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                phone: { type: string }
+      responses:
+        "200": { description: Updated settings }
+        "403": { description: conversations_number_required }
+  /api/voice/incoming:
+    post:
+      summary: Twilio inbound voice webhook (brand line → forward to assignee cell)
+      tags: [webhooks]
+      description: |
+        Validates X-Twilio-Signature when TWILIO_AUTH_TOKEN is set.
+        Resolves To → admin_phone_numbers assignee; Dial call_forwarding_phone (or admins.phone)
+        with CallerID = Groundwork brand e164 when call_forwarding_enabled.
+      responses:
+        "200": { description: TwiML Dial or Say }
+        "403": { description: Invalid signature }
+        "503": { description: Auth token missing in production }
+  /api/webhooks/twilio/sms:
+    post:
+      summary: Twilio inbound SMS webhook
+      tags: [webhooks]
+      description: |
+        Validates X-Twilio-Signature when TWILIO_AUTH_TOKEN is set.
+        Production without TWILIO_AUTH_TOKEN returns 503.
+        Matches client → CRM contact → unknown; notifies assignee (alert SMS + email).
+        HELP/STOP keywords are logged only in v1 (no auto-replies).
+        Vitest skips signature validation.
+      responses:
+        "200": { description: TwiML empty Response }
+        "403": { description: Invalid signature }
+        "503": { description: Auth token missing in production }
+  /api/webhooks/twilio/sms-status:
+    post:
+      summary: Twilio outbound SMS status callback
+      tags: [webhooks]
+      responses:
+        "200": { description: ok }
+        "403": { description: Invalid signature }
+        "503": { description: Auth token missing in production }
+
 components:
   schemas:
     PublicEventView:
@@ -1932,4 +3284,3 @@ components:
         body: { type: string, nullable: true }
         location_label: { type: string, nullable: true }
         cta: { type: string, nullable: true }
-

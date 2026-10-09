@@ -54,7 +54,7 @@ export default function Contact() {
   const { t, i18n } = useTranslation();
   const schema = useMemo(() => makeSchema(t), [t]);
   const dispatch = useAppDispatch();
-  const { submitting, submitted, error } = useAppSelector(
+  const { submitting, submitted, submittedKind, error } = useAppSelector(
     (s) => s.contact.contact,
   );
 
@@ -117,8 +117,16 @@ export default function Contact() {
           <div className="lead-form-wrap">
             {submitted ? (
               <div className="success-state">
-                <h3>{t("contact.successTitle")}</h3>
-                <p>{t("contact.successBody")}</p>
+                <h3>
+                  {submittedKind === "partner_affiliate"
+                    ? t("contact.partnerSuccessTitle")
+                    : t("contact.successTitle")}
+                </h3>
+                <p>
+                  {submittedKind === "partner_affiliate"
+                    ? t("contact.partnerSuccessBody")
+                    : t("contact.successBody")}
+                </p>
                 <button
                   className="text-link"
                   type="button"

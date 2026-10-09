@@ -23,7 +23,13 @@ import {
   enumOptions,
   useRowBusy,
 } from "@/components/portal/kit";
+import {
+  ConfirmStatusChangeModal,
+  type PendingStatusChange,
+} from "@/components/portal/ConfirmStatusChangeModal";
+import { AdminPhoneNumbersPanel } from "@/components/admin/AdminPhoneNumbersPanel";
 import { useFormatters } from "@/lib/format";
+import { isDemotingAccountStatus } from "@/lib/accountStatus";
 
 const ROLES = ["super_admin", "admin", "agent", "finance", "content"] as const;
 const STATUSES = ["active", "inactive", "suspended"] as const;
@@ -37,6 +43,9 @@ export default function AdminStaff() {
   const me = useAppSelector((s) => s.portalAuth.admin.user);
   const [open, setOpen] = useState(false);
   const rowBusy = useRowBusy();
+  const [pendingDemote, setPendingDemote] = useState<PendingStatusChange | null>(
+    null,
+  );
 
   const load = () => void dispatch(fetchAdminStaff());
   useEffect(() => {
@@ -50,7 +59,7 @@ export default function AdminStaff() {
     email: Yup.string().trim().email(t("validation.emailInvalid")).required(t("validation.emailRequired")),
   });
 
-  const patch = (id: number, p: Record<string, string>) => {
+  const applyPatch = (id: number, p: Record<string, string>) => {
     void rowBusy.run(
       id,
       "status",
@@ -60,6 +69,19 @@ export default function AdminStaff() {
       },
       { onFlashEnd: load },
     );
+  };
+
+  const requestStatusChange = (
+    id: number,
+    from: string,
+    to: string,
+    name: string,
+  ) => {
+    if (isDemotingAccountStatus(from, to)) {
+      setPendingDemote({ id, from, to, name });
+      return;
+    }
+    applyPatch(id, { status: to });
   };
 
   return (
@@ -106,7 +128,7 @@ export default function AdminStaff() {
                 value={s.role}
                 disabled={rowBusy.isRowLocked(s.id)}
                 options={enumOptions(t, "role", ROLES)}
-                onChange={(v) => patch(s.id, { role: v })}
+                onChange={(v) => applyPatch(s.id, { role: v })}
               />
             ),
           },
@@ -119,12 +141,51 @@ export default function AdminStaff() {
                 value={s.status}
                 disabled={rowBusy.isRowLocked(s.id)}
                 options={enumOptions(t, "accountStatus", STATUSES)}
-                onChange={(v) => patch(s.id, { status: v })}
+                onChange={(v) =>
+                  requestStatusChange(
+                    s.id,
+                    s.status,
+                    v,
+                    `${s.first_name} ${s.last_name}`.trim(),
+                  )
+                }
               />
             ),
           },
           { key: "login", headerKey: "admin.lastLogin", render: (s) => fmt.date(s.last_login_at) },
         ]}
+      />
+
+      <AdminPhoneNumbersPanel className="gw-phone-panel mt-6" />
+
+      <ConfirmStatusChangeModal
+        pending={pendingDemote}
+        busy={
+          pendingDemote
+            ? rowBusy.isBusy(pendingDemote.id, "status")
+            : false
+        }
+        onCancel={() => {
+          if (pendingDemote && rowBusy.isBusy(pendingDemote.id, "status")) {
+            return;
+          }
+          setPendingDemote(null);
+        }}
+        onConfirm={() => {
+          if (!pendingDemote) return;
+          const { id, to } = pendingDemote;
+          void rowBusy
+            .run(
+              id,
+              "status",
+              async () => {
+                const r = await dispatch(updateStaff({ id, patch: { status: to } }));
+                return updateStaff.fulfilled.match(r);
+              },
+              { onFlashEnd: load },
+            )
+            .then(() => setPendingDemote(null));
+        }}
       />
 
       <Modal open={open} titleKey="admin.addStaff" onClose={() => setOpen(false)}>

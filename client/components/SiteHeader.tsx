@@ -24,8 +24,13 @@ export default function SiteHeader() {
       </nav>
       <div className="header-actions">
         <LanguageSwitcher />
-        <a className="header-phone" href={`tel:${SITE_PHONE_TEL}`}>
-          <Phone size={15} strokeWidth={1.8} /> {SITE_PHONE_DISPLAY}
+        <a
+          className="header-phone"
+          href={`tel:${SITE_PHONE_TEL}`}
+          aria-label={SITE_PHONE_DISPLAY}
+        >
+          <Phone size={15} strokeWidth={1.8} aria-hidden />
+          <span className="header-phone-label">{SITE_PHONE_DISPLAY}</span>
         </a>
       </div>
       {/* Sibling of actions so it can wrap to a full row on narrow screens without clipping. */}

@@ -1,4 +1,5 @@
 import {
+  createAsyncThunk,
   createSlice,
   isAnyOf,
   type ActionReducerMapBuilder,
@@ -13,7 +14,9 @@ import type {
   AdminContractor,
   AdminDashboard,
   AdminLead,
+  AdminNotifyEventKey,
   AdminNotifyExtraEmail,
+  AdminNotifyStaffRecipient,
   AdminProject,
   AdminProjectBoardColumn,
   AdminProjectBoardColumnPage,
@@ -21,14 +24,24 @@ import type {
   AdminProjectDetail,
   AdminStaff,
   CommissionSettings,
+  ConvertAdminLeadRequest,
+  ConvertAdminLeadResponse,
   EventRegistrationStatus,
+  LeadConvertPhoneMatch,
   MarketingEvent,
   ProjectDraw,
   ProjectMilestone,
 } from "@shared/api";
 import { BOARD_MILESTONES } from "@shared/api";
-import { api } from "@/lib/api";
+import axios from "axios";
+import { api, formatAxiosError } from "@/lib/api";
+import { portalSessionExpired } from "@/store/slices/portalAuthSlice";
+import {
+  applyAdminNotifyPrefsPatch,
+  type AdminNotifyPrefsPatch,
+} from "@/lib/adminNotifyPrefs";
 import { createApiThunk } from "@/lib/portalThunk";
+import { personConflictDetected, personConflictFromBody } from "@/store/slices/personConflictSlice";
 import { boardQueryParams, emptyBoardColumns, type BoardFilters } from "@/lib/projectBoard";
 
 type ListState<T> = { items: T[]; total: number; loading: boolean; error: string | null };
@@ -103,6 +116,15 @@ type AdminState = {
     settings: CommissionSettings;
     notify_extra_emails: AdminNotifyExtraEmail[];
   }>;
+  notifyRecipients: {
+    staff: AdminNotifyStaffRecipient[];
+    extras: AdminNotifyExtraEmail[];
+    events: AdminNotifyEventKey[];
+    loading: boolean;
+    saving: boolean;
+    error: string | null;
+    staffPrefsSnapshot: AdminNotifyStaffRecipient[] | null;
+  };
   saving: boolean;
   saveError: string | null;
 };
@@ -144,6 +166,15 @@ const initialState: AdminState = {
   affiliateDetail: single(),
   contractorDetail: single(),
   settings: single(),
+  notifyRecipients: {
+    staff: [],
+    extras: [],
+    events: [],
+    loading: false,
+    saving: false,
+    error: null,
+    staffPrefsSnapshot: null,
+  },
   saving: false,
   saveError: null,
 };
@@ -152,6 +183,9 @@ const A = "admin" as const;
 export type AdminListFilter = {
   q?: string;
   status?: string;
+  /** Contractors: prequalification status (`none` = never sent). */
+  application_status?: string;
+  role?: string;
   milestone?: string;
   affiliate_id?: string | number;
   contractor_id?: string | number;
@@ -346,13 +380,43 @@ export const deleteAdminEvent = mutation("deleteEvent", async (id: number) =>
 export const updateAdminLead = mutation("lead", async (a: { id: number; patch: Patch }) =>
   (await api.patch(`/admin/leads/${a.id}`, a.patch)).data,
 );
-export const convertAdminLead = mutation(
-  "convertLead",
-  async (a: { id: number; adu_plan_id?: number | null }) =>
-    (await api.post<{ project_public_id: string }>(`/admin/leads/${a.id}/convert`, {
-      adu_plan_id: a.adu_plan_id ?? null,
-    })).data,
-);
+
+export type ConvertAdminLeadArg = ConvertAdminLeadRequest & { id: number };
+export type ConvertAdminLeadReject = {
+  error: string;
+  phone_match?: LeadConvertPhoneMatch;
+};
+
+export const convertAdminLead = createAsyncThunk<
+  ConvertAdminLeadResponse,
+  ConvertAdminLeadArg,
+  { rejectValue: ConvertAdminLeadReject }
+>("adminMutation/convertLead", async (a, { rejectWithValue, dispatch }) => {
+  try {
+    const { id, ...body } = a;
+    const { data } = await api.post<ConvertAdminLeadResponse>(
+      `/admin/leads/${id}/convert`,
+      body,
+    );
+    return data;
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      dispatch(portalSessionExpired("admin"));
+    }
+    const data = axios.isAxiosError(error)
+      ? (error.response?.data as {
+          error?: string;
+          phone_match?: LeadConvertPhoneMatch;
+        } | undefined)
+      : undefined;
+    const conflict = personConflictFromBody(data);
+    if (conflict) dispatch(personConflictDetected(conflict));
+    return rejectWithValue({
+      error: formatAxiosError(error, "errors.server"),
+      phone_match: data?.phone_match,
+    });
+  }
+});
 export const updateAdminAffiliate = mutation(
   "affiliate",
   async (a: { id: number; patch: Patch }) =>
@@ -422,8 +486,11 @@ export const saveAdminSettings = mutation("settings", async (body: Patch) =>
 );
 export const createNotifyExtra = mutation(
   "createNotifyExtra",
-  async (body: { email: string; label?: string | null }) =>
-    (await api.post("/admin/settings/notify-extras", body)).data,
+  async (body: {
+    email: string;
+    label?: string | null;
+    events?: AdminNotifyEventKey[] | null;
+  }) => (await api.post("/admin/settings/notify-extras", body)).data,
 );
 export const updateNotifyExtra = mutation(
   "updateNotifyExtra",
@@ -434,12 +501,39 @@ export const deleteNotifyExtra = mutation("deleteNotifyExtra", async (id: number
   (await api.delete(`/admin/settings/notify-extras/${id}`)).data,
 );
 
+export const fetchNotifyRecipients = createApiThunk(
+  "adminPortal/notifyRecipients",
+  A,
+  async () => {
+    const { data } = await api.get<{
+      staff: AdminNotifyStaffRecipient[];
+      extras: AdminNotifyExtraEmail[];
+      events: AdminNotifyEventKey[];
+    }>("/admin/notify-recipients");
+    return {
+      staff: data.staff || [],
+      extras: data.extras || [],
+      events: data.events || [],
+    };
+  },
+);
+
+export const updateStaffNotifyPrefs = createApiThunk<
+  AdminNotifyStaffRecipient,
+  { id: number; patch: AdminNotifyPrefsPatch }
+>("adminPortal/updateStaffNotifyPrefs", A, async ({ id, patch }) => {
+  const { data } = await api.put<{ staff: AdminNotifyStaffRecipient }>(
+    `/admin/admins/${id}/notification-prefs`,
+    patch,
+  );
+  return data.staff;
+});
+
 const mutations = [
   createAdminEvent,
   updateAdminEvent,
   deleteAdminEvent,
   updateAdminLead,
-  convertAdminLead,
   updateAdminAffiliate,
   inviteContractor,
   updateAdminContractor,
@@ -707,6 +801,128 @@ const adminPortalSlice = createSlice({
     builder.addCase(syncAdminProjectAnchor.fulfilled, (state, action) => {
       state.projectDetail.data = action.payload;
     });
+
+    builder
+      .addCase(fetchNotifyRecipients.pending, (state) => {
+        state.notifyRecipients.loading = true;
+        state.notifyRecipients.error = null;
+      })
+      .addCase(fetchNotifyRecipients.fulfilled, (state, action) => {
+        // Ignore stale list fetches while a prefs save is in flight
+        if (state.notifyRecipients.saving) {
+          state.notifyRecipients.loading = false;
+          return;
+        }
+        state.notifyRecipients.loading = false;
+        state.notifyRecipients.staff = action.payload.staff;
+        state.notifyRecipients.extras = action.payload.extras;
+        state.notifyRecipients.events = action.payload.events;
+      })
+      .addCase(fetchNotifyRecipients.rejected, (state, action) => {
+        state.notifyRecipients.loading = false;
+        state.notifyRecipients.error =
+          (action.payload as string | undefined) || "errors.server";
+      })
+      .addCase(updateStaffNotifyPrefs.pending, (state, action) => {
+        state.notifyRecipients.saving = true;
+        state.notifyRecipients.error = null;
+        // Keep the first snapshot if another prefs write is already in flight
+        // so concurrent toggles don't clobber rollback state.
+        if (!state.notifyRecipients.staffPrefsSnapshot) {
+          state.notifyRecipients.staffPrefsSnapshot =
+            state.notifyRecipients.staff.map((row) => ({
+              ...row,
+              prefs: {
+                email: { ...row.prefs.email },
+                in_app: { ...row.prefs.in_app },
+                sms: { ...row.prefs.sms },
+              },
+              channels: { ...row.channels },
+            }));
+        }
+        const { id, patch } = action.meta.arg;
+        state.notifyRecipients.staff = state.notifyRecipients.staff.map((row) =>
+          row.id === id
+            ? { ...row, prefs: applyAdminNotifyPrefsPatch(row.prefs, patch) }
+            : row,
+        );
+      })
+      .addCase(updateStaffNotifyPrefs.fulfilled, (state, action) => {
+        state.notifyRecipients.saving = false;
+        state.notifyRecipients.staffPrefsSnapshot = null;
+        const staff = action.payload;
+        if (!staff) return;
+        state.notifyRecipients.staff = state.notifyRecipients.staff.map((row) =>
+          row.id === staff.id ? staff : row,
+        );
+      })
+      .addCase(updateStaffNotifyPrefs.rejected, (state, action) => {
+        state.notifyRecipients.saving = false;
+        state.notifyRecipients.error =
+          (action.payload as string | undefined) || "errors.server";
+        if (state.notifyRecipients.staffPrefsSnapshot) {
+          state.notifyRecipients.staff = state.notifyRecipients.staffPrefsSnapshot;
+          state.notifyRecipients.staffPrefsSnapshot = null;
+        }
+      });
+
+    builder.addCase(updateNotifyExtra.fulfilled, (state, action) => {
+      const id = action.meta.arg.id;
+      const patch = action.meta.arg.patch || {};
+      state.notifyRecipients.extras = state.notifyRecipients.extras.map((row) => {
+        if (row.id !== id) return row;
+        return {
+          ...row,
+          ...(typeof patch.is_active === "boolean"
+            ? { is_active: patch.is_active }
+            : {}),
+          ...(patch.label !== undefined
+            ? { label: (patch.label as string | null) ?? null }
+            : {}),
+          ...("events" in patch
+            ? { events: (patch.events as AdminNotifyEventKey[] | null) ?? null }
+            : {}),
+        };
+      });
+      if (state.settings.data) {
+        state.settings.data.notify_extra_emails =
+          state.settings.data.notify_extra_emails.map((row) => {
+            if (row.id !== id) return row;
+            return {
+              ...row,
+              ...(typeof patch.is_active === "boolean"
+                ? { is_active: patch.is_active }
+                : {}),
+              ...("events" in patch
+                ? {
+                    events:
+                      (patch.events as AdminNotifyEventKey[] | null) ?? null,
+                  }
+                : {}),
+            };
+          });
+      }
+    });
+    builder.addCase(deleteNotifyExtra.fulfilled, (state, action) => {
+      const id = action.meta.arg;
+      state.notifyRecipients.extras = state.notifyRecipients.extras.filter(
+        (r) => r.id !== id,
+      );
+    });
+
+    builder
+      .addCase(convertAdminLead.pending, (state) => {
+        state.saving = true;
+        state.saveError = null;
+      })
+      .addCase(convertAdminLead.fulfilled, (state) => {
+        state.saving = false;
+      })
+      .addCase(convertAdminLead.rejected, (state, action) => {
+        state.saving = false;
+        state.saveError = action.payload?.error || "errors.server";
+      });
+
     builder
       .addMatcher(isAnyOf(...mutations.map((m) => m.pending)), (state) => {
         state.saving = true;
