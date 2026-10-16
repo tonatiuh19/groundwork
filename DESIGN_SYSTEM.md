@@ -12,7 +12,7 @@ Canonical visual + product design contract. **Update this file whenever UI, bran
 - **Product mode:** hybrid — financing primary + ADU education secondary (aligned with adu-ez.com)
 - **Production domain:** `groundworkcapitalgroup.com` (`PUBLIC_APP_URL`)
 - **Support email:** `info@groundworkcapitalgroup.com` (override with `SUPPORT_EMAIL`)
-- **Support phone:** `+1 562 573 5110` (`SITE_PHONE_*` in `client/lib/site.ts`; `system_settings.support_phone`; brand Twilio line). Shown in header (full label desktop; icon tap-to-call on ≤760px), footer, and Contact page.
+- **Support phone:** toll-free `+1 866 864 7506` (`SITE_PHONE_*` in `client/lib/site.ts`; primary brand Twilio line — `admin_phone_numbers.is_primary`). Former main line (562) 573-5110 stays connected for replies to older threads. Shown in header (full label desktop; icon tap-to-call on ≤760px), footer, and Contact page.
 - **Office:** `2717 W Coast Hwy Ste C, Newport Beach, CA 92663`
 - **Social:** Instagram [`@groundworkcapitalgroupllc`](https://www.instagram.com/groundworkcapitalgroupllc) in the footer (Lucide icon). Facebook / TikTok URLs are reserved in `SITE_SOCIAL` but **not shown** until those profiles are public.
 
@@ -193,6 +193,64 @@ The source of truth is `ADMIN_PERMS` (`shared/api.ts`, mirrored inline in `api/i
 - **Repeat leads:** standard (non-event) submissions merge into the person's existing lead — count + `last_submitted_at` bump it to the top, the submission is appended to notes. Leads list shows a gold `×N submissions` chip and an "Already client / affiliate / contractor →" link instead of Convert. Event RSVPs stay one row per event.
 - **Duplicates subsection (no separate page):** `DuplicatesPanel entity=…` sits under the header of **Leads, Clients, Affiliates and Contractors** and shows only clusters involving that record type — a collapsible clay-rail bar "Possible duplicates (N)" (hidden when N = 0; `people.read` view, `approvals` act). Expanded: kind filter chips (when >1 kind) + cluster cards (gold rail; clay for two roles; pine for lead clusters) listing each record with role chip, status, contact, linked counts. Actions: pick the record to keep → **Merge** (same role only; dry-run preview of what moves, blockers, warnings), **Delete** (refused while projects in progress, commissions, draws, conversations, referred clients or a submitted prequalification hang off it; empty pipeline projects go with a client), **Link lead**, **Not duplicates** (reason; resurfaces if a new match appears). Cards stack under 640px.
 
+### Phone lines (Settings / Staff → Brand phone numbers → Configure)
+
+- One modal per line is the single source of truth. Gold-rule summary at the top in plain words ("Callers ring N CRM browsers and M phones for 25s, then hear the bilingual voicemail" + how many browsers are online now). Sections: Owner (default assignee), **Who can see this line** (staff checklist; per-member "Ring in CRM" toggle), **Phones that also ring** (label + number, ≤5, screened with "press 1 to accept" in EN/ES so a personal voicemail never answers), **Ring for** (15–40s), **Voicemail** EN + ES greetings (placeholders show the defaults; an empty field plays exactly that matched EN/ES default pair — never the legacy single-language `voice_voicemail_greeting_text`).
+- **Line type** card pair at the top of the modal: **Shared line** (team; members checklist + "Ring in CRM") or **Personal line** (one staff owner; visible to the owner + all admins; rings the owner's browser + optional screened cell, else their personal forwarding). Personal lines require an owner.
+- Panel toolbar: **Connect a Twilio number** (lists account numbers not connected yet; "Answered today by portal.encoremortgage.org" warning + explicit take-over checkbox; A2P/toll-free texting note) next to Sync. Rows show "Shared · N staff" or "Personal", plus a red **Needs owner** badge; a red banner appears when any line's owner was deactivated (its traffic falls back to the main shared line's team until reassigned). Disconnect lives at the bottom of the modal behind typing the exact number; the main number can't be disconnected.
+- Sending: thread replies default to **Automatic — this conversation's number** (customers always hear from the number they know); new conversations default to the staff member's own personal line. Browser calls use the same rule for caller ID.
+- Caller experience is always the same: ring plan → no answer / nobody online / error → English then Spanish greeting → tone → voicemail in Conversations. No "goodbye" hang-ups. Lines with no members behave as personal lines (owner browser + personal forwarding).
+
+### Deal status & client updates
+
+- `DealStatusBadge` (amber warn / red bad / gray neutral / green good) — separate from portal account status. Shown on the client page stats, pipeline cards, the admin **Clients** list and **Projects** table (next to the name), and the affiliate's **My Clients** (next to the milestone).
+- Client page → **Deal status & updates** card pair: status select (+ optional note, "Text + email {affiliate}" checkbox) and an updates feed (gold left rule + eye icon = shared with affiliate; gray "Internal"). Affiliate sees shared updates in a **Latest update** column (older ones in `<details>`), plus a short text from the main line and an email with the full note.
+- Settings → **Deal statuses**: inline editable rows (EN, ES, color, Activate/Deactivate) + add row; stacks on phones.
+
+### Edit panels (slide-over drawers)
+
+- `SideDrawer` (`components/portal/SideDrawer.tsx`): right slide-over (full width on phones, 34rem on desktop), paper body, white header with a navy icon tile + serif title + subtitle, gold left rule, sticky white footer for actions. Escape / backdrop close (blocked while saving; with stacked drawers only the top one closes); sits under `.pf-modal-backdrop` so confirm dialogs stack on top. `DetailList` = read-only label/value tiles for the page itself.
+- Client and affiliate detail pages show a **Details** card (`DetailList`) with **Edit details**; the drawer holds the full form grouped into clay uppercase sections (Contact · Property/Affiliate program · Account · Internal notes). Name, email, phone, language are editable for affiliates too. Changing the **email** (sign-in identity) shows a gold note ("we notify the old and the new address"), and on save both addresses get a notice, the billing record updates and the change is audited.
+
+### Scheduler (appointments, calendar, booking links)
+
+- **Appointment drawer** (`AppointmentDrawer`): "What" pill picks (navy when on) for type, title; "When" date / start / length (3-col, stacks on phones) + timezone hint; "Where" 4-way segmented control (At the property · Office · Phone · Video; gold ring when on) — onsite defaults to the property address; "Who" tap-to-tag pills for Team, Contractor, Lender (+ "New lender" quick add in a stacked drawer) and guest rows; pine **Send the homeowner a confirmation** switch; shared message vs internal notes. Footer: Mark done / Cancel appointment (inline red confirm with reason) on the left, Close / Save on the right. Overlaps save with an amber "heads up, it overlaps with…" list.
+- **Kind colors** (dots, calendar event rails): inspection = clay, site visit = pine, lender meeting = gold, consultation = navy, call = slate, other = gray.
+- **Appointments panel** on client and project pages: upcoming rows (kind dot, title, Pacific time range, address, tagged team / contractor / lender) + collapsed "N past appointments"; gold **Schedule appointment**. Project page also picks the **Lender (directory)** (free-text name kept for lenders not in the list).
+- **Calendar** (`/admin/calendar`, nav for `projects.read`): month grid (white, contained horizontal scroll on phones, navy dot for today, kind-colored event pills with time) or agenda (day headers in clay caps); Everyone / Mine; click a future day to schedule, an event to edit; `?appointment=` deep link from emails. View choice remembered per device.
+- **Notifications:** every tagged person (staff, contractor, lender, guests) + the homeowner get a branded email with details tiles and a calendar invite (.ics; updates bump the sequence, cancellations send METHOD:CANCEL) plus a text; reminders 24 h and 1 h before (cron every 15 min). Homeowner emails carry a manage link.
+- **Booking link** (Profile → My booking link): on/off switch, dashed paper link box with Copy / Preview, length / buffer / notice / horizon selects, EN/ES titles, meeting types, weekly hours editor (per-day checkbox + time ranges, add/remove), days off list.
+- **Public `/book/:slug`** and **`/appointment/:token`**: same chrome as the affiliate welcome page (paper gradient, sticky top bar, pine "Secure booking" pill, EN/ES). Host card (navy avatar disc, clay host name, serif title, duration). Step 1: horizontal date strip (navy selected day) + time grid (gold selected) with timezone note; Step 2: details with the step chip, meeting type segmented control, property address for onsite visits; confirmation card in pine. Manage page: serif title, when / where / with lines, Reschedule (same slot picker) and Cancel (inline reason).
+- **Portals:** contractor **Appointments** page (rows with maps link for the address, homeowner, shared message); affiliate dashboard **Upcoming appointments with your clients** (type + client initial + time only).
+- **Settings → Lenders** directory (company, contact, email, phone, language, active) using the same drawer.
+
+### Affiliate welcome, card on file, help
+
+- **Welcome email + text (on every affiliate signup):** program presentation link (setting `affiliate_presentation_url`) + "Finish my setup" CTA to a personal **secure link** `/affiliate/welcome/:token` (30 days, revocable; "Resend welcome" on the admin affiliate page / MCP issues a new one). New affiliates get the default price (`affiliate_default_price_cents`, $19.99) automatically.
+- **`/affiliate/welcome` page (no login, works while pending):** paper/gold background, sticky top bar with logo, pine "Secure link" pill and language switcher; serif hero ("Welcome, {name}!") with a pending note; navy **presentation card** (gold play disc) opening the deck in a new tab; then the same 3-step flow as the portal (`AffiliateOnboardingFlow`): Agreement → W-9 → **Card on file**, each step a white rounded card; a "You're all set!" pine card when done; the help panel below. The token is moved out of the URL immediately (sessionStorage, `x-onboarding-token` header); expired links show a clay shield card with Sign in.
+- **Card on file (`SecureCardForm`):** never names the processor. Gold-gift plan strip ("First 90 days free · Then $X per month. Cancel anytime."). Card form = rounded white→paper card with soft navy shadow, pine lock disc header ("Secure card · Encrypted end to end. Nothing is charged today."), detected brand chip (navy outline), separate hosted fields (number with brand icon; expiry + security code in a 2-col row) styled in Manrope/charcoal, gold focus ring, pine border when complete, clay when invalid; full-width gold "Save card securely" with shield icon; trust line (256-bit encryption · We never see or store your full card number). Processor "Link" autofill is disabled. On file → navy card chip, BRAND •••• 4242, expiry, "First charge {date}" / "Next charge {date}", pine "Card on file" check, Replace card, and (portal only) Cancel plan / Keep my plan.
+- **Help (`/affiliate/help` + welcome page):** two cards side by side (stack on phones): searchable **FAQ** accordion (paper rows, chevron rotates) and **Ask the assistant** chat (paper log, navy "me" bubbles right, white bot bubbles left with a gold sparkle disc, three gold typing dots, clay "Sent to the team" tag on hand-offs), textarea + gold send button, fine-print disclaimer. Enter sends, Shift+Enter new line.
+- **Admin:** affiliate page → **Platform plan & help** (status badge, plan / card / free-until or next-charge tiles, Resend welcome, "N questions · N for the team" toggle showing the assistant log); Settings → **Affiliate FAQ** list (question EN + ES, "No Spanish" warn badge, edit/delete; modal editor EN/ES, order, show to affiliates).
+
+### Move back to Leads (undo a client conversion)
+
+- Client page header → **Move back to Leads** (`ArchiveRestore` icon, small outline button; super_admin + admin only). Opens `RevertClientModal`: gold-rule "where they go" line (back to the Leads Active list / Contacts / Conversations as an unknown contact / a new lead for clients created directly), a two-column **Kept** (green check: threads, notes + deal history, referring affiliate, audit snapshot) vs **Removed** (gray minus: client record, empty project, unused portal invite) list that stacks on phones, a "Nobody is messaged" hint, optional **Lead status** select (default "Keep current status") and **Reason**. Confirm label follows the destination ("Move back to Leads / Contacts / Conversations").
+- Blocked state (portal already used, project past Lead, contractor, commissions, no phone/email) replaces the lists with a red-tinted alert listing each reason + a "use Inactive instead" hint, and only a **Close** button.
+- After confirm the admin lands where the person now lives: `/admin/leads?q=<name>` (the Leads search box honors `?q=`), `/admin/conversations?contact=` or `?unknown=`.
+
+### Message templates (`/admin/templates`)
+
+- Conversations nav → **Templates** page (real-state Communication Templates pattern): search, category pills (General, Welcome, Follow-up, Reminder, Status update, Documents, Scheduling), card grid (sample-filled preview EN + ES, "Used N times", Edit / Deactivate / Delete). Editor modal: title, category, EN/ES bodies with dashed gold `{{variable}}` chips that insert at the caret, char/SMS-segment counter, navy SMS-bubble preview with EN/ES toggle.
+- Composer template picker links **Manage templates** and **Save this message as a template**; picking a template counts usage and uses the contact's language.
+
+### Affiliate Agreement & W-9 (`/affiliate/agreement`)
+
+- Portal nav **Agreement & W-9** + gold "Action needed" banner on Dashboard / Commissions until payout-ready. Two step pills (green when done, red when the W-9 needs a correction).
+- Step 1: EN/ES toggle; the agreement renders in a scrollable card (`AgreementDocument`, same markup as the PDF: `#`/`##`/`-`/`|` tables/`**bold**`; wide fee tables scroll inside their wrapper). Spanish signers see "English controls" and their PDF contains ES + EN. Fields: legal name, business, title, phone, mailing address, `SignaturePad`, e-sign consent checkbox. Locked with a gold-rule note until staff set the monthly price after the onboarding call.
+- Step 2 (after signing): W-9 online — line 1/2, 3a classification radio grid (LLC → C/S/P select; 3b only for partnership/trust/LLC-P), exemptions collapsed in `<details>`, SSN/EIN masked input, Part II certification text, signature + perjury checkbox. Generates the official IRS W-9 (Rev. 3-2024) filled, flattened, signed; full TIN only in that private PDF.
+- Admin → Affiliate → **Agreement & W-9** card pair: monthly price (save emails the affiliate), signed record + PDF + Void (reason modal), W-9 record + Accept / Request correction (finance; PDF link finance-only). Badge "Payout ready" / "Payouts on hold". Settings → **Affiliate Agreement template**: preview/edit EN/ES (monospace editor), publish new version via confirm modal.
+- Commission roles read **Referring / Sponsor / Senior sponsor** (two-level plan $7 / $1.50 / $1.50; $7 / $3 with one sponsor).
+
 ### Contractor prequalification application (`/contractor/apply/:token`)
 
 Every new contractor (public signup, staff invite, MCP invite, lead → contractor as pending) is emailed a secure link to the **ADU Contractor Prequalification Application** — the online version of the paper form (11 sections). Activation (`pending → active`) requires an **approved** application; only a `super_admin` can override with a reason (logged on the application's audit trail, also via MCP `approve_contractor.override_reason` and lead convert `status=active`).
@@ -213,7 +271,7 @@ Staff invite by email → the email is the prequalification link (opening it acc
 
 ### Economics + commission rules
 
-- **Two-level affiliates:** `affiliates.parent_affiliate_id` (NULL = top-level). Top-level affiliates invite **sub-affiliates** from Affiliate → My team (subs activate immediately; admin can suspend). Subs cannot invite further levels.
+- **Two-level affiliates:** `affiliates.parent_affiliate_id` (NULL = top-level). Top-level affiliates invite **sub-affiliates** from Affiliate → My team (subs start pending like every affiliate — Groundwork approves, and their free period starts on approval; the parent can pause/resume an approved sub). Subs cannot invite further levels.
 - **Deal attribution:** `projects.closer_affiliate_id` + frozen `projects.parent_affiliate_id` at enrollment. Legacy `projects.affiliate_id` stays the closer for older rows.
 - **Rates** (`system_settings`, Admin → Settings): `commission_direct_cents_per_sqft` ($10), `commission_closer_cents_per_sqft` ($7), `commission_parent_cents_per_sqft` ($3). Legacy `commission_cents_per_sqft` aliases direct. On first loan finalize, rates are **frozen on the project** (`commission_rate_*_cents_per_sqft`) and copied onto each commission row; unpaid recalcs use the freeze (not live Settings). Unfinalize clears the freeze.
 - **Split math (plan defaults ignored):** override (if set) else `sq_ft × frozen rates`. Direct (no parent): one `role=direct` row. Sub closer: `role=closer` + `role=parent` rows. Self-parent pointers are ignored (treated as direct). If the parent is **inactive**, parent share is withheld (company) and unpaid parent rows are voided immediately on status change; closer keeps their share. Admin per-row amount edits on split deals update that share only (do not become the project-total override) and are blocked once any share is paid.
@@ -232,6 +290,98 @@ Affiliate lookup (`GET /api/public/affiliates/by-code/:code`) is rate limited pe
 ### Notice emails
 
 `tplPortalNotice` (bilingual EN/ES) reuses the email chrome below: paper header, title, short body, single gold button deep-linking to the relevant portal page (`/admin/...`, `/affiliate`, `/contractor/...`, `/client/invite/:token` for homeowners, `/client` after accept). Used for affiliate approval, contractor invite, client portal magic-link invite (5-day TTL), new-project-assigned, draw status updates, commission paid, staff welcome, staff alerts, and **voicemail transcripts** (assignee only, deep link `/admin/conversations?client|contact|unknown=`). Answered-call transcripts stay in the inbox and are not emailed.
+
+### Affiliate link card (`AffiliateLinkCard`, `AffiliateLinkButton`)
+
+- **Card:** a navy-gradient "business card" with a gold left rail. It has a gold eyebrow ("Your referral link"), an EN/ES radio toggle (`?lang=es` link), the affiliate's name in the display serif, and the short URL as one big copy button (gold "Copy" → "Copied").
+  - Below the URL is a hint about which language page the link opens.
+  - QR on a white tile, with PNG / SVG downloads and a gold "Flyer (PDF)" button.
+- **Variants:**
+  - `hero` (dashboard + `/affiliate/link`) adds four stat tiles: 7-day clicks, all-time clicks, leads, clients.
+  - `compact` is used in the header modal and adds "Open my link page".
+- **Header button:** a gold "My link" pill (`.gw-mylink-btn`) in every affiliate page header (sidebar under the kicker, mobile top bar icon-only). It opens the compact card in a `Modal`. It goes through `PortalShell`'s `headerAction` prop.
+- **Custom link name** (`.gw-slug-editor`): a prefix plus an input with a live slugified preview. The name can change once every 30 days; the old link keeps working for 30 days and no one else can claim it during that time.
+- **Flyer PDF:** a Letter page in cream with a navy QR card. It shows the logo, the headline "Add an ADU to your property" (ES variant), three bullets, "Referred by" with name and company, and a footer with the phone number. Text auto-shrinks to fit, and the flyer makes no outcome promises.
+- **Mobile:** at ≤640px the card stacks and the stats become a 2×2 grid. Long URLs wrap with `overflow-wrap: anywhere`. No horizontal scroll at 320px.
+
+### Platform membership (`BillingPanel`, `SecureCardForm`, `ContractorMembership`)
+
+- **One billing UI for every paying role** (`client/components/billing/`):
+  - `SecureCardForm` holds the brand-styled hosted card fields. It is prop-driven, so each portal passes its own thunks.
+  - `BillingPanel` shows the plan (free days, then monthly), the card on file with Replace / Cancel, a "waived" state, and "free days start when we approve you".
+  - The affiliate setup step (`AffiliateBillingStep`) wraps it. The UI never names the payment processor.
+- **Approval-gated trials:** the card is saved first (affiliate onboarding, contractor application), and nothing is charged. The plan and its free period start only on approval (affiliates 90 days at the agreement price; contractors 30 days, then $99.90/mo). Sub-affiliates start pending, like every affiliate.
+- **Contractor membership** (`ContractorMembership`), a navy icon tile with a gold left rail, used in three places:
+  - `application`: in the prequalification review step, before signing. Submit stays disabled until a card is saved.
+  - `gate`: replaces every portal page (`PortalShell` `gate` prop) while an approved contractor's membership isn't free-period/active. Only billing and the application stay open (API returns 402 `errors.billingRequired`).
+  - `portal`: dashboard card to replace the card or cancel at period end.
+- **Card updates:**
+  - Replacing a card detaches the old one (one card on file). A past-due plan charges the open invoice to the new card right away.
+  - Cards the bank refreshes update automatically.
+  - Card-expiry reminders go out by email and text 30 and 7 days before the expiry month ends. The portal shows `BillingNotice` (a slim amber banner with "Update card"), and admin shows a "Card expiring" badge.
+- **Admin → Subscriptions** (`/admin/billing`; staff-facing name is "Subscriptions", members still see "platform membership", `pages/admin/Billing.tsx`):
+  - Stat cards: monthly revenue, paying, free period (ending this week), past due (paused count).
+  - Role tabs, status chips with counts, and search.
+  - Members table; a row opens `MembershipDrawer`.
+- **`MembershipDrawer`** (SideDrawer), shared by the Billing page and the "Manage membership" button on contractor / affiliate records:
+  - Status badges and a facts grid.
+  - Action pills that open gold-railed action cards: cancel (period end / now), resume, add free days (+7…+90 chips), price (default / custom / waive), start with a secure card link (price, free days, note).
+  - Payments list with Receipt / PDF / Refund (partial or full, reason required).
+  - Activity timeline.
+  - Everyone with `people.read` can view; `finance.write` (super admin, admin, finance) can act. Every action is logged with a reason, and the member gets an email.
+- **Card link page** (`/billing/card/:token`): a centered membership card with the shared `BillingPanel`, then a done state. Links last 14 days, work once, and only the newest one is valid.
+- **Affiliate pause:** a failed payment shows `AffiliateBillingGate` (same look as the contractor gate) on every affiliate page and holds payouts. The referral link keeps recording.
+- **Admin** (`ContractorBillingAdmin` on the contractor record):
+  - Status badge and a "Portal paused" badge.
+  - Facts grid: price, card brand + last 4, free-until / next date.
+  - Price: Default / Custom / Waive.
+
+### Staff command center (`/admin`, `pages/admin/Dashboard.tsx`)
+
+- **Hero:** a navy gradient card with the date, "Good morning, {name}" and a count of what needs you today. It has an Everyone / Mine switch (gold pill), a refresh button, and quick-action tiles that depend on the role (Work leads, New appointment, Projects board, Send a campaign, Events, Billing).
+- **Cards** (cream, gold hairline, soft shadow):
+  - **Needs you now:** a prioritized task list: alert (terracotta), then warn (amber), then info (navy). Each task has an icon, a count pill and a chevron, and links straight to the work. When empty it shows a green "All clear".
+  - **Today:** the Pacific-time agenda.
+  - **Pulse:** four KPIs with 4-week sparklines.
+  - **Money** (finance roles): membership revenue and closed net profit on navy tiles, pipeline value by stage as gold bars, and commission chips.
+  - **Trends:** 12-week grouped bars (`WeeklyBars`), a 90-day funnel with step conversion, lead sources, and event RSVPs (`HBars`).
+  - **Activity:** a live feed with a pulsing dot, refreshed every 60 seconds and whenever the tab regains focus.
+- **Layout:** one column on phones. From 900px it uses two columns: inbox and trends on the left, the activity feed spanning the right. Charts are SVG with no chart library.
+- **Roles:** the server returns only the sections a role can open. Agents get leads, texts, appointments and trends; finance gets money, billing, draws and commissions; content gets events and campaigns; admins and super admins get everything.
+
+### Portal shell on phones (≤900px)
+
+- **Bottom tab bar** (frosted cream with a safe-area inset): four primary tabs set per portal (`tabs` prop) plus **More**. The active tab gets a gold pill. Conversations shows an unread badge. There is no burger.
+- **More** opens the full menu as a **bottom sheet** (navy, grab handle, close button, two-column nav, account and sign-out at the bottom). It slides up from the tab bar.
+- **No sideways scrolling, anywhere:**
+  - tables become cards (first cell is the title, then label/value rows);
+  - the projects kanban becomes stage tabs plus one list;
+  - the milestone tracker becomes a vertical stepper;
+  - the calendar is agenda-only;
+  - filters use a grid (search full width, selects two per row);
+  - booking slots, audience and agreement tables wrap.
+- `html`, `body`, the shell and `main` use `overflow-x: clip`. Run `npm run audit:mobile` before shipping UI: it fails on any page or container that scrolls sideways at 320 / 375px.
+
+### Enrollment on phones (`/r/:code`, `EnrollWizard`)
+
+- On phones (≤900px wide, or any screen ≤500px tall, i.e. a phone held sideways), the steps rail is replaced by:
+  - an **"Invited by" card**: navy gradient, gold-ringed avatar or initials, affiliate name and company. The homeowner always sees who referred them, in either orientation.
+  - a **4-segment progress bar**: "Step X of 4" and "Next: …"; done segments are gold, the current one navy.
+- Phones held sideways also get slimmer header chrome, and the card and progress sit side by side, so the form starts above the fold.
+- The contractor prequalification (`.cpq-layout`) keeps its own rail.
+
+### Search pickers & delete person
+
+- **`RecordPicker`** (`components/portal/SearchPickers.tsx`): one search box for clients, leads and projects (name, email, phone, address, project ID).
+  - Results are grouped, with tinted icons: client navy, lead terracotta, project amber.
+  - Keyboard: ↑ ↓ Enter Esc. The selected record shows as a gold-bordered card with a clear (×) button.
+  - Used in the calendar appointment drawer under "Who is this for?".
+- **`MultiSearchPicker`**: the selected people show as navy chips with an avatar initial and ×. Type to filter, then pick from the dropdown. It replaces the long chip rows for team, contractors and lenders.
+  - The input is 16px so iOS doesn't zoom, and the dropdown is clipped to the drawer.
+- **`DeletePersonButton`** (super admin and admin):
+  - Placement: a terracotta ghost button in the client and affiliate edit drawers (footer left), and in a "Danger zone" card on the contractor page.
+  - The modal starts with a terracotta warning, then lists "Will be deleted" (exact counts) and "Kept, but no longer linked".
+  - It also takes an optional reason, and the red **Delete permanently** button erases everything and returns to the list.
 
 ## Composition
 
@@ -263,9 +413,11 @@ Interior routes share home band language:
 ### Admin Leads → Convert (multi-role)
 
 Admin **Leads** Convert opens a target picker: **Client / homeowner** (client + project + portal invite; needs `projects.write`), **Affiliate**, **Contractor** (need `approvals`). Smart default from `source` / `audience_tag` / notes (`partner_referral`, `company=`, `intent=partner|contractor`, tags). Affiliate/Contractor confirm dialog chooses **pending | active** (affiliate defaults active; contractor invite-first defaults pending). Phone match with a different email shows a link-confirm dialog (`confirm_phone_link`). Convert is hidden when `client_id`, `converted_affiliate_id`, or `converted_contractor_id` is set. Historical `partner_referral` leads stay in Leads for manual Convert (no bulk migrate).
+
+**Leads work queue**: `SegmentedTabs` (reusable `pf-segmented` pill tabs) **Active** (default — not yet linked to a client incl. prospect, affiliate or contractor, and not spam) / **Converted** / **All**; converting or creating a prospect moves the lead out of Active. Columns **Last text** / **Last call** (`LeadTouchCell`, matched by phone last-10 across all Groundwork lines): relative time + in/out arrow (green = inbound), SMS snippet or call duration / Missed / No answer; click opens the thread. Row actions **Text** (in-page `LeadQuickText` modal → `/conversations/start` from the admin's line; `errors.noPhoneLine` when none assigned) and **Call** (Conversations dialer prefilled). Conversations search also lists matching **Leads** (clay "Lead" badge) → opens their unknown-number thread, linked client, or a prefilled compose. "Create prospect" on an unknown thread fills name/email/language from the matching lead and links that lead to the new client.
 - `/contact` — interior hero with event-meta phone/email/address → form-section (intent + SMS consents)
 
-Header nav: **About**, **Partners**, **Contact**, **Homeowner portal** (`/client/login`). On viewports ≤760px the text nav collapses and the homeowner portal link moves into the header actions next to the language switcher.
+Header nav: **About**, **Partners**, **Events**, **Contact**, **Homeowner portal** (`/client/login`). On viewports ≤760px the text nav collapses and the homeowner portal link moves into the header actions next to the language switcher.
 
 Footer: Explore links + **Portals** column (**Admin**, **Affiliate**, **Contractor** login paths). Homeowner portal stays in the header, not the footer portal list.
 
@@ -280,14 +432,22 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 - Templates in `api/index.ts`: `tplLeadConfirmation`, `tplGetCreditReportWelcome`, `tplStaffLeadAlert`, `tplPortalNotice`
 - Live send whenever `RESEND_API_KEY` is set (local + prod); `NOTIFY_EMAILS=false` forces email dry-run. **Notification sandbox** (`notifySandbox()`: always under Vitest, or `NOTIFY_SANDBOX=true` for local QA) dry-runs email + SMS + Ably and limits staff alerts (email / in-app / SMS) to `@example.com` / `@example.test` admins
 
+## Events (`/events`, `/events/:slug`)
+
+- Header + footer nav link **Events** → `/events` with tabs **Upcoming** / **Past events** (`?tab=past`, role=tablist, gold underline on the active tab). Cards: cover (media cover → first photo → `image_url` → calendar mark), date, place, summary, CTA (Save my seat / See highlights). Grid `repeat(auto-fill, minmax(min(100%, 300px), 1fr))`.
+- **Past rule** (API + client `isEventPast`): past once the **Pacific calendar day** of `ends_at || starts_at` is over. Past events never appear as "live" (home ribbon, `/get-credit-report`) and never show RSVP.
+- Past detail: `EventHero` with a "This event has ended" note, then `EventMediaGallery` — highlight reel on top (uploaded video or Instagram / YouTube-nocookie / TikTok iframe; vertical reels 9:16 capped at 400px), other videos grid, photo grid (square tiles → `ImageLightbox`). No media → "Highlights coming soon" panel; past list badge says the same.
+- Admin event detail → **Photos & videos** (`EventMediaManager`): admins only (`approvals`) upload photos (≤15 MB) / videos (≤500 MB, direct-to-Blob with progress) or paste reel links; set cover (photo) / highlight reel (video/embed), EN/ES captions, reorder, delete. Others read-only.
+- **Registration QR**: every event gets a flyer QR encoding the tracked short link `/e/<slug>` (navy `#0e2a4a` modules on white, error correction M, 2-module quiet zone). `/e/:slug` counts the scan, lands on `/events/<slug>#register` while registration is open, and after the event forwards to the next open event (else the past event's highlights). RSVPs after a scan save `source = 'qr'`. Admin event page → **Registration QR** panel: QR preview, PNG (1600px) / SVG downloads, copy link, scans / RSVPs from QR / last scan. The home event card shows the live event's real QR (`EventQrCode`).
+- **New event slug**: auto-filled from city + start month/year (`fontana-oct-2026`, accents stripped, ≤ 64 chars) and kept in sync until the admin edits it; **Generate** re-applies the suggestion; the public URL `/events/<slug>` previews under the field (wraps on phones).
+- Shared `EventHero` renders the event header block on `/events/:slug` and `/get-credit-report`.
+
 ## Get Credit Report
 
-- Route: `/get-credit-report` (unlisted / noindex) — **Fontana event registration landing** (slug `fontana-oct-6`), same hero/body/RSVP as `/events/fontana-oct-6`.
-- Primary CTA: event RSVP (`LeadForm` with `mode=event`). Post-RSVP “free credit report” scrolls to `#free-report` on the same page (not a circular link).
-- Optional end section (`#free-report`): soft-pull capture (`POST /api/public/get-credit-report-lead`) → MyFreeScoreNow link. Clearly labeled optional — not required to attend. `/join` links here with `#free-report` and re-scrolls after async event content loads.
-- Partner URL (same as OFG): MyFreeScoreNow free snapshot; short path `/go/free-score` → 302.
-- Soft-pull consent on the optional form only (checked by default). Event RSVP never asks for soft-pull.
-- Home marketing CTAs that still say “Check your free credit report” may land here; the page leads with Fontana RSVP first.
+- Route: `/get-credit-report` (unlisted / noindex) — **dynamic**. When an event is live (published, registration open, not past) it leads with that event (`EventHero` + RSVP `LeadForm`) and the soft-pull form sits below as the optional `#free-report` section. Otherwise it is a clean credit-report landing ("Start with your free credit report" + link to `/events`) with the form as the main section — never an expired event.
+- Post-RSVP “free credit report” scrolls to `#free-report` on the same page (not a circular link). `/join` links here with `#free-report` and re-scrolls after async content loads.
+- Soft-pull capture: `POST /api/public/get-credit-report-lead` → MyFreeScoreNow link. Partner URL (same as OFG): MyFreeScoreNow free snapshot; short path `/go/free-score` → 302.
+- Soft-pull consent on the credit form only (checked by default). Event RSVP never asks for soft-pull.
 - Mobile: fluid event + form sections; no document horizontal scroll.
 
 ## Logo sizes

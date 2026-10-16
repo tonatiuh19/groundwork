@@ -37,7 +37,9 @@ import {
   useBusyAction,
 } from "@/components/portal/kit";
 import { downloadCsv, toCsv } from "@/lib/csv";
-import { EVENT_STATUSES, REGISTRATION_STATUSES } from "@/lib/eventOptions";
+import { EVENT_STATUSES, REGISTRATION_STATUSES, isEventPast } from "@/lib/eventOptions";
+import EventMediaManager from "@/components/admin/EventMediaManager";
+import EventQrPanel from "@/components/admin/EventQrPanel";
 import {
   fromDateTimeLocalValue,
   toDateTimeLocalValue,
@@ -439,6 +441,10 @@ export default function AdminEventDetail() {
               </Form>
             </Formik>
           </section>
+
+          <EventQrPanel event={ev} />
+
+          <EventMediaManager eventId={ev.id} isPast={isEventPast(ev)} />
 
           <section className="pf-section">
             <div className="pf-section-head">

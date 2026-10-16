@@ -19,6 +19,8 @@ export const ADMIN_NOTIFY_EVENT_KEYS: AdminNotifyEventKey[] = [
   "contractor_signup_reminder",
   "contractor_application_submitted",
   "contractor_compliance_alert",
+  "affiliate_onboarding",
+  "line_needs_owner",
   "duplicate_blocked",
   "draw_submitted",
   "lead_converted",

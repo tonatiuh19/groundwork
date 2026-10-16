@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import { Link, useNavigate } from "react-router-dom";
 import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
 import { Formik, Form } from "formik";
@@ -193,6 +194,7 @@ export default function AdminContacts() {
             headerKey: "pf.phone",
             render: (c) => c.phone || "—",
           },
+          ...touchColumns(),
           {
             key: "lang",
             headerKey: "admin.profileLanguage",

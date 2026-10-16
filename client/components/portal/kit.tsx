@@ -752,15 +752,19 @@ export function InlineSelect({
 export function SubmitButton({
   busy,
   labelKey,
+  form,
 }: {
   busy?: boolean;
   labelKey: string;
+  /** Submit a form by id from outside it (e.g. a drawer footer). */
+  form?: string;
 }) {
   const { t } = useTranslation();
   return (
     <button
       className="button button-gold pf-submit"
       type="submit"
+      form={form}
       disabled={busy}
     >
       {busy ? <Loader2 className="spin" size={16} /> : t(labelKey)}
@@ -954,6 +958,41 @@ export const milestoneOptions = (
  * Debounced search box: calls `onSearch` 300ms after typing stops. Pass `value`
  * when the query lives in the store so a "clear filters" action empties the input.
  */
+/**
+ * Segmented tabs for list scopes (e.g. Active / Converted / All). Wraps on
+ * phones; optional count badge per tab.
+ */
+export function SegmentedTabs<V extends string>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  value: V;
+  onChange: (v: V) => void;
+  options: { value: V; labelKey: string; count?: number | null }[];
+  ariaLabel: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="pf-segmented" role="tablist" aria-label={ariaLabel}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="tab"
+          aria-selected={value === o.value}
+          className={`pf-segmented-tab${value === o.value ? " is-active" : ""}`}
+          onClick={() => onChange(o.value)}
+        >
+          {t(o.labelKey)}
+          {o.count != null ? <span className="pf-segmented-count">{o.count}</span> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function SearchBox({
   value,
   onSearch,

@@ -1,3 +1,6 @@
+import { Link } from "react-router-dom";
+import { useAppDispatch } from "@/store/hooks";
+import { markConversationTemplateUsed } from "@/store/slices/conversationsSlice";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText, ImagePlus, Loader2, Send, StickyNote, X } from "lucide-react";
@@ -70,6 +73,7 @@ export function ConversationMessageComposer({
   uploadingMedia,
 }: Props) {
   const { t } = useTranslation();
+  const dispatch = useAppDispatch();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(0);
   const [showTpl, setShowTpl] = useState(defaultTemplatesOpen);
@@ -111,6 +115,7 @@ export function ConversationMessageComposer({
   };
 
   const applyTemplate = (tpl: ConversationTemplate) => {
+    void dispatch(markConversationTemplateUsed(tpl.id));
     const filled = applyConversationTemplate(tpl, vars, templateLang);
     onBodyChange(filled.body);
     setShowTpl(false);
@@ -192,6 +197,14 @@ export function ConversationMessageComposer({
 
       {showTpl && channel === "sms" ? (
         <div className="gw-composer__templates" role="listbox">
+          <div className="gw-composer__tpl-links">
+            <Link className="text-link" to="/admin/templates">{t("templates.manage")}</Link>
+            {body.trim() ? (
+              <Link className="text-link" to={`/admin/templates?new=1&body=${encodeURIComponent(body.slice(0, 1600))}`}>
+                {t("templates.saveCurrent")}
+              </Link>
+            ) : null}
+          </div>
           {activeTemplates.length === 0 ? (
             <p className="pf-muted">{t("conversations.templatesEmpty")}</p>
           ) : (

@@ -30,6 +30,9 @@ const event: PublicEventView = {
   body: null,
   location_label: null,
   cta: null,
+  is_past: false,
+  cover_url: null,
+  media_count: 0,
 };
 
 const mount = (

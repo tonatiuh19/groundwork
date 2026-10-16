@@ -193,6 +193,8 @@ export type AdminListFilter = {
   loan_status?: string;
   /** Leads: `event` | `standard`. */
   mode?: string;
+  /** Leads: `active` (default on the Leads page) | `converted` | `all`. */
+  view?: string;
   /** Leads: restrict to one event's RSVPs. */
   event_id?: string | number;
   /** Attendees: `confirmed` | `waitlisted`. */

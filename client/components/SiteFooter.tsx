@@ -39,6 +39,7 @@ export default function SiteFooter() {
           <span className="footer-label">{t("footer.explore")}</span>
           <Link to="/about">{t("nav.about")}</Link>
           <Link to="/partners">{t("nav.partners")}</Link>
+          <Link to="/events">{t("nav.events")}</Link>
           <Link to="/contact">{t("nav.contact")}</Link>
           <a href="/#adu-financing">{t("nav.adu")}</a>
           <a href="/get-credit-report">{t("footer.cta")}</a>

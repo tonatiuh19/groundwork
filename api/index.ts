@@ -5,6 +5,9 @@
  */
 import "dotenv/config";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -26,6 +29,9 @@ import mysql, {
 } from "mysql2/promise";
 import { Resend } from "resend";
 import twilio from "twilio";
+import Stripe from "stripe";
+import QRCode from "qrcode";
+import Anthropic from "@anthropic-ai/sdk";
 import {
   del as delBlob,
   get as getBlob,
@@ -59,6 +65,12 @@ import type {
   PortalAuthResponse,
   PortalAuthUser,
   PublicEventView,
+  AdminEventMedia,
+  ConversationLeadMatch,
+  LeadTouch,
+  EventQrScanResponse,
+  EventEmbedProvider,
+  EventMediaKind,
   SubmitContactRequest,
   SubmitGetCreditReportLeadRequest,
   SubmitGetCreditReportLeadResponse,
@@ -151,7 +163,10 @@ function mcpOauthProtectedResourceMetadata() {
 }
 
 export function mcpOauthReturnPathAllowed(raw: string): boolean {
-  if (!raw.startsWith("/api/mcp/oauth/authorize") && !raw.startsWith("/admin/mcp-consent")) {
+  if (
+    !raw.startsWith("/api/mcp/oauth/authorize") &&
+    !raw.startsWith("/admin/mcp-consent")
+  ) {
     return false;
   }
   try {
@@ -315,7 +330,8 @@ function loopbackRedirectOk(requested: string, registered: string): boolean {
     const req = new URL(requested);
     const reg = new URL(registered);
     const loopbacks = new Set(["localhost", "127.0.0.1", "[::1]"]);
-    if (!loopbacks.has(req.hostname) || !loopbacks.has(reg.hostname)) return false;
+    if (!loopbacks.has(req.hostname) || !loopbacks.has(reg.hostname))
+      return false;
     return (
       req.protocol === reg.protocol &&
       req.hostname === reg.hostname &&
@@ -418,7 +434,6 @@ export function mcpWriteConfirmed(args: Record<string, unknown>): boolean {
   return confirmed && mcpStr(args.confirm_phrase) === "CONFIRM";
 }
 
-
 /**
  * Origin for portal-facing links (tracking URLs shown in-app).
  * Prefer the request Host so local/dev show localhost, not PUBLIC_APP_URL.
@@ -470,7 +485,9 @@ export function notifySandbox(): boolean {
 }
 
 export function isSandboxSafeEmail(email: unknown): boolean {
-  const e = String(email || "").trim().toLowerCase();
+  const e = String(email || "")
+    .trim()
+    .toLowerCase();
   return NOTIFY_SANDBOX_SAFE_SUFFIXES.some((suffix) => e.endsWith(suffix));
 }
 
@@ -516,11 +533,18 @@ const SMTP_FROM =
   process.env.SMTP_FROM?.trim() ||
   `Groundwork Capital <no-reply@groundworkcapitalgroup.com>`;
 
+type EmailAttachment = {
+  filename: string;
+  content: string;
+  contentType?: string;
+};
+
 type DryRunEmail = {
   to: string | string[];
   subject: string;
   html: string;
   at: string;
+  attachments?: EmailAttachment[];
 };
 
 const emailDryRuns: DryRunEmail[] = [];
@@ -575,15 +599,19 @@ async function sendEmail(opts: {
   to: string | string[];
   subject: string;
   html: string;
+  /** Text attachments (e.g. a calendar invite .ics). */
+  attachments?: EmailAttachment[];
 }): Promise<{ ok: boolean; id?: string; dryRun?: boolean }> {
   const to = opts.to;
-  if (testForceEmailFailure && process.env.VITEST === "true") return { ok: false };
+  if (testForceEmailFailure && process.env.VITEST === "true")
+    return { ok: false };
   if (!shouldDeliverEmail() || !resend) {
     emailDryRuns.push({
       to,
       subject: opts.subject,
       html: opts.html,
       at: new Date().toISOString(),
+      ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
     });
     return { ok: true, dryRun: true };
   }
@@ -592,6 +620,15 @@ async function sendEmail(opts: {
     to,
     subject: opts.subject,
     html: opts.html,
+    ...(opts.attachments?.length
+      ? {
+          attachments: opts.attachments.map((f) => ({
+            filename: f.filename,
+            content: Buffer.from(f.content, "utf8"),
+            ...(f.contentType ? { contentType: f.contentType } : {}),
+          })),
+        }
+      : {}),
   });
   if (result.error) {
     console.error("[email] resend error:", result.error);
@@ -608,9 +645,7 @@ function emailLayout(opts: {
 }) {
   const isEs = opts.lang === "es";
   const year = new Date().getFullYear();
-  const tagline = isEs
-    ? "Construye más desde casa"
-    : "Build more from home";
+  const tagline = isEs ? "Construye más desde casa" : "Build more from home";
   const footer = isEs
     ? `Recibes este correo porque te pusiste en contacto con Groundwork Capital.<br/>© ${year} Groundwork Capital. Todos los derechos reservados.`
     : `You're receiving this email because you reached out to Groundwork Capital.<br/>© ${year} Groundwork Capital. All rights reserved.`;
@@ -677,8 +712,9 @@ export function tplLeadConfirmation(opts: {
   lang?: string;
 }) {
   const isEs = opts.lang === "es";
-  const first =
-    escapeHtml(opts.fullName.trim().split(/\s+/)[0] || (isEs ? "amigo" : "there"));
+  const first = escapeHtml(
+    opts.fullName.trim().split(/\s+/)[0] || (isEs ? "amigo" : "there"),
+  );
   const isEvent = opts.mode === "event";
   const waitlisted = opts.registrationStatus === "waitlisted";
   const city = opts.eventCity ? escapeHtml(opts.eventCity) : "Fontana";
@@ -718,8 +754,8 @@ export function tplLeadConfirmation(opts: {
     <p style="margin:18px 0 8px;font-size:15px;line-height:1.65;color:${BRAND_CHARCOAL};">
       ${
         isEs
-          ? "Mientras tanto, puedes revisar tu reporte de crédito gratis (soft pull — sin impacto a tu puntaje)."
-          : "Meanwhile, you can check your free credit report (soft pull — no score impact)."
+          ? "Mientras tanto, puedes revisar tu reporte de crédito gratis (soft pull. Sin impacto a tu puntaje)."
+          : "Meanwhile, you can check your free credit report (soft pull. No score impact)."
       }
     </p>
     ${emailButton(creditUrl, isEs ? "Revisar mi crédito gratis" : "Check my free credit report")}`
@@ -740,7 +776,7 @@ export function tplLeadConfirmation(opts: {
         <ol style="margin:0;padding-left:18px;color:${BRAND_CHARCOAL};font-size:15px;line-height:1.7;">
           <li>${isEs ? "Confirmamos tus datos y preferencias." : "We confirm your details and preferences."}</li>
           <li>${isEs ? "Un especialista revisa tu camino de financiamiento ADU." : "A specialist reviews your ADU financing path."}</li>
-          <li>${isEs ? "Te contactamos con un plan claro — sin conjeturas." : "We reach out with a clear plan — no guesswork."}</li>
+          <li>${isEs ? "Te contactamos con un plan claro. Sin conjeturas." : "We reach out with a clear plan. No guesswork."}</li>
         </ol>
       </td></tr>
     </table>
@@ -754,14 +790,14 @@ export function tplLeadConfirmation(opts: {
     subject: isEvent
       ? waitlisted
         ? isEs
-          ? `Lista de espera · Evento ${city} — Groundwork Capital`
-          : `Waitlist · ${city} event — Groundwork Capital`
+          ? `Lista de espera · Evento ${city} · Groundwork Capital`
+          : `Waitlist · ${city} event · Groundwork Capital`
         : isEs
-          ? `Confirmado · Evento ${city} — Groundwork Capital`
-          : `You're confirmed · ${city} event — Groundwork Capital`
+          ? `Confirmado · Evento ${city} · Groundwork Capital`
+          : `You're confirmed · ${city} event · Groundwork Capital`
       : isEs
-        ? "Recibimos tu solicitud — Groundwork Capital"
-        : "We got your request — Groundwork Capital",
+        ? "Recibimos tu solicitud · Groundwork Capital"
+        : "We got your request · Groundwork Capital",
     html: emailLayout({
       title: headline,
       preheader: sub.slice(0, 120),
@@ -783,8 +819,8 @@ export function tplGetCreditReportWelcome(opts: {
     ? `Tu reporte de crédito gratis, ${name}`
     : `Your free credit report, ${name}`;
   const intro = isEs
-    ? "El siguiente paso es obtener tu snapshot de crédito gratis (soft pull — sin impacto a tu puntaje) con nuestro socio de confianza."
-    : "Next step: pull your free credit snapshot (soft pull — no score impact) with our trusted partner.";
+    ? "El siguiente paso es obtener tu snapshot de crédito gratis (soft pull. Sin impacto a tu puntaje) con nuestro socio de confianza."
+    : "Next step: pull your free credit snapshot (soft pull. No score impact) with our trusted partner.";
   const body = `
     <p style="margin:0 0 8px;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:${BRAND_GOLD};font-weight:700;">Groundwork Capital</p>
     <h1 style="margin:0 0 16px;font-size:28px;line-height:1.2;font-weight:800;color:${BRAND_INK};">${headline}</h1>
@@ -805,8 +841,8 @@ export function tplGetCreditReportWelcome(opts: {
   `;
   return {
     subject: isEs
-      ? "Tu reporte de crédito gratis — Groundwork Capital"
-      : "Your free credit report — Groundwork Capital",
+      ? "Tu reporte de crédito gratis · Groundwork Capital"
+      : "Your free credit report · Groundwork Capital",
     html: emailLayout({
       title: headline,
       preheader: intro.slice(0, 120),
@@ -886,7 +922,10 @@ export function tplStaffLeadAlert(opts: {
       ${detailRow(isEs ? "Teléfono" : "Phone", opts.lead.phone)}
       ${
         opts.lead.property_address
-          ? detailRow(isEs ? "Propiedad" : "Property", opts.lead.property_address)
+          ? detailRow(
+              isEs ? "Propiedad" : "Property",
+              opts.lead.property_address,
+            )
           : ""
       }
       ${detailRow(isEs ? "Modo" : "Mode", modeLabel)}
@@ -923,7 +962,7 @@ export function tplStaffLeadAlert(opts: {
     </table>
     ${emailButton(`${APP_URL}/admin/leads`, isEs ? "Abrir leads" : "Open leads")}
     <p style="margin:20px 0 0;font-size:13px;color:#5c6470;">
-      ${isEs ? "Responde pronto — el lead ya recibió un correo de confirmación." : "Reply soon — the lead already received a confirmation email."}
+      ${isEs ? "Responde pronto. El lead ya recibió un correo de confirmación." : "Reply soon. The lead already received a confirmation email."}
     </p>
   `;
 
@@ -964,6 +1003,8 @@ const ADMIN_NOTIFY_EVENT_KEYS: AdminNotifyEventKey[] = [
   "contractor_signup_reminder",
   "contractor_application_submitted",
   "contractor_compliance_alert",
+  "affiliate_onboarding",
+  "line_needs_owner",
   "duplicate_blocked",
   "draw_submitted",
   "lead_converted",
@@ -1054,7 +1095,10 @@ async function adminNotifyChannelMetaForAdmin(adminId: number) {
   const smsOk = twilioOk && hasNumber;
   return {
     email: { available: true as const, disabled_reason: null as string | null },
-    in_app: { available: true as const, disabled_reason: null as string | null },
+    in_app: {
+      available: true as const,
+      disabled_reason: null as string | null,
+    },
     sms: {
       available: smsOk,
       disabled_reason: smsOk
@@ -1073,8 +1117,23 @@ async function insertAdminInAppNotification(opts: {
   body?: string | null;
   linkUrl?: string | null;
   payload?: Record<string, unknown>;
+  /** Recipient email when the caller already has it (skips the sandbox lookup). */
+  adminEmail?: string | null;
 }): Promise<number | null> {
   try {
+    // Sandbox (Vitest / NOTIFY_SANDBOX): never write bell rows for real staff,
+    // whichever path called (team fan-out, inbound SMS assignee, …).
+    if (notifySandbox()) {
+      let email = opts.adminEmail;
+      if (email === undefined) {
+        const [[a]] = (await pool.query<RowDataPacket[]>(
+          `SELECT email FROM admins WHERE id = ? LIMIT 1`,
+          [opts.adminId],
+        )) as unknown as [RowDataPacket[]];
+        email = a?.email ?? null;
+      }
+      if (!isSandboxSafeEmail(email)) return null;
+    }
     const [ins] = await pool.query<ResultSetHeader>(
       `INSERT INTO admin_notifications
          (admin_id, event_key, title, body, link_url, payload_json)
@@ -1171,7 +1230,9 @@ async function listExtraNotifyEmails(
   for (const r of rows) {
     const email = String(r.email).trim().toLowerCase();
     if (!email) continue;
-    if (notifyExtraAllowsEvent(parseNotifyExtraEvents(r.events_json), eventKey)) {
+    if (
+      notifyExtraAllowsEvent(parseNotifyExtraEvents(r.events_json), eventKey)
+    ) {
       out.push(email);
     }
   }
@@ -1202,13 +1263,17 @@ async function deliverAdminNotificationChannels(opts: {
       });
       if (sent.ok) result.email = true;
     } catch (e: any) {
-      console.error(`[notify:${eventKey}:email] ${admin.email}:`, e?.message ?? e);
+      console.error(
+        `[notify:${eventKey}:email] ${admin.email}:`,
+        e?.message ?? e,
+      );
     }
   }
 
   if (adminNotifyPrefOn(admin.prefs, "in_app", eventKey) && admin.id > 0) {
     const notifId = await insertAdminInAppNotification({
       adminId: admin.id,
+      adminEmail: admin.email,
       eventKey,
       title: tpl.subject,
       body: tpl.inAppBody || null,
@@ -1342,10 +1407,12 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function parseLeadBody(body: any): {
-  ok: true;
-  data: SubmitLeadRequest;
-} | { ok: false; error: string } {
+function parseLeadBody(body: any):
+  | {
+      ok: true;
+      data: SubmitLeadRequest;
+    }
+  | { ok: false; error: string } {
   const full_name = String(body?.full_name || body?.name || "").trim();
   const email = normalizeEmail(body?.email);
   const phone = String(body?.phone || "").trim();
@@ -1354,15 +1421,15 @@ function parseLeadBody(body: any): {
   ).trim();
   const soft_pull_consent = Boolean(
     body?.soft_pull_consent === true ||
-      body?.soft_pull_consent === 1 ||
-      body?.soft_pull_consent === "1" ||
-      body?.consent === true ||
-      body?.consent === "on",
+    body?.soft_pull_consent === 1 ||
+    body?.soft_pull_consent === "1" ||
+    body?.consent === true ||
+    body?.consent === "on",
   );
   const sms_marketing_consent = Boolean(
     body?.sms_marketing_consent === true ||
-      body?.sms_marketing_consent === 1 ||
-      body?.sms_marketing_consent === "1",
+    body?.sms_marketing_consent === 1 ||
+    body?.sms_marketing_consent === "1",
   );
   const mode: LeadMode =
     body?.mode === "event" || body?.mode === "standard"
@@ -1421,7 +1488,9 @@ function parseLeadBody(body: any): {
   };
 }
 
-function parseGetCreditReportBody(body: any):
+function parseGetCreditReportBody(
+  body: any,
+):
   | { ok: true; data: SubmitGetCreditReportLeadRequest }
   | { ok: false; error: string } {
   const first_name = String(body?.first_name || "").trim();
@@ -1435,9 +1504,9 @@ function parseGetCreditReportBody(body: any):
   const notes = body?.notes ? String(body.notes).trim().slice(0, 2000) : null;
   const soft_pull_consent = Boolean(
     body?.soft_pull_consent === true ||
-      body?.soft_pull_consent === 1 ||
-      body?.soft_pull_consent === "1" ||
-      body?.consent === true,
+    body?.soft_pull_consent === 1 ||
+    body?.soft_pull_consent === "1" ||
+    body?.consent === true,
   );
 
   if (!first_name || first_name.length < 1) {
@@ -1477,9 +1546,9 @@ const CONTACT_INTENTS: ContactIntent[] = [
   "general",
 ];
 
-function parseContactBody(body: any):
-  | { ok: true; data: SubmitContactRequest }
-  | { ok: false; error: string } {
+function parseContactBody(
+  body: any,
+): { ok: true; data: SubmitContactRequest } | { ok: false; error: string } {
   const full_name = String(body?.full_name || body?.name || "").trim();
   const email = normalizeEmail(body?.email);
   const phone = String(body?.phone || "").trim();
@@ -1490,13 +1559,13 @@ function parseContactBody(body: any):
     body?.preferred_language === "es" ? ("es" as const) : ("en" as const);
   const sms_transactional_consent = Boolean(
     body?.sms_transactional_consent === true ||
-      body?.sms_transactional_consent === 1 ||
-      body?.sms_transactional_consent === "1",
+    body?.sms_transactional_consent === 1 ||
+    body?.sms_transactional_consent === "1",
   );
   const sms_marketing_consent = Boolean(
     body?.sms_marketing_consent === true ||
-      body?.sms_marketing_consent === 1 ||
-      body?.sms_marketing_consent === "1",
+    body?.sms_marketing_consent === 1 ||
+    body?.sms_marketing_consent === "1",
   );
 
   if (!full_name || full_name.length < 2) {
@@ -1515,7 +1584,8 @@ function parseContactBody(body: any):
     return { ok: false, error: "validation.smsTransactional" };
   }
 
-  const rawRef = body?.referral_code != null ? String(body.referral_code).trim() : "";
+  const rawRef =
+    body?.referral_code != null ? String(body.referral_code).trim() : "";
   const referral_code =
     rawRef && /^[A-Za-z0-9_-]{1,64}$/.test(rawRef) ? rawRef.slice(0, 64) : null;
 
@@ -1534,7 +1604,9 @@ function parseContactBody(body: any):
   };
 }
 
-function parsePartnerBody(body: any):
+function parsePartnerBody(
+  body: any,
+):
   | { ok: true; data: SubmitPartnerReferralRequest }
   | { ok: false; error: string } {
   const full_name = String(body?.full_name || body?.name || "").trim();
@@ -1546,7 +1618,8 @@ function parsePartnerBody(body: any):
   const notes = body?.notes ? String(body.notes).trim().slice(0, 2000) : null;
   const preferred_language =
     body?.preferred_language === "es" ? ("es" as const) : ("en" as const);
-  const rawRef = body?.referral_code != null ? String(body.referral_code).trim() : "";
+  const rawRef =
+    body?.referral_code != null ? String(body.referral_code).trim() : "";
   const referral_code =
     rawRef && /^[A-Za-z0-9_-]{1,64}$/.test(rawRef) ? rawRef.slice(0, 64) : null;
 
@@ -1583,7 +1656,9 @@ function companyFromLeadNotes(notes: unknown): string | null {
 
 function leadAlreadyConvertedRow(lead: RowDataPacket): boolean {
   return Boolean(
-    lead.client_id || lead.converted_affiliate_id || lead.converted_contractor_id,
+    lead.client_id ||
+    lead.converted_affiliate_id ||
+    lead.converted_contractor_id,
   );
 }
 
@@ -1627,7 +1702,11 @@ async function findPhoneMatchDifferentEmail(
   if (!last10) return null;
   const e = normalizeEmail(email);
   const table =
-    entity === "client" ? "clients" : entity === "affiliate" ? "affiliates" : "contractors";
+    entity === "client"
+      ? "clients"
+      : entity === "affiliate"
+        ? "affiliates"
+        : "contractors";
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT id, email, first_name, last_name, phone FROM \`${table}\`
      WHERE (email IS NULL OR email <> ?) AND phone IS NOT NULL AND TRIM(phone) <> ''
@@ -1640,7 +1719,8 @@ async function findPhoneMatchDifferentEmail(
       entity,
       id: Number(r.id),
       email: r.email == null ? "" : String(r.email),
-      name: `${r.first_name || ""} ${r.last_name || ""}`.trim() || String(r.email),
+      name:
+        `${r.first_name || ""} ${r.last_name || ""}`.trim() || String(r.email),
     };
   }
   return null;
@@ -1651,13 +1731,79 @@ async function findPhoneMatchDifferentEmail(
 // assertPersonAvailable() after its own same-role email handling.
 
 const PERSON_ENTITIES: PersonEntity[] = ["client", "affiliate", "contractor"];
-const PERSON_TABLE: Record<PersonEntity, "clients" | "affiliates" | "contractors"> = {
+const PERSON_TABLE: Record<
+  PersonEntity,
+  "clients" | "affiliates" | "contractors"
+> = {
   client: "clients",
   affiliate: "affiliates",
   contractor: "contractors",
 };
 /** Last 10 phone digits in SQL (mirrors normalizePhoneLast10). */
-const phone10Sql = (col: string) => `RIGHT(REGEXP_REPLACE(IFNULL(${col}, ''), '[^0-9]', ''), 10)`;
+const phone10Sql = (col: string) =>
+  `RIGHT(REGEXP_REPLACE(IFNULL(${col}, ''), '[^0-9]', ''), 10)`;
+
+type PhoneMatchRow = { role: "client" | "affiliate" | "contractor" | "contact" | "lead" | "staff"; id: number; name: string };
+const PHONE_MATCH_ORDER: PhoneMatchRow["role"][] = ["client", "affiliate", "contractor", "contact", "lead", "staff"];
+
+/**
+ * Who owns these phone numbers in our records (by last 10 digits). Best match
+ * first: client > affiliate > contractor > contact > lead > staff; the rest are
+ * listed as `others`. Used to name "unknown" conversation threads.
+ */
+/** Last-10 phone digits of people whose name or email matches a LIKE pattern (inbox search). */
+async function phonesForName(like: string): Promise<string[]> {
+  const sources = [
+    `SELECT phone FROM clients WHERE CONCAT_WS(' ', first_name, last_name) LIKE ? OR email LIKE ?`,
+    `SELECT phone FROM affiliates WHERE CONCAT_WS(' ', first_name, last_name) LIKE ? OR email LIKE ? OR company LIKE ?`,
+    `SELECT phone FROM contractors WHERE CONCAT_WS(' ', first_name, last_name) LIKE ? OR email LIKE ? OR company LIKE ?`,
+    `SELECT phone FROM contacts WHERE deleted_at IS NULL AND (CONCAT_WS(' ', first_name, last_name) LIKE ? OR email LIKE ?)`,
+    `SELECT phone FROM leads WHERE status <> 'spam' AND (full_name LIKE ? OR email LIKE ?)`,
+    `SELECT phone FROM admins WHERE CONCAT_WS(' ', first_name, last_name) LIKE ? OR email LIKE ?`,
+  ];
+  const out = new Set<string>();
+  for (const sql of sources) {
+    const n = (sql.match(/\?/g) || []).length;
+    const [rows] = await pool.query<RowDataPacket[]>(`${sql} LIMIT 200`, Array(n).fill(like));
+    for (const r of rows) {
+      const k = normalizePhoneLast10(String(r.phone || ""));
+      if (k) out.add(k);
+    }
+  }
+  return [...out].slice(0, 500);
+}
+
+async function resolvePeopleByPhone(phones: unknown[]) {
+  const keys = [...new Set(phones.map((p) => normalizePhoneLast10(String(p || ""))).filter(Boolean))] as string[];
+  const out = new Map<string, { role: PhoneMatchRow["role"]; id: number; name: string; others: PhoneMatchRow[] }>();
+  if (!keys.length) return out;
+  const found = new Map<string, PhoneMatchRow[]>();
+  const sources: [PhoneMatchRow["role"], string][] = [
+    ["client", `SELECT id, CONCAT_WS(' ', first_name, last_name) name, phone FROM clients WHERE ${phone10Sql("phone")} IN (?)`],
+    ["affiliate", `SELECT id, CONCAT_WS(' ', first_name, last_name) name, phone FROM affiliates WHERE ${phone10Sql("phone")} IN (?)`],
+    ["contractor", `SELECT id, CONCAT_WS(' ', first_name, last_name) name, phone FROM contractors WHERE ${phone10Sql("phone")} IN (?)`],
+    ["contact", `SELECT id, CONCAT_WS(' ', first_name, last_name) name, phone FROM contacts WHERE deleted_at IS NULL AND ${phone10Sql("phone")} IN (?)`],
+    ["lead", `SELECT id, full_name name, phone FROM leads WHERE status <> 'spam' AND ${phone10Sql("phone")} IN (?) ORDER BY id DESC`],
+    ["staff", `SELECT id, CONCAT_WS(' ', first_name, last_name) name, phone FROM admins WHERE ${phone10Sql("phone")} IN (?)`],
+  ];
+  for (const [role, sql] of sources) {
+    const [rows] = await pool.query<RowDataPacket[]>(`${sql} LIMIT 500`, [keys]);
+    for (const r of rows) {
+      const k = normalizePhoneLast10(String(r.phone || ""));
+      if (!k) continue;
+      const list = found.get(k) || [];
+      // One entry per role (the newest lead / first record wins within a role).
+      if (!list.some((x) => x.role === role)) list.push({ role, id: Number(r.id), name: String(r.name || "").trim() });
+      found.set(k, list);
+    }
+  }
+  for (const [k, list] of found) {
+    list.sort((a, b) => PHONE_MATCH_ORDER.indexOf(a.role) - PHONE_MATCH_ORDER.indexOf(b.role));
+    const [best, ...others] = list.filter((x) => x.name);
+    if (best) out.set(k, { ...best, others });
+  }
+  return out;
+}
 const SHARED_PHONE_REASON_MIN = 5;
 
 /** Existing clients / affiliates / contractors sharing this email or phone. Email matches first. */
@@ -1669,7 +1815,9 @@ async function findPersonMatches(opts: {
 }): Promise<PersonMatch[]> {
   const exec = opts.exec ?? pool;
   const email = opts.email ? normalizeEmail(opts.email) : "";
-  const phone10 = normalizePhoneLast10(opts.phone == null ? null : String(opts.phone));
+  const phone10 = normalizePhoneLast10(
+    opts.phone == null ? null : String(opts.phone),
+  );
   if (!isValidEmail(email) && !phone10) return [];
   const out: PersonMatch[] = [];
   for (const entity of PERSON_ENTITIES) {
@@ -1691,12 +1839,16 @@ async function findPersonMatches(opts: {
     );
     for (const r of rows) {
       const id = Number(r.id);
-      if (opts.exclude?.some((x) => x.entity === entity && x.id === id)) continue;
+      if (opts.exclude?.some((x) => x.entity === entity && x.id === id))
+        continue;
       const rowEmail = r.email == null ? null : normalizeEmail(r.email);
       out.push({
         entity,
         id,
-        name: `${r.first_name || ""} ${r.last_name || ""}`.trim() || rowEmail || `#${id}`,
+        name:
+          `${r.first_name || ""} ${r.last_name || ""}`.trim() ||
+          rowEmail ||
+          `#${id}`,
         email: rowEmail,
         phone: r.phone == null ? null : String(r.phone),
         status: String(r.status || ""),
@@ -1722,18 +1874,29 @@ async function assertPersonAvailable(opts: {
   sharedPhoneReason?: unknown;
   exclude?: Array<{ entity: PersonEntity; id: number }>;
   exec?: Pool | PoolConnection;
-}): Promise<{ phoneOverride: { reason: string; matches: PersonMatch[] } | null }> {
+}): Promise<{
+  phoneOverride: { reason: string; matches: PersonMatch[] } | null;
+}> {
   const matches = await findPersonMatches(opts);
   if (!matches.length) return { phoneOverride: null };
   const first = matches[0];
-  if (opts.actor === "public") throw new HttpError(409, "errors.personExistsPublic", { duplicate: first });
+  if (opts.actor === "public")
+    throw new HttpError(409, "errors.personExistsPublic", { duplicate: first });
   if (opts.actor === "affiliate") {
-    throw new HttpError(409, "errors.personExistsAffiliate", { match: { entity: first.entity } });
+    throw new HttpError(409, "errors.personExistsAffiliate", {
+      match: { entity: first.entity },
+    });
   }
-  if (first.by === "email") throw new HttpError(409, "errors.personExists", { match: first });
-  const reason = String(opts.sharedPhoneReason ?? "").trim().slice(0, 500);
+  if (first.by === "email")
+    throw new HttpError(409, "errors.personExists", { match: first });
+  const reason = String(opts.sharedPhoneReason ?? "")
+    .trim()
+    .slice(0, 500);
   if (reason.length < SHARED_PHONE_REASON_MIN) {
-    throw new HttpError(409, "errors.personPhoneMatch", { match: first, can_override: true });
+    throw new HttpError(409, "errors.personPhoneMatch", {
+      match: first,
+      can_override: true,
+    });
   }
   return { phoneOverride: { reason, matches } };
 }
@@ -1744,7 +1907,15 @@ function stripPublicDuplicate(e: HttpError): HttpError {
 }
 
 async function logDedupe(opts: {
-  action: "merge" | "delete" | "phone_override" | "link" | "dismiss" | "blocked";
+  action:
+    | "merge"
+    | "delete"
+    | "phone_override"
+    | "link"
+    | "dismiss"
+    | "blocked"
+    | "revert"
+    | "email_change";
   entity: DedupeEntity;
   recordId?: number | null;
   targetEntity?: DedupeEntity | null;
@@ -1771,7 +1942,8 @@ async function logDedupe(opts: {
   );
 }
 
-const dedupeSignature = (keys: string[]) => [...new Set(keys)].sort().join("|").slice(0, 500);
+const dedupeSignature = (keys: string[]) =>
+  [...new Set(keys)].sort().join("|").slice(0, 500);
 
 /** After a staff shared-phone override: audit it and keep that cluster out of the review queue. */
 async function recordSharedPhoneOverride(opts: {
@@ -1824,8 +1996,16 @@ async function reportBlockedPublicDuplicate(opts: {
   }
   const path = `/admin/${PERSON_TABLE[opts.match.entity]}/${opts.match.id}`;
   await notifyStaff("duplicate_blocked", (l) => ({
-    subject: tr(l, `Duplicate signup blocked · ${opts.name}`, `Registro duplicado bloqueado · ${opts.name}`),
-    headline: tr(l, "Someone already on file tried to sign up again", "Alguien ya registrado intentó registrarse de nuevo"),
+    subject: tr(
+      l,
+      `Duplicate signup blocked · ${opts.name}`,
+      `Registro duplicado bloqueado · ${opts.name}`,
+    ),
+    headline: tr(
+      l,
+      "Someone already on file tried to sign up again",
+      "Alguien ya registrado intentó registrarse de nuevo",
+    ),
     paragraphs: [
       tr(
         l,
@@ -1834,11 +2014,20 @@ async function reportBlockedPublicDuplicate(opts: {
       ),
     ],
     details: [
-      [tr(l, "Submitted", "Enviado"), `${opts.name} · ${opts.email}${opts.phone ? ` · ${opts.phone}` : ""}`],
-      [tr(l, "Existing record", "Registro existente"), `${opts.match.entity} #${opts.match.id} · ${opts.match.name}`],
+      [
+        tr(l, "Submitted", "Enviado"),
+        `${opts.name} · ${opts.email}${opts.phone ? ` · ${opts.phone}` : ""}`,
+      ],
+      [
+        tr(l, "Existing record", "Registro existente"),
+        `${opts.match.entity} #${opts.match.id} · ${opts.match.name}`,
+      ],
       [tr(l, "Attempted role", "Rol intentado"), opts.attempted],
     ],
-    cta: { url: `${APP_URL}${path}`, label: tr(l, "Open existing record", "Abrir registro existente") },
+    cta: {
+      url: `${APP_URL}${path}`,
+      label: tr(l, "Open existing record", "Abrir registro existente"),
+    },
   }));
 }
 
@@ -1855,10 +2044,22 @@ async function assertPublicPersonAvailable(opts: {
   exclude?: Array<{ entity: PersonEntity; id: number }>;
 }) {
   try {
-    await assertPersonAvailable({ email: opts.email, phone: opts.phone, actor: "public", exclude: opts.exclude });
+    await assertPersonAvailable({
+      email: opts.email,
+      phone: opts.phone,
+      actor: "public",
+      exclude: opts.exclude,
+    });
   } catch (e) {
-    if (e instanceof HttpError && e.key === "errors.personExistsPublic" && e.data?.duplicate) {
-      await reportBlockedPublicDuplicate({ ...opts, match: e.data.duplicate as PersonMatch });
+    if (
+      e instanceof HttpError &&
+      e.key === "errors.personExistsPublic" &&
+      e.data?.duplicate
+    ) {
+      await reportBlockedPublicDuplicate({
+        ...opts,
+        match: e.data.duplicate as PersonMatch,
+      });
       throw stripPublicDuplicate(e);
     }
     throw e;
@@ -1866,12 +2067,15 @@ async function assertPublicPersonAvailable(opts: {
 }
 
 /** Portal self-signups: true when the person already exists (staff alerted; caller answers outcome "exists"). */
-async function isPublicSignupDuplicate(opts: Parameters<typeof assertPublicPersonAvailable>[0]): Promise<boolean> {
+async function isPublicSignupDuplicate(
+  opts: Parameters<typeof assertPublicPersonAvailable>[0],
+): Promise<boolean> {
   try {
     await assertPublicPersonAvailable(opts);
     return false;
   } catch (e) {
-    if (e instanceof HttpError && e.key === "errors.personExistsPublic") return true;
+    if (e instanceof HttpError && e.key === "errors.personExistsPublic")
+      return true;
     throw e;
   }
 }
@@ -1892,10 +2096,19 @@ async function assertIdentityEditAllowed(opts: {
   );
   const prevEmail = cur[0]?.email ? normalizeEmail(cur[0].email) : null;
   const prevPhone = normalizePhoneLast10(cur[0]?.phone ?? null);
-  const nextEmail = "email" in opts.updates && opts.updates.email ? normalizeEmail(opts.updates.email) : null;
-  const nextPhone = "phone" in opts.updates && opts.updates.phone ? String(opts.updates.phone) : null;
+  const nextEmail =
+    "email" in opts.updates && opts.updates.email
+      ? normalizeEmail(opts.updates.email)
+      : null;
+  const nextPhone =
+    "phone" in opts.updates && opts.updates.phone
+      ? String(opts.updates.phone)
+      : null;
   const email = nextEmail && nextEmail !== prevEmail ? nextEmail : null;
-  const phone = nextPhone && normalizePhoneLast10(nextPhone) !== prevPhone ? nextPhone : null;
+  const phone =
+    nextPhone && normalizePhoneLast10(nextPhone) !== prevPhone
+      ? nextPhone
+      : null;
   if (!email && !phone) return;
   const { phoneOverride } = await assertPersonAvailable({
     email,
@@ -1961,7 +2174,7 @@ async function upsertStandardLead(
     input.notes,
   ]
     .filter(Boolean)
-    .join(" — ");
+    .join(" · ");
   if (found[0]) {
     const id = Number(found[0].id);
     await exec.execute(
@@ -2024,19 +2237,35 @@ async function upsertStandardLead(
 }
 
 /** Point an unlinked lead at the person it already is (so Convert disappears). */
-async function linkLeadToPerson(leadId: number, exec: Pool | PoolConnection = pool) {
+async function linkLeadToPerson(
+  leadId: number,
+  exec: Pool | PoolConnection = pool,
+) {
   const [rows] = await exec.execute<RowDataPacket[]>(
     `SELECT email, phone, client_id, converted_affiliate_id, converted_contractor_id
      FROM leads WHERE id = ? LIMIT 1`,
     [leadId],
   );
   const l = rows[0];
-  if (!l || l.client_id || l.converted_affiliate_id || l.converted_contractor_id) return;
+  if (
+    !l ||
+    l.client_id ||
+    l.converted_affiliate_id ||
+    l.converted_contractor_id
+  )
+    return;
   const [m] = await findPersonMatches({ email: l.email, phone: l.phone, exec });
   if (!m) return;
   const col =
-    m.entity === "client" ? "client_id" : m.entity === "affiliate" ? "converted_affiliate_id" : "converted_contractor_id";
-  await exec.execute(`UPDATE leads SET ${col} = ? WHERE id = ? AND ${col} IS NULL`, [m.id, leadId]);
+    m.entity === "client"
+      ? "client_id"
+      : m.entity === "affiliate"
+        ? "converted_affiliate_id"
+        : "converted_contractor_id";
+  await exec.execute(
+    `UPDATE leads SET ${col} = ? WHERE id = ? AND ${col} IS NULL`,
+    [m.id, leadId],
+  );
 }
 
 /** Public Partners / contact intent=partner → pending affiliate (no lead). */
@@ -2065,7 +2294,10 @@ async function createPendingPartnerAffiliate(opts: {
   if (existing.length) throw new HttpError(409, "errors.affiliateExists");
   // One role per person (email OR phone across clients / affiliates / contractors).
   await assertPublicPersonAvailable({
-    source: opts.notifySource === "partners" ? "partner referral" : "contact form (partner)",
+    source:
+      opts.notifySource === "partners"
+        ? "partner referral"
+        : "contact form (partner)",
     attempted: "affiliate",
     name: opts.full_name,
     email,
@@ -2073,52 +2305,34 @@ async function createPendingPartnerAffiliate(opts: {
   });
 
   const parent = await findActiveAffiliateByCode(opts.referral_code);
-  const affiliateId = await withNewAffiliateCodes(firstName, lastName, async ({ code, slug }) => {
-    const [result] = await pool.execute<ResultSetHeader>(
-      `INSERT INTO affiliates
+  const affiliateId = await withNewAffiliateCodes(
+    firstName,
+    lastName,
+    async ({ code, slug }) => {
+      const [result] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO affiliates
          (email, first_name, last_name, phone, company, status, preferred_language,
           referral_code, slug, parent_affiliate_id, notes)
        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
-      [
-        email,
-        firstName,
-        lastName,
-        opts.phone,
-        company,
-        lang,
-        code,
-        slug,
-        parent?.id ?? null,
-        notes,
-      ],
-    );
-    return Number(result.insertId);
-  });
-
-  await safeSend(
-    email,
-    tplPortalNotice({
-      lang,
-      subject: tr(
-        lang,
-        "Affiliate application received — Groundwork Capital",
-        "Solicitud de afiliado recibida — Groundwork Capital",
-      ),
-      headline: tr(lang, "You're in the queue.", "Estás en la fila."),
-      paragraphs: [
-        tr(
+        [
+          email,
+          firstName,
+          lastName,
+          opts.phone,
+          company,
           lang,
-          `Hi ${firstName}, thanks for applying to the Groundwork affiliate program.`,
-          `Hola ${firstName}, gracias por aplicar al programa de afiliados de Groundwork.`,
-        ),
-        tr(
-          lang,
-          "Our team reviews every application. Once approved you'll get an email and can sign in with a one-time code — no password needed.",
-          "Nuestro equipo revisa cada solicitud. Al aprobarse recibirás un correo y podrás entrar con un código de un solo uso — sin contraseña.",
-        ),
-      ],
-    }),
+          code,
+          slug,
+          parent?.id ?? null,
+          notes,
+        ],
+      );
+      return Number(result.insertId);
+    },
   );
+
+  // Welcome email + text: presentation + secure link (agreement, W-9, card).
+  await sendAffiliateWelcome(affiliateId);
 
   await notifyStaff("partner_referral", (l) => ({
     subject: tr(
@@ -2135,13 +2349,13 @@ async function createPendingPartnerAffiliate(opts: {
       opts.notifySource === "contact"
         ? tr(
             l,
-            "Contact form (intent=partner) created a pending affiliate — review in Admin → Affiliates.",
-            "Formulario de contacto (intent=partner) creó un afiliado pendiente — revisa en Admin → Afiliados.",
+            "Contact form (intent=partner) created a pending affiliate. Review in Admin → Affiliates.",
+            "Formulario de contacto (intent=partner) creó un afiliado pendiente. Revisa en Admin → Afiliados.",
           )
         : tr(
             l,
-            "Partners form created a pending affiliate — review and approve in Admin → Affiliates.",
-            "El formulario de socios creó un afiliado pendiente — revisa y aprueba en Admin → Afiliados.",
+            "Partners form created a pending affiliate. Review and approve in Admin → Affiliates.",
+            "El formulario de socios creó un afiliado pendiente. Revisa y aprueba en Admin → Afiliados.",
           ),
     ],
     details: [
@@ -2153,7 +2367,10 @@ async function createPendingPartnerAffiliate(opts: {
         tr(l, "Parent", "Padre"),
         parent ? `#${parent.id} (${parent.referral_code})` : "—",
       ],
-      [tr(l, "Source", "Fuente"), opts.notifySource === "contact" ? "contact" : "partners"],
+      [
+        tr(l, "Source", "Fuente"),
+        opts.notifySource === "contact" ? "contact" : "partners",
+      ],
     ],
     cta: {
       url: `${APP_URL}/admin/affiliates/${affiliateId}`,
@@ -2170,8 +2387,9 @@ export function tplGenericConfirmation(opts: {
   lang?: string;
 }) {
   const isEs = opts.lang === "es";
-  const first =
-    escapeHtml(opts.fullName.trim().split(/\s+/)[0] || (isEs ? "amigo" : "there"));
+  const first = escapeHtml(
+    opts.fullName.trim().split(/\s+/)[0] || (isEs ? "amigo" : "there"),
+  );
   const isPartner = opts.kind === "partner";
   const headline = isPartner
     ? isEs
@@ -2198,11 +2416,11 @@ export function tplGenericConfirmation(opts: {
   return {
     subject: isPartner
       ? isEs
-        ? "Programa de socios — Groundwork Capital"
-        : "Partner program — Groundwork Capital"
+        ? "Programa de socios · Groundwork Capital"
+        : "Partner program · Groundwork Capital"
       : isEs
-        ? "Recibimos tu mensaje — Groundwork Capital"
-        : "We got your message — Groundwork Capital",
+        ? "Recibimos tu mensaje · Groundwork Capital"
+        : "We got your message · Groundwork Capital",
     html: emailLayout({
       title: headline,
       preheader: sub.slice(0, 120),
@@ -2441,8 +2659,7 @@ async function loadPortalUser(
 
 type Lang = "en" | "es";
 const asLang = (v: unknown): Lang => (v === "es" ? "es" : "en");
-const tr = (lang: unknown, en: string, es: string) =>
-  lang === "es" ? es : en;
+const tr = (lang: unknown, en: string, es: string) => (lang === "es" ? es : en);
 
 function clientIp(req: Request): string | null {
   return (
@@ -2492,12 +2709,76 @@ function portalUser(res: Response): PortalAuthUser {
   return res.locals.portalUser as PortalAuthUser;
 }
 
+const contractorRouteLockable = (url: string) =>
+  url.startsWith("/api/contractor/") &&
+  !url.startsWith("/api/contractor/billing") &&
+  !url.startsWith("/api/contractor/application");
+
+/** Affiliates behind on payment keep billing, setup, help and their profile; the public link keeps recording. */
+const affiliateRouteLockable = (url: string) =>
+  url.startsWith("/api/affiliate/") &&
+  ![
+    "/api/affiliate/billing",
+    "/api/affiliate/onboarding",
+    "/api/affiliate/faqs",
+    "/api/affiliate/assistant",
+    "/api/affiliate/me",
+  ].some((p) => url.startsWith(p));
+
+/** Approved affiliate whose payment failed (free period / active / canceled-by-choice don't lock). */
+async function affiliateBillingLocked(affiliateId: number): Promise<boolean> {
+  if (!billingConfigured()) return false;
+  const [[a]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT status, billing_status FROM affiliates WHERE id = ? LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  if (!a || String(a.status) !== "active") return false;
+  if (!["past_due", "incomplete"].includes(String(a.billing_status)))
+    return false;
+  return Boolean(await billingPriceFor("affiliate", affiliateId));
+}
+
+/**
+ * Approved contractors need a membership in good standing (free period or
+ * paid). Pending / prospect contractors, waived fees and an unconfigured
+ * processor never lock.
+ */
+async function contractorBillingLocked(contractorId: number): Promise<boolean> {
+  if (!billingConfigured()) return false;
+  const [[k]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT status, billing_status, subscription_price_cents FROM contractors WHERE id = ? LIMIT 1`,
+    [contractorId],
+  )) as unknown as [RowDataPacket[]];
+  if (!k || String(k.status) !== "active") return false;
+  if (["trialing", "active"].includes(String(k.billing_status))) return false;
+  const price =
+    k.subscription_price_cents == null
+      ? await affiliateSettingNumber("contractor_default_price_cents", 9990)
+      : Number(k.subscription_price_cents);
+  return price > 0;
+}
+
 function requirePortal(actor: PortalActor) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = await loadPortalUser(actor, req);
       if (!user) return res.status(401).json({ error: "errors.unauthorized" });
       res.locals.portalUser = user;
+      // Contractor membership: unpaid → only billing (and the application) stay open.
+      if (
+        actor === "contractor" &&
+        contractorRouteLockable(req.originalUrl) &&
+        (await contractorBillingLocked(user.id))
+      ) {
+        return res.status(402).json({ error: "errors.billingRequired" });
+      }
+      if (
+        actor === "affiliate" &&
+        affiliateRouteLockable(req.originalUrl) &&
+        (await affiliateBillingLocked(user.id))
+      ) {
+        return res.status(402).json({ error: "errors.billingRequired" });
+      }
       return next();
     } catch (e: any) {
       console.error(`[${actor}] session check failed:`, e?.message ?? e);
@@ -2548,6 +2829,8 @@ function eventRegistrationOpen(
   now = new Date(),
 ): boolean {
   if (String(ev.status) !== "published") return false;
+  // Over once the event's Pacific day ends, even if registration_closes_at is later.
+  if (isEventPast(ev, now)) return false;
   const opens =
     asDate(ev.registration_opens_at) || asDate(ev.created_at) || new Date(0);
   const closes = asDate(ev.registration_closes_at) || asDate(ev.starts_at);
@@ -2557,7 +2840,11 @@ function eventRegistrationOpen(
 
 function mapMarketingEventRow(
   r: RowDataPacket,
-  extras?: { confirmed_count?: number; waitlisted_count?: number },
+  extras?: {
+    confirmed_count?: number;
+    waitlisted_count?: number;
+    qr_rsvp_count?: number;
+  },
 ): MarketingEvent {
   return {
     id: Number(r.id),
@@ -2566,10 +2853,8 @@ function mapMarketingEventRow(
     is_featured: Number(r.is_featured) === 1,
     starts_at: isoDate(r.starts_at) as string,
     ends_at: isoDate(r.ends_at),
-    registration_opens_at:
-      isoDate(r.registration_opens_at),
-    registration_closes_at:
-      isoDate(r.registration_closes_at),
+    registration_opens_at: isoDate(r.registration_opens_at),
+    registration_closes_at: isoDate(r.registration_closes_at),
     capacity: r.capacity == null ? null : Number(r.capacity),
     waitlist_enabled: Number(r.waitlist_enabled) === 1,
     city: String(r.city),
@@ -2594,6 +2879,9 @@ function mapMarketingEventRow(
     confirmed_count: extras?.confirmed_count,
     waitlisted_count: extras?.waitlisted_count,
     registration_open: eventRegistrationOpen(r),
+    qr_scan_count: Number(r.qr_scan_count || 0),
+    qr_last_scanned_at: isoDate(r.qr_last_scanned_at),
+    qr_rsvp_count: extras?.qr_rsvp_count,
   };
 }
 
@@ -2615,9 +2903,13 @@ function toPublicEventView(
   ev: MarketingEvent,
   lang: "en" | "es",
   confirmedCount: number,
+  media?: { cover_url: string | null; media_count: number },
 ): PublicEventView {
   const capacity = ev.capacity;
   return {
+    is_past: isEventPast(ev),
+    cover_url: media?.cover_url || ev.image_url,
+    media_count: media?.media_count ?? 0,
     id: ev.id,
     slug: ev.slug,
     city: ev.city,
@@ -2643,6 +2935,183 @@ function toPublicEventView(
     ),
     cta: pickLangField(lang, ev.cta_en, ev.cta_es),
   };
+}
+
+const PACIFIC_TZ = "America/Los_Angeles";
+
+/** YYYY-MM-DD of an instant in Pacific time. */
+function pacificDateKey(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: PACIFIC_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+/** Past once the Pacific calendar day of (ends_at || starts_at) is over. */
+function isEventPast(ev: Record<string, any>, now = new Date()): boolean {
+  const last = asDate(ev.ends_at) || asDate(ev.starts_at);
+  if (!last) return false;
+  return pacificDateKey(last) < pacificDateKey(now);
+}
+
+type EventEmbed = {
+  provider: EventEmbedProvider;
+  embed_url: string;
+  source_url: string;
+};
+
+/** Normalize a pasted Instagram / YouTube / TikTok link to its iframe embed URL. */
+function parseEventEmbedUrl(raw: unknown): EventEmbed | null {
+  let u: URL;
+  try {
+    u = new URL(String(raw || "").trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  const host = u.hostname.toLowerCase().replace(/^(www\.|m\.)/, "");
+  const parts = u.pathname.split("/").filter(Boolean);
+  const source_url = u.toString().slice(0, 1000);
+  const ytId = (id: string | null | undefined) =>
+    id && /^[A-Za-z0-9_-]{6,20}$/.test(id) ? id : null;
+  if (host === "youtube.com" || host === "youtube-nocookie.com") {
+    const id =
+      parts[0] === "watch"
+        ? ytId(u.searchParams.get("v"))
+        : ["shorts", "embed", "live"].includes(parts[0])
+          ? ytId(parts[1])
+          : null;
+    return id
+      ? {
+          provider: "youtube",
+          embed_url: `https://www.youtube-nocookie.com/embed/${id}`,
+          source_url,
+        }
+      : null;
+  }
+  if (host === "youtu.be") {
+    const id = ytId(parts[0]);
+    return id
+      ? {
+          provider: "youtube",
+          embed_url: `https://www.youtube-nocookie.com/embed/${id}`,
+          source_url,
+        }
+      : null;
+  }
+  if (host === "instagram.com") {
+    const i = parts.findIndex((x) => ["p", "reel", "reels", "tv"].includes(x));
+    const code = i >= 0 ? parts[i + 1] : null;
+    if (!code || !/^[A-Za-z0-9_-]{5,40}$/.test(code)) return null;
+    const kind = parts[i] === "p" ? "p" : "reel";
+    return {
+      provider: "instagram",
+      embed_url: `https://www.instagram.com/${kind}/${code}/embed`,
+      source_url,
+    };
+  }
+  if (host === "tiktok.com") {
+    const i = parts.indexOf("video");
+    const id =
+      i >= 0
+        ? parts[i + 1]
+        : parts[0] === "embed"
+          ? parts[parts.length - 1]
+          : null;
+    if (!id || !/^\d{8,25}$/.test(id)) return null;
+    return {
+      provider: "tiktok",
+      embed_url: `https://www.tiktok.com/embed/v2/${id}`,
+      source_url,
+    };
+  }
+  return null;
+}
+
+/** Sniff mp4 / mov (ISO BMFF `ftyp`) and webm (EBML) from the first bytes. */
+function detectVideoType(buf: Buffer): { mime: string; ext: string } | null {
+  if (buf.length >= 12 && buf.subarray(4, 8).toString("latin1") === "ftyp") {
+    const brand = buf.subarray(8, 12).toString("latin1");
+    return brand === "qt  "
+      ? { mime: "video/quicktime", ext: "mov" }
+      : { mime: "video/mp4", ext: "mp4" };
+  }
+  if (buf.length >= 4 && buf.readUInt32BE(0) === 0x1a45dfa3)
+    return { mime: "video/webm", ext: "webm" };
+  return null;
+}
+
+const EVENT_MEDIA_PHOTO_MAX_BYTES = 15 * 1024 * 1024;
+const EVENT_MEDIA_VIDEO_MAX_BYTES = 500 * 1024 * 1024;
+const EVENT_MEDIA_MAX_PER_EVENT = 200;
+const EVENT_MEDIA_MIME_EXT: Record<
+  string,
+  { ext: string; kind: "photo" | "video" }
+> = {
+  "image/jpeg": { ext: "jpg", kind: "photo" },
+  "image/png": { ext: "png", kind: "photo" },
+  "image/webp": { ext: "webp", kind: "photo" },
+  "video/mp4": { ext: "mp4", kind: "video" },
+  "video/quicktime": { ext: "mov", kind: "video" },
+  "video/webm": { ext: "webm", kind: "video" },
+};
+
+function mapAdminEventMedia(r: RowDataPacket): AdminEventMedia {
+  return {
+    id: Number(r.id),
+    event_id: Number(r.event_id),
+    kind: String(r.kind) as EventMediaKind,
+    url: String(r.url),
+    source_url: r.source_url == null ? null : String(r.source_url),
+    embed_provider:
+      r.embed_provider == null
+        ? null
+        : (String(r.embed_provider) as EventEmbedProvider),
+    mime_type: r.mime_type == null ? null : String(r.mime_type),
+    size_bytes: r.size_bytes == null ? null : Number(r.size_bytes),
+    caption_en: r.caption_en == null ? null : String(r.caption_en),
+    caption_es: r.caption_es == null ? null : String(r.caption_es),
+    sort_order: Number(r.sort_order || 0),
+    is_cover: Number(r.is_cover) === 1,
+    is_highlight: Number(r.is_highlight) === 1,
+    created_at: isoDate(r.created_at) as string,
+  };
+}
+
+/** Highlight reel first, then sort order. */
+async function loadEventMediaRows(eventId: number): Promise<RowDataPacket[]> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT * FROM event_media WHERE event_id = ?
+     ORDER BY is_highlight DESC, sort_order ASC, id ASC`,
+    [eventId],
+  );
+  return rows;
+}
+
+/** Cover (chosen cover, else first photo) + media count for a set of events. */
+async function loadEventMediaSummaries(
+  eventIds: number[],
+): Promise<Map<number, { cover_url: string | null; media_count: number }>> {
+  const out = new Map<
+    number,
+    { cover_url: string | null; media_count: number }
+  >();
+  if (!eventIds.length) return out;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT event_id, kind, url, is_cover FROM event_media WHERE event_id IN (?)
+     ORDER BY is_cover DESC, sort_order ASC, id ASC`,
+    [eventIds],
+  );
+  for (const r of rows) {
+    const id = Number(r.event_id);
+    const cur = out.get(id) || { cover_url: null, media_count: 0 };
+    cur.media_count += 1;
+    if (!cur.cover_url && r.kind === "photo") cur.cover_url = String(r.url);
+    out.set(id, cur);
+  }
+  return out;
 }
 
 async function countEventRegistrations(
@@ -2710,6 +3179,8 @@ async function clearOtherFeatured(
 function slugifyEvent(raw: string): string {
   return String(raw || "")
     .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
@@ -2780,10 +3251,17 @@ function isReservedAffiliateSlug(slug: string): boolean {
 }
 
 function isValidAffiliateSlugFormat(slug: string): boolean {
-  return /^[a-z0-9]([a-z0-9-]{1,62}[a-z0-9])?$/.test(slug) && slug.length >= 3 && slug.length <= 64;
+  return (
+    /^[a-z0-9]([a-z0-9-]{1,62}[a-z0-9])?$/.test(slug) &&
+    slug.length >= 3 &&
+    slug.length <= 64
+  );
 }
 
-function baseSlugFromAffiliateName(firstName: string, lastName: string): string {
+function baseSlugFromAffiliateName(
+  firstName: string,
+  lastName: string,
+): string {
   const full = slugifyAffiliate(`${firstName || ""} ${lastName || ""}`);
   if (full.length >= 3) return full.slice(0, 64);
   const first = slugifyAffiliate(firstName);
@@ -2798,6 +3276,12 @@ async function affiliateSlugTaken(
   slug: string,
   excludeId?: number,
 ): Promise<boolean> {
+  // Recently retired names still resolve to their owner for 30 days.
+  const [hist] = await pool.execute<RowDataPacket[]>(
+    `SELECT affiliate_id FROM affiliate_slug_history WHERE slug = ? AND expires_at > NOW() AND affiliate_id <> ? LIMIT 1`,
+    [slug, excludeId ?? 0],
+  );
+  if (hist.length) return true;
   const [rows] =
     excludeId != null
       ? await pool.execute<RowDataPacket[]>(
@@ -2865,7 +3349,8 @@ async function allocateUniqueAffiliateSlug(
 
 /** Normalize manual slug input; null clears. Throws HttpError on bad/reserved. */
 function normalizeAffiliateSlugInput(raw: unknown): string | null {
-  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  if (raw === null || raw === undefined || String(raw).trim() === "")
+    return null;
   const slug = slugifyAffiliate(String(raw));
   if (!isValidAffiliateSlugFormat(slug)) {
     throw new HttpError(400, "validation.slugFormat");
@@ -3009,13 +3494,17 @@ function route(fn: (req: Request, res: Response) => Promise<unknown>) {
 
 function parseId(value: unknown): number {
   const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0) throw new HttpError(400, "validation.invalidId");
+  if (!Number.isInteger(n) || n <= 0)
+    throw new HttpError(400, "validation.invalidId");
   return n;
 }
 
 function parsePublicId(value: unknown): string {
-  const v = String(value || "").trim().toUpperCase();
-  if (!/^[A-Z0-9-]{4,24}$/.test(v)) throw new HttpError(400, "validation.invalidId");
+  const v = String(value || "")
+    .trim()
+    .toUpperCase();
+  if (!/^[A-Z0-9-]{4,24}$/.test(v))
+    throw new HttpError(400, "validation.invalidId");
   return v;
 }
 
@@ -3109,7 +3598,8 @@ async function withTx<T>(fn: (conn: PoolConnection) => Promise<T>): Promise<T> {
 const ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function randomCode(len: number): string {
   let out = "";
-  for (let i = 0; i < len; i++) out += ID_ALPHABET[crypto.randomInt(ID_ALPHABET.length)];
+  for (let i = 0; i < len; i++)
+    out += ID_ALPHABET[crypto.randomInt(ID_ALPHABET.length)];
   return out;
 }
 const newPublicId = () => `GW-${randomCode(8)}`;
@@ -3127,19 +3617,49 @@ async function uniqueReferralCode(): Promise<string> {
 }
 
 /** Active affiliate by referral code or slug (lead attribution + click tracking). */
+/** Affiliate row for a link code: referral code, current slug, or a name retired < 30 days ago. */
+async function findAffiliateRowByLinkCode(
+  code: string,
+): Promise<RowDataPacket | null> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id, first_name, last_name, company, avatar_url, bio, referral_code, slug, status
+     FROM affiliates WHERE referral_code = ? OR slug = ? LIMIT 1`,
+    [code.toUpperCase(), code.toLowerCase()],
+  );
+  if (rows[0]) return rows[0];
+  const [old] = await pool.execute<RowDataPacket[]>(
+    `SELECT a.id, a.first_name, a.last_name, a.company, a.avatar_url, a.bio, a.referral_code, a.slug, a.status
+     FROM affiliate_slug_history h JOIN affiliates a ON a.id = h.affiliate_id
+     WHERE h.slug = ? AND h.expires_at > NOW() ORDER BY h.id DESC LIMIT 1`,
+    [code.toLowerCase()],
+  );
+  return old[0] ?? null;
+}
+
 async function findActiveAffiliateByCode(
   raw: unknown,
 ): Promise<{ id: number; referral_code: string } | null> {
-  const code = String(raw || "").trim().slice(0, 64);
+  const code = String(raw || "")
+    .trim()
+    .slice(0, 64);
   if (!code || !/^[A-Za-z0-9_-]+$/.test(code)) return null;
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, referral_code FROM affiliates
-     WHERE status = 'active' AND (referral_code = ? OR slug = ?) LIMIT 1`,
-    [code.toUpperCase(), code.toLowerCase()],
-  );
-  return rows[0]
-    ? { id: Number(rows[0].id), referral_code: String(rows[0].referral_code) }
+  const row = await findAffiliateRowByLinkCode(code);
+  return row && String(row.status) === "active"
+    ? { id: Number(row.id), referral_code: String(row.referral_code) }
     : null;
+}
+
+/** Keep the previous link name working for 30 days after a change. */
+async function retireAffiliateSlug(
+  affiliateId: number,
+  oldSlug: string | null,
+  newSlug: string | null,
+): Promise<void> {
+  if (!oldSlug || oldSlug === newSlug) return;
+  await pool.execute(
+    `INSERT INTO affiliate_slug_history (affiliate_id, slug, expires_at) VALUES (?, ?, NOW() + INTERVAL 30 DAY)`,
+    [affiliateId, oldSlug],
+  );
 }
 
 /**
@@ -3173,7 +3693,10 @@ export function computeProjectEconomics(p: {
   affiliate_commission_cents: number | null;
   agent_commission_cents: number | null;
   sq_ft: number | null;
-}): { net_profit_cents: number | null; net_profit_per_sqft_cents: number | null } {
+}): {
+  net_profit_cents: number | null;
+  net_profit_per_sqft_cents: number | null;
+} {
   if (p.sale_price_cents == null) {
     return { net_profit_cents: null, net_profit_per_sqft_cents: null };
   }
@@ -3191,14 +3714,20 @@ export type CommissionRateSettings = {
   direct_cents_per_sqft: number;
   closer_cents_per_sqft: number;
   parent_cents_per_sqft: number;
+  /** Two-level plan: sponsor share when a Senior Sponsor also earns ($1.50). */
+  parent_shared_cents_per_sqft: number;
+  /** Two-level plan: Senior Sponsor share ($1.50). */
+  grandparent_cents_per_sqft: number;
 };
 
 export type AffiliateCommissionSplit = {
   total_cents: number;
   closer_cents: number;
   parent_cents: number;
+  grandparent_cents: number;
   closer_rate: number;
   parent_rate: number;
+  grandparent_rate: number;
   role_closer: "direct" | "closer";
 };
 
@@ -3213,6 +3742,9 @@ export function resolveAffiliateCommissionSplit(input: {
   sq_ft: number | null;
   has_parent: boolean;
   parent_active: boolean;
+  /** Two-level plan only: a Senior Sponsor (sponsor's sponsor) exists. */
+  has_grandparent?: boolean;
+  grandparent_active?: boolean;
   rates: CommissionRateSettings;
 }): AffiliateCommissionSplit {
   const sq = Math.max(0, Number(input.sq_ft || 0));
@@ -3227,43 +3759,51 @@ export function resolveAffiliateCommissionSplit(input: {
       total_cents: total,
       closer_cents: total,
       parent_cents: 0,
+      grandparent_cents: 0,
       closer_rate: rates.direct_cents_per_sqft,
       parent_rate: 0,
+      grandparent_rate: 0,
       role_closer: "direct",
     };
   }
 
-  let closer = Math.max(0, Math.round(sq * rates.closer_cents_per_sqft));
-  let parent = Math.max(0, Math.round(sq * rates.parent_cents_per_sqft));
+  // Situation C (Senior Sponsor): $7 / $1.50 / $1.50. Situation B: $7 / $3.
+  const twoLevel = Boolean(input.has_grandparent);
+  const closerRate = rates.closer_cents_per_sqft;
+  const parentRate = twoLevel
+    ? rates.parent_shared_cents_per_sqft
+    : rates.parent_cents_per_sqft;
+  const grandRate = twoLevel ? rates.grandparent_cents_per_sqft : 0;
+
+  let closer = Math.max(0, Math.round(sq * closerRate));
+  let parent = Math.max(0, Math.round(sq * parentRate));
+  let grand = Math.max(0, Math.round(sq * grandRate));
   if (input.override_cents != null) {
     const total = Math.max(0, Number(input.override_cents));
-    const denom = rates.closer_cents_per_sqft + rates.parent_cents_per_sqft;
+    const denom = closerRate + parentRate + grandRate;
     if (denom > 0) {
-      parent = Math.round(total * (rates.parent_cents_per_sqft / denom));
-      closer = Math.max(0, total - parent);
+      parent = Math.round(total * (parentRate / denom));
+      grand = Math.round(total * (grandRate / denom));
+      closer = Math.max(0, total - parent - grand);
     } else {
       closer = total;
       parent = 0;
+      grand = 0;
     }
   }
 
-  if (!input.parent_active) {
-    return {
-      total_cents: closer,
-      closer_cents: closer,
-      parent_cents: 0,
-      closer_rate: rates.closer_cents_per_sqft,
-      parent_rate: rates.parent_cents_per_sqft,
-      role_closer: "closer",
-    };
-  }
+  // 11B / Section 13: an inactive sponsor's share is withheld, never passed on.
+  if (!input.parent_active) parent = 0;
+  if (!twoLevel || !input.grandparent_active) grand = 0;
 
   return {
-    total_cents: closer + parent,
+    total_cents: closer + parent + grand,
     closer_cents: closer,
     parent_cents: parent,
-    closer_rate: rates.closer_cents_per_sqft,
-    parent_rate: rates.parent_cents_per_sqft,
+    grandparent_cents: grand,
+    closer_rate: closerRate,
+    parent_rate: parentRate,
+    grandparent_rate: grandRate,
     role_closer: "closer",
   };
 }
@@ -3278,13 +3818,20 @@ export function resolveCommissionCents(input: {
   // 8A: plan defaults no longer win; override → sq_ft × rate.
   void input.plan_default_cents;
   if (input.override_cents != null) return Number(input.override_cents);
-  return Math.max(0, Math.round(Number(input.sq_ft || 0) * input.rate_cents_per_sqft));
+  return Math.max(
+    0,
+    Math.round(Number(input.sq_ft || 0) * input.rate_cents_per_sqft),
+  );
 }
 
 async function loadCommissionRates(
   conn?: Pool | PoolConnection,
 ): Promise<CommissionRateSettings> {
-  const direct = await getSettingInt("commission_direct_cents_per_sqft", 0, conn);
+  const direct = await getSettingInt(
+    "commission_direct_cents_per_sqft",
+    0,
+    conn,
+  );
   const legacy = await getSettingInt("commission_cents_per_sqft", 1000, conn);
   return {
     direct_cents_per_sqft: direct > 0 ? direct : legacy,
@@ -3298,25 +3845,58 @@ async function loadCommissionRates(
       300,
       conn,
     ),
+    parent_shared_cents_per_sqft: await getSettingInt(
+      "commission_parent_shared_cents_per_sqft",
+      150,
+      conn,
+    ),
+    grandparent_cents_per_sqft: await getSettingInt(
+      "commission_grandparent_cents_per_sqft",
+      150,
+      conn,
+    ),
   };
 }
 
 async function resolveCloserParent(
   conn: Pool | PoolConnection,
   closerId: number | null,
-): Promise<{ closer_id: number | null; parent_id: number | null }> {
-  if (!closerId) return { closer_id: null, parent_id: null };
+): Promise<{
+  closer_id: number | null;
+  parent_id: number | null;
+  grandparent_id: number | null;
+}> {
+  if (!closerId)
+    return { closer_id: null, parent_id: null, grandparent_id: null };
   const [rows] = await conn.execute<RowDataPacket[]>(
     `SELECT id, parent_affiliate_id, status FROM affiliates WHERE id = ? LIMIT 1`,
     [closerId],
   );
   const a = rows[0];
-  if (!a || String(a.status) !== "active") return { closer_id: null, parent_id: null };
+  if (!a || String(a.status) !== "active")
+    return { closer_id: null, parent_id: null, grandparent_id: null };
   const closer = Number(a.id);
   let parentId = a.parent_affiliate_id ? Number(a.parent_affiliate_id) : null;
   // Guard self-parent (corrupt data) — treat as top-level direct.
   if (parentId != null && parentId === closer) parentId = null;
-  return { closer_id: closer, parent_id: parentId };
+  // Senior Sponsor = the sponsor's own sponsor (never more than two levels up).
+  let grandparentId: number | null = null;
+  if (parentId) {
+    const [par] = await conn.execute<RowDataPacket[]>(
+      `SELECT parent_affiliate_id FROM affiliates WHERE id = ? LIMIT 1`,
+      [parentId],
+    );
+    grandparentId = par[0]?.parent_affiliate_id
+      ? Number(par[0].parent_affiliate_id)
+      : null;
+    if (grandparentId === closer || grandparentId === parentId)
+      grandparentId = null;
+  }
+  return {
+    closer_id: closer,
+    parent_id: parentId,
+    grandparent_id: grandparentId,
+  };
 }
 
 /** Rates frozen on the project at first accrual; fall back to live Settings once. */
@@ -3329,14 +3909,22 @@ async function resolveProjectCommissionRates(
     p.commission_rate_direct_cents_per_sqft != null &&
     p.commission_rate_closer_cents_per_sqft != null &&
     p.commission_rate_parent_cents_per_sqft != null;
+  const live = await loadCommissionRates(conn);
   if (hasFrozen) {
     return {
       direct_cents_per_sqft: Number(p.commission_rate_direct_cents_per_sqft),
       closer_cents_per_sqft: Number(p.commission_rate_closer_cents_per_sqft),
       parent_cents_per_sqft: Number(p.commission_rate_parent_cents_per_sqft),
+      parent_shared_cents_per_sqft:
+        p.commission_rate_parent_shared_cents_per_sqft != null
+          ? Number(p.commission_rate_parent_shared_cents_per_sqft)
+          : live.parent_shared_cents_per_sqft,
+      grandparent_cents_per_sqft:
+        p.commission_rate_grandparent_cents_per_sqft != null
+          ? Number(p.commission_rate_grandparent_cents_per_sqft)
+          : live.grandparent_cents_per_sqft,
     };
   }
-  const live = await loadCommissionRates(conn);
   // Backfill from existing commission row snapshots when present (legacy deals).
   const [rows] = await conn.execute<RowDataPacket[]>(
     `SELECT role, rate_cents_per_sqft FROM affiliate_commissions
@@ -3351,18 +3939,23 @@ async function resolveProjectCommissionRates(
     if (r.role === "direct") rates.direct_cents_per_sqft = rate;
     else if (r.role === "closer") rates.closer_cents_per_sqft = rate;
     else if (r.role === "parent") rates.parent_cents_per_sqft = rate;
+    else if (r.role === "grandparent") rates.grandparent_cents_per_sqft = rate;
   }
   if (opts?.persistIfMissing) {
     await conn.execute(
       `UPDATE projects SET
          commission_rate_direct_cents_per_sqft = ?,
          commission_rate_closer_cents_per_sqft = ?,
-         commission_rate_parent_cents_per_sqft = ?
+         commission_rate_parent_cents_per_sqft = ?,
+         commission_rate_parent_shared_cents_per_sqft = ?,
+         commission_rate_grandparent_cents_per_sqft = ?
        WHERE id = ? AND commission_rate_direct_cents_per_sqft IS NULL`,
       [
         rates.direct_cents_per_sqft,
         rates.closer_cents_per_sqft,
         rates.parent_cents_per_sqft,
+        rates.parent_shared_cents_per_sqft,
+        rates.grandparent_cents_per_sqft,
         p.id,
       ],
     );
@@ -3388,6 +3981,20 @@ async function projectHasPaidCommission(
   return Boolean(rows[0]);
 }
 
+/** Senior Sponsor for a project — two-level plan only, never the closer or sponsor. */
+function projectGrandparentId(
+  p: RowDataPacket,
+  closerId: number | null,
+  parentId: number | null,
+): number | null {
+  if (String(p.commission_plan || "one_level") !== "two_level" || !parentId)
+    return null;
+  const g = p.grandparent_affiliate_id
+    ? Number(p.grandparent_affiliate_id)
+    : null;
+  return g && g !== closerId && g !== parentId ? g : null;
+}
+
 async function projectCommissionSplit(
   conn: Pool | PoolConnection,
   p: RowDataPacket,
@@ -3396,14 +4003,15 @@ async function projectCommissionSplit(
   if (!closerId) return null;
   let parentId = p.parent_affiliate_id ? Number(p.parent_affiliate_id) : null;
   if (parentId != null && parentId === closerId) parentId = null;
-  let parentActive = false;
-  if (parentId) {
-    const [par] = await conn.execute<RowDataPacket[]>(
+  const isActive = async (id: number | null) => {
+    if (!id) return false;
+    const [r] = await conn.execute<RowDataPacket[]>(
       `SELECT status FROM affiliates WHERE id = ? LIMIT 1`,
-      [parentId],
+      [id],
     );
-    parentActive = String(par[0]?.status || "") === "active";
-  }
+    return String(r[0]?.status || "") === "active";
+  };
+  const grandparentId = projectGrandparentId(p, closerId, parentId);
   const rates = await resolveProjectCommissionRates(conn, p, {
     persistIfMissing: String(p.loan_status) === "finalized",
   });
@@ -3411,7 +4019,9 @@ async function projectCommissionSplit(
     override_cents: p.commission_override_cents ?? null,
     sq_ft: p.sq_ft ?? null,
     has_parent: Boolean(parentId),
-    parent_active: parentActive,
+    parent_active: await isActive(parentId),
+    has_grandparent: Boolean(grandparentId),
+    grandparent_active: await isActive(grandparentId),
     rates,
   });
 }
@@ -3447,8 +4057,11 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
   );
   // Keep unpaid commission rows in sync (never mutate paid).
   if (!paid && split) {
-    const closerId = Number(p.closer_affiliate_id || p.affiliate_id || 0) || null;
-    const parentId = p.parent_affiliate_id ? Number(p.parent_affiliate_id) : null;
+    const closerId =
+      Number(p.closer_affiliate_id || p.affiliate_id || 0) || null;
+    const parentId = p.parent_affiliate_id
+      ? Number(p.parent_affiliate_id)
+      : null;
     if (closerId && split.closer_cents > 0) {
       await conn.execute(
         `UPDATE affiliate_commissions
@@ -3476,7 +4089,13 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
         `UPDATE affiliate_commissions
          SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = 'parent'
          WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
-        [split.parent_cents, p.sq_ft ?? null, split.parent_rate, projectId, parentId],
+        [
+          split.parent_cents,
+          p.sq_ft ?? null,
+          split.parent_rate,
+          projectId,
+          parentId,
+        ],
       );
     } else if (parentId && split.parent_cents <= 0) {
       // 11B: parent inactive — void unpaid parent rows.
@@ -3485,6 +4104,28 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
          SET status = 'void', notes = 'Parent affiliate inactive at recalc'
          WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
         [projectId, parentId],
+      );
+    }
+    const grandId = projectGrandparentId(p, closerId, parentId);
+    if (grandId && split.grandparent_cents > 0) {
+      await conn.execute(
+        `UPDATE affiliate_commissions
+         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = 'grandparent'
+         WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
+        [
+          split.grandparent_cents,
+          p.sq_ft ?? null,
+          split.grandparent_rate,
+          projectId,
+          grandId,
+        ],
+      );
+    } else if (grandId) {
+      await conn.execute(
+        `UPDATE affiliate_commissions
+         SET status = 'void', notes = 'Senior sponsor inactive at recalc'
+         WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
+        [projectId, grandId],
       );
     }
   }
@@ -3533,8 +4174,8 @@ async function resyncProjectsForParentAffiliate(
   adminId: number | null,
 ) {
   const [projects] = await conn.execute<RowDataPacket[]>(
-    `SELECT id, loan_status FROM projects WHERE parent_affiliate_id = ?`,
-    [parentAffiliateId],
+    `SELECT id, loan_status FROM projects WHERE parent_affiliate_id = ? OR grandparent_affiliate_id = ?`,
+    [parentAffiliateId, parentAffiliateId],
   );
   for (const row of projects) {
     const pid = Number(row.id);
@@ -3558,7 +4199,8 @@ async function syncCommissionForLoan(
     [projectId],
   );
   const p = rows[0];
-  const closerId = Number(p?.closer_affiliate_id || p?.affiliate_id || 0) || null;
+  const closerId =
+    Number(p?.closer_affiliate_id || p?.affiliate_id || 0) || null;
   if (!p || !closerId) return;
   if (finalized) {
     // Freeze rates at first accrual (keep existing snapshot on re-finalize).
@@ -3598,7 +4240,7 @@ async function syncCommissionForLoan(
       affiliateId: number,
       amount: number,
       rate: number,
-      role: "direct" | "closer" | "parent",
+      role: "direct" | "closer" | "parent" | "grandparent",
     ) => {
       if (amount <= 0) return;
       await conn.execute(
@@ -3627,15 +4269,36 @@ async function syncCommissionForLoan(
       );
     };
 
-    await upsert(closerId, split.closer_cents, split.closer_rate, split.role_closer);
+    await upsert(
+      closerId,
+      split.closer_cents,
+      split.closer_rate,
+      split.role_closer,
+    );
     if (parentId && split.parent_cents > 0) {
       await upsert(parentId, split.parent_cents, split.parent_rate, "parent");
     } else if (parentId) {
       await conn.execute(
         `UPDATE affiliate_commissions
-         SET status = 'void', notes = 'Parent affiliate inactive — share withheld'
+         SET status = 'void', notes = 'Parent affiliate inactive. Share withheld'
          WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
         [projectId, parentId],
+      );
+    }
+    const grandId = projectGrandparentId(proj, closerId, parentId);
+    if (grandId && split.grandparent_cents > 0) {
+      await upsert(
+        grandId,
+        split.grandparent_cents,
+        split.grandparent_rate,
+        "grandparent",
+      );
+    } else if (grandId) {
+      await conn.execute(
+        `UPDATE affiliate_commissions
+         SET status = 'void', notes = 'Senior sponsor inactive. Share withheld'
+         WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
+        [projectId, grandId],
       );
     }
     await conn.execute(
@@ -3655,6 +4318,8 @@ async function syncCommissionForLoan(
          commission_rate_direct_cents_per_sqft = NULL,
          commission_rate_closer_cents_per_sqft = NULL,
          commission_rate_parent_cents_per_sqft = NULL,
+         commission_rate_parent_shared_cents_per_sqft = NULL,
+         commission_rate_grandparent_cents_per_sqft = NULL,
          commission_paid_at = NULL
        WHERE id = ?`,
       [projectId],
@@ -3664,11 +4329,15 @@ async function syncCommissionForLoan(
 
 // ── Notices (emails) ────────────────────────────────────────────────────────
 
+/** A paragraph is plain text, or text with one inline link (e.g. "…presentation HERE."). */
+type NoticeParagraph = string | { before: string; link: { url: string; label: string }; after?: string };
+const paragraphText = (p: NoticeParagraph) => (typeof p === "string" ? p : `${p.before}${p.link.label}${p.after ?? ""}`);
+
 type NoticeOpts = {
   lang: Lang;
   subject: string;
   headline: string;
-  paragraphs: string[];
+  paragraphs: NoticeParagraph[];
   details?: Array<[string, string]>;
   cta?: { url: string; label: string };
 };
@@ -3677,7 +4346,11 @@ export function tplPortalNotice(opts: NoticeOpts) {
   const paras = opts.paragraphs
     .map(
       (p) =>
-        `<p style="margin:0 0 14px;font-size:16px;line-height:1.65;color:${BRAND_CHARCOAL};">${escapeHtml(p)}</p>`,
+        `<p style="margin:0 0 14px;font-size:16px;line-height:1.65;color:${BRAND_CHARCOAL};">${
+          typeof p === "string"
+            ? escapeHtml(p)
+            : `${escapeHtml(p.before)}<a href="${escapeHtml(p.link.url)}" style="color:${BRAND_GOLD};font-weight:700;text-decoration:underline;">${escapeHtml(p.link.label)}</a>${escapeHtml(p.after ?? "")}`
+        }</p>`,
     )
     .join("");
   const details = opts.details?.length
@@ -3693,7 +4366,7 @@ export function tplPortalNotice(opts: NoticeOpts) {
     subject: opts.subject,
     html: emailLayout({
       title: opts.headline,
-      preheader: (opts.paragraphs[0] || "").slice(0, 120),
+      preheader: paragraphText(opts.paragraphs[0] || "").slice(0, 120),
       bodyHtml: body,
       lang: opts.lang,
     }),
@@ -3736,7 +4409,6 @@ async function notifyStaff(
 const money = (cents: number | null | undefined) =>
   `$${(Number(cents || 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-
 // ─── Portal feature layer: routes ────────────────────────────────────────────
 
 const PROJECT_ADMIN_SELECT = `
@@ -3745,9 +4417,14 @@ const PROJECT_ADMIN_SELECT = `
     c.email AS client_email,
     CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name,
     COALESCE(NULLIF(k.company, ''), CONCAT(k.first_name, ' ', k.last_name)) AS contractor_name,
-    pl.name AS plan_name
+    pl.name AS plan_name,
+    c.deal_status_id AS client_deal_status_id,
+    ds.label_en AS deal_status_en,
+    ds.label_es AS deal_status_es,
+    ds.tone AS deal_status_tone
   FROM projects p
   JOIN clients c ON c.id = p.client_id
+  LEFT JOIN deal_statuses ds ON ds.id = c.deal_status_id
   LEFT JOIN affiliates a ON a.id = p.affiliate_id
   LEFT JOIN contractors k ON k.id = p.contractor_id
   LEFT JOIN adu_plans pl ON pl.id = p.adu_plan_id`;
@@ -3854,19 +4531,29 @@ export function isAllowedPhotoUrl(raw: unknown): boolean {
   } catch {
     return false;
   }
-  if (u.protocol !== "https:" || u.username || u.password || u.port) return false;
+  if (u.protocol !== "https:" || u.username || u.password || u.port)
+    return false;
   const host = u.hostname.toLowerCase();
   return photoHostAllowlist().some((h) => host === h || host.endsWith(`.${h}`));
 }
 
 /** Sniff real image type from magic bytes (never trust Content-Type alone). */
-export function detectImageType(buf: Buffer): { mime: string; ext: string } | null {
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+export function detectImageType(
+  buf: Buffer,
+): { mime: string; ext: string } | null {
+  if (
+    buf.length >= 3 &&
+    buf[0] === 0xff &&
+    buf[1] === 0xd8 &&
+    buf[2] === 0xff
+  ) {
     return { mime: "image/jpeg", ext: "jpg" };
   }
   if (
     buf.length >= 8 &&
-    buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    buf
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   ) {
     return { mime: "image/png", ext: "png" };
   }
@@ -3963,7 +4650,10 @@ async function fetchAnchorLoanStatus(externalId: string): Promise<{
     throw new HttpError(502, "errors.anchorSyncFailed");
   }
   const statusRaw =
-    raw?.status ?? raw?.loan_status ?? raw?.data?.status ?? raw?.data?.loan_status;
+    raw?.status ??
+    raw?.loan_status ??
+    raw?.data?.status ??
+    raw?.data?.loan_status;
   const loan_status = mapAnchorLoanStatus(statusRaw);
   if (!loan_status) throw new HttpError(502, "errors.anchorStatusUnknown");
   return { loan_status, raw };
@@ -4005,7 +4695,8 @@ async function syncProjectAnchor(
     return { loan_status, previous_loan_status: previous, changed: false };
   }
 
-  const becameFinalized = loan_status === "finalized" && previous !== "finalized";
+  const becameFinalized =
+    loan_status === "finalized" && previous !== "finalized";
   const leftFinalized = previous === "finalized" && loan_status !== "finalized";
   await withTx(async (conn) => {
     await conn.execute(
@@ -4019,8 +4710,10 @@ async function syncProjectAnchor(
        WHERE id = ?`,
       [loan_status, becameFinalized ? 1 : 0, leftFinalized ? 1 : 0, projectId],
     );
-    if (becameFinalized) await syncCommissionForLoan(conn, projectId, true, adminId);
-    if (leftFinalized) await syncCommissionForLoan(conn, projectId, false, adminId);
+    if (becameFinalized)
+      await syncCommissionForLoan(conn, projectId, true, adminId);
+    if (leftFinalized)
+      await syncCommissionForLoan(conn, projectId, false, adminId);
     await recalcProject(conn, projectId);
   });
   return { loan_status, previous_loan_status: previous, changed: true };
@@ -4131,8 +4824,8 @@ async function sendClientPortalInviteEmail(opts: {
       lang: opts.lang,
       subject: tr(
         opts.lang,
-        "Open your ADU project portal — Groundwork Capital",
-        "Abre tu portal de proyecto ADU — Groundwork Capital",
+        "Open your ADU project portal · Groundwork Capital",
+        "Abre tu portal de proyecto ADU · Groundwork Capital",
       ),
       headline: tr(
         opts.lang,
@@ -4252,7 +4945,11 @@ type ContractPayload = {
     bedrooms?: number | null;
     bathrooms?: number | string | null;
   } | null;
-  client?: { name?: string | null; email?: string | null; phone?: string | null };
+  client?: {
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  };
   contractor?: {
     name?: string | null;
     company?: string | null;
@@ -4332,7 +5029,13 @@ const PDF_COPY = {
     contractor: "Contractor",
     price: "Contract price",
     terms: "Terms",
-    statuses: { draft: "Draft", generated: "Generated", sent: "Sent", signed: "Signed", void: "Void" } as Record<string, string>,
+    statuses: {
+      draft: "Draft",
+      generated: "Generated",
+      sent: "Sent",
+      signed: "Signed",
+      void: "Void",
+    } as Record<string, string>,
     termsBody:
       "This document summarizes the project data recorded by Groundwork Capital on the date above. It becomes binding only when signed by every party below.",
     sign: "Signature",
@@ -4365,7 +5068,13 @@ const PDF_COPY = {
     contractor: "Contratista",
     price: "Precio del contrato",
     terms: "Términos",
-    statuses: { draft: "Borrador", generated: "Generado", sent: "Enviado", signed: "Firmado", void: "Anulado" } as Record<string, string>,
+    statuses: {
+      draft: "Borrador",
+      generated: "Generado",
+      sent: "Enviado",
+      signed: "Firmado",
+      void: "Anulado",
+    } as Record<string, string>,
     termsBody:
       "Este documento resume los datos del proyecto registrados por Groundwork Capital en la fecha indicada. Solo es vinculante cuando lo firman todas las partes.",
     sign: "Firma",
@@ -4391,7 +5100,9 @@ const PDF_GOLD = "0.85 0.64 0.25";
 const PDF_TEXT = "0.12 0.14 0.19";
 const PDF_MUTED = "0.4 0.44 0.52";
 
-function createPdfWriter(opts: { labelWidth?: number; maxChars?: number } = {}) {
+function createPdfWriter(
+  opts: { labelWidth?: number; maxChars?: number } = {},
+) {
   const W = 612;
   const H = 792;
   const M = 54;
@@ -4408,11 +5119,21 @@ function createPdfWriter(opts: { labelWidth?: number; maxChars?: number } = {}) 
       y = H - M;
     }
   };
-  const text = (font: PdfFont, size: number, x: number, s: string, rgb = PDF_TEXT) => {
-    ops().push(`${rgb} rg BT /${font} ${size} Tf ${x} ${y.toFixed(2)} Td (${pdfEscape(s)}) Tj ET`);
+  const text = (
+    font: PdfFont,
+    size: number,
+    x: number,
+    s: string,
+    rgb = PDF_TEXT,
+  ) => {
+    ops().push(
+      `${rgb} rg BT /${font} ${size} Tf ${x} ${y.toFixed(2)} Td (${pdfEscape(s)}) Tj ET`,
+    );
   };
   const line = (x1: number, x2: number, rgb: string, w = 0.75) => {
-    ops().push(`${rgb} RG ${w} w ${x1} ${y.toFixed(2)} m ${x2} ${y.toFixed(2)} l S`);
+    ops().push(
+      `${rgb} RG ${w} w ${x1} ${y.toFixed(2)} m ${x2} ${y.toFixed(2)} l S`,
+    );
   };
   const heading = (s: string) => {
     ensure(40);
@@ -4461,7 +5182,11 @@ function createPdfWriter(opts: { labelWidth?: number; maxChars?: number } = {}) 
       y -= 26;
     }
   };
-  const signatureLines = (signers: string[], signLabel: string, dateLabel: string) => {
+  const signatureLines = (
+    signers: string[],
+    signLabel: string,
+    dateLabel: string,
+  ) => {
     ensure(40 + signers.length * 52);
     y -= 24;
     for (const who of signers) {
@@ -4469,12 +5194,15 @@ function createPdfWriter(opts: { labelWidth?: number; maxChars?: number } = {}) 
       line(M, M + 260, PDF_TEXT);
       line(M + 300, W - M, PDF_TEXT);
       y -= 12;
-      text("F1", 9, M, `${who} — ${signLabel}`, PDF_MUTED);
+      text("F1", 9, M, `${who} · ${signLabel}`, PDF_MUTED);
       text("F1", 9, M + 300, dateLabel, PDF_MUTED);
       y -= 20;
     }
   };
-  const finish = (docTitle: string, footer: (page: number, total: number) => string): Buffer => {
+  const finish = (
+    docTitle: string,
+    footer: (page: number, total: number) => string,
+  ): Buffer => {
     const total = pages.length;
     pages.forEach((pageOps, i) => {
       pageOps.push(
@@ -4486,9 +5214,15 @@ function createPdfWriter(opts: { labelWidth?: number; maxChars?: number } = {}) 
     const kids = pages.map((_, i) => `${7 + i * 2} 0 R`).join(" ");
     objs.push("<< /Type /Catalog /Pages 2 0 R >>");
     objs.push(`<< /Type /Pages /Kids [${kids}] /Count ${total} >>`);
-    objs.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
-    objs.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
-    objs.push(`<< /Title (${pdfEscape(docTitle)}) /Producer (Groundwork Capital) >>`);
+    objs.push(
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    );
+    objs.push(
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    );
+    objs.push(
+      `<< /Title (${pdfEscape(docTitle)}) /Producer (Groundwork Capital) >>`,
+    );
     pages.forEach((pageOps, i) => {
       const stream = pageOps.join("\n");
       objs.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
@@ -4504,11 +5238,21 @@ function createPdfWriter(opts: { labelWidth?: number; maxChars?: number } = {}) 
     });
     const xref = pdf.length;
     pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
-    for (const off of offsets) pdf += `${String(off).padStart(10, "0")} 00000 n \n`;
+    for (const off of offsets)
+      pdf += `${String(off).padStart(10, "0")} 00000 n \n`;
     pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R /Info 5 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
     return Buffer.from(pdf, "latin1");
   };
-  return { heading, subheading, row, para, title, signatureLines, ensure, finish };
+  return {
+    heading,
+    subheading,
+    row,
+    para,
+    title,
+    signatureLines,
+    ensure,
+    finish,
+  };
 }
 
 /**
@@ -4536,7 +5280,12 @@ export function buildContractPdf(input: {
   pdf.heading(c.property);
   const pr = p.property || {};
   row(c.property, pr.address);
-  row("", [pr.city, [pr.state, pr.zip].filter(Boolean).join(" ")].filter(Boolean).join(", "));
+  row(
+    "",
+    [pr.city, [pr.state, pr.zip].filter(Boolean).join(" ")]
+      .filter(Boolean)
+      .join(", "),
+  );
 
   if (p.plan) {
     pdf.heading(c.plan);
@@ -4565,17 +5314,24 @@ export function buildContractPdf(input: {
   pdf.heading(c.price);
   row(
     c.price,
-    p.contract_price_cents == null ? null : money(Number(p.contract_price_cents)),
+    p.contract_price_cents == null
+      ? null
+      : money(Number(p.contract_price_cents)),
   );
 
   pdf.heading(c.terms);
   pdf.para(c.termsBody);
 
-  pdf.signatureLines([c.client, ...(p.contractor ? [c.contractor] : [])], c.sign, c.date);
+  pdf.signatureLines(
+    [c.client, ...(p.contractor ? [c.contractor] : [])],
+    c.sign,
+    c.date,
+  );
 
   return pdf.finish(
     `${c.titles[input.kind] || c.titles.other} ${p.project || ""}`.trim(),
-    (i, total) => `${c.brand} · ${p.project || ""} · ${c.page} ${i} ${c.of} ${total}`,
+    (i, total) =>
+      `${c.brand} · ${p.project || ""} · ${c.page} ${i} ${c.of} ${total}`,
   );
 }
 
@@ -4653,9 +5409,9 @@ async function createClientWithProject(
   const [p] = await conn.execute<ResultSetHeader>(
     `INSERT INTO projects
        (public_id, client_id, lead_id, affiliate_id, closer_affiliate_id, parent_affiliate_id,
-        assigned_admin_id, adu_plan_id,
+        grandparent_affiliate_id, commission_plan, assigned_admin_id, adu_plan_id,
         milestone, milestone_changed_at, property_address, property_city, property_zip, sq_ft)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'lead', NOW(), ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'two_level', ?, ?, 'lead', NOW(), ?, ?, ?, ?)`,
     [
       publicId,
       clientId,
@@ -4663,6 +5419,7 @@ async function createClientWithProject(
       attr.closer_id,
       attr.closer_id,
       attr.parent_id,
+      attr.grandparent_id,
       input.assigned_admin_id,
       input.adu_plan_id,
       input.property_address,
@@ -4672,7 +5429,14 @@ async function createClientWithProject(
     ],
   );
   const projectId = Number(p.insertId);
-  await recordMilestone(conn, projectId, null, "lead", input.byType, input.byId);
+  await recordMilestone(
+    conn,
+    projectId,
+    null,
+    "lead",
+    input.byType,
+    input.byId,
+  );
   await recalcProject(conn, projectId);
   return { clientId, projectId, publicId };
 }
@@ -4714,7 +5478,7 @@ async function loadAdminProjectDetail(publicId: string, canFinance: boolean) {
        FROM affiliate_commissions ac
        JOIN affiliates a ON a.id = ac.affiliate_id
        WHERE ac.project_id = ?
-       ORDER BY FIELD(ac.role, 'direct', 'closer', 'parent'), ac.id ASC`,
+       ORDER BY FIELD(ac.role, 'direct', 'closer', 'parent', 'grandparent'), ac.id ASC`,
       [pid],
     );
     commissions = c;
@@ -4797,27 +5561,153 @@ export const CPQ_ADU_PROJECT_TYPES: AduProjectType[] = [
 ];
 
 export const CPQ_DOC_SPECS: ContractorDocSpec[] = [
-  { key: "cslb_license", requirement: "core", expires: true, multiple: false, sensitive: false },
-  { key: "license_bond", requirement: "core", expires: true, multiple: false, sensitive: false },
-  { key: "articles_sos", requirement: "approval", expires: false, multiple: true, sensitive: false },
-  { key: "business_license", requirement: "approval", expires: true, multiple: true, sensitive: false },
-  { key: "w9", requirement: "core", expires: false, multiple: false, sensitive: true },
-  { key: "coi_general_liability", requirement: "core", expires: true, multiple: false, sensitive: false },
-  { key: "workers_comp", requirement: "core", expires: true, multiple: false, sensitive: false },
-  { key: "coi_auto", requirement: "approval", expires: true, multiple: false, sensitive: false },
-  { key: "coi_umbrella", requirement: "approval", expires: true, multiple: false, sensitive: false },
-  { key: "company_profile", requirement: "approval", expires: false, multiple: false, sensitive: false },
-  { key: "portfolio", requirement: "approval", expires: false, multiple: true, sensitive: false },
-  { key: "final_inspections", requirement: "approval", expires: false, multiple: true, sensitive: false },
-  { key: "financial_statements", requirement: "approval", expires: false, multiple: true, sensitive: true },
-  { key: "bank_reference", requirement: "approval", expires: false, multiple: false, sensitive: true },
-  { key: "surety_letter", requirement: "approval", expires: false, multiple: false, sensitive: true },
-  { key: "iipp", requirement: "approval", expires: false, multiple: false, sensitive: false },
-  { key: "emr_osha", requirement: "approval", expires: false, multiple: true, sensitive: false },
-  { key: "epa_rrp", requirement: "approval", expires: true, multiple: false, sensitive: false },
-  { key: "dir_registration", requirement: "approval", expires: true, multiple: false, sensitive: false },
-  { key: "sample_contract", requirement: "approval", expires: false, multiple: false, sensitive: false },
-  { key: "warranty_policy", requirement: "approval", expires: false, multiple: false, sensitive: false },
+  {
+    key: "cslb_license",
+    requirement: "core",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "license_bond",
+    requirement: "core",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "articles_sos",
+    requirement: "approval",
+    expires: false,
+    multiple: true,
+    sensitive: false,
+  },
+  {
+    key: "business_license",
+    requirement: "approval",
+    expires: true,
+    multiple: true,
+    sensitive: false,
+  },
+  {
+    key: "w9",
+    requirement: "core",
+    expires: false,
+    multiple: false,
+    sensitive: true,
+  },
+  {
+    key: "coi_general_liability",
+    requirement: "core",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "workers_comp",
+    requirement: "core",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "coi_auto",
+    requirement: "approval",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "coi_umbrella",
+    requirement: "approval",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "company_profile",
+    requirement: "approval",
+    expires: false,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "portfolio",
+    requirement: "approval",
+    expires: false,
+    multiple: true,
+    sensitive: false,
+  },
+  {
+    key: "final_inspections",
+    requirement: "approval",
+    expires: false,
+    multiple: true,
+    sensitive: false,
+  },
+  {
+    key: "financial_statements",
+    requirement: "approval",
+    expires: false,
+    multiple: true,
+    sensitive: true,
+  },
+  {
+    key: "bank_reference",
+    requirement: "approval",
+    expires: false,
+    multiple: false,
+    sensitive: true,
+  },
+  {
+    key: "surety_letter",
+    requirement: "approval",
+    expires: false,
+    multiple: false,
+    sensitive: true,
+  },
+  {
+    key: "iipp",
+    requirement: "approval",
+    expires: false,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "emr_osha",
+    requirement: "approval",
+    expires: false,
+    multiple: true,
+    sensitive: false,
+  },
+  {
+    key: "epa_rrp",
+    requirement: "approval",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "dir_registration",
+    requirement: "approval",
+    expires: true,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "sample_contract",
+    requirement: "approval",
+    expires: false,
+    multiple: false,
+    sensitive: false,
+  },
+  {
+    key: "warranty_policy",
+    requirement: "approval",
+    expires: false,
+    multiple: false,
+    sensitive: false,
+  },
   {
     key: "background_check_authorization",
     requirement: "core",
@@ -4999,7 +5889,10 @@ export function cpqMissingFields(d: ContractorApplicationData): string[] {
 
   const ins = d.insurance;
   need("insurance.wc_exempt", cpqYesNo(ins.wc_exempt));
-  need("insurance.builders_risk_available", cpqYesNo(ins.builders_risk_available));
+  need(
+    "insurance.builders_risk_available",
+    cpqYesNo(ins.builders_risk_available),
+  );
   need("insurance.general_liability", cpqPolicyComplete(ins.general_liability));
   if (ins.wc_exempt !== "yes") {
     need("insurance.workers_comp", cpqPolicyComplete(ins.workers_comp));
@@ -5037,8 +5930,9 @@ export function cpqMissingFields(d: ContractorApplicationData): string[] {
 
   need(
     "references.clients",
-    (d.references?.clients || []).filter((r) => cpqFilled(r.name) && cpqFilled(r.phone))
-      .length >= CPQ_ROWS.client_references,
+    (d.references?.clients || []).filter(
+      (r) => cpqFilled(r.name) && cpqFilled(r.phone),
+    ).length >= CPQ_ROWS.client_references,
   );
 
   const f = d.financial;
@@ -5050,8 +5944,10 @@ export function cpqMissingFields(d: ContractorApplicationData): string[] {
   need("safety.has_iipp", cpqYesNo(s.has_iipp));
   for (const k of CPQ_DISCLOSURE_KEYS) need(`safety.${k}`, cpqYesNo(s[k]));
   const anyYes =
-    CPQ_DISCLOSURE_KEYS.some((k) => s[k] === "yes") || l.license_disciplined === "yes";
-  if (anyYes) need("safety.disclosure_explanation", cpqFilled(s.disclosure_explanation));
+    CPQ_DISCLOSURE_KEYS.some((k) => s[k] === "yes") ||
+    l.license_disciplined === "yes";
+  if (anyYes)
+    need("safety.disclosure_explanation", cpqFilled(s.disclosure_explanation));
 
   need("warranty.period", cpqFilled(d.warranty.period));
   need("warranty.terms", cpqFilled(d.warranty.terms));
@@ -5087,7 +5983,9 @@ export function cpqRequirements(
     docs: CPQ_DOC_SPECS.map((spec) => ({
       key: spec.key,
       requirement:
-        spec.template && !templates[spec.template] ? "approval" : spec.requirement,
+        spec.template && !templates[spec.template]
+          ? "approval"
+          : spec.requirement,
       applicable: cpqDocApplicable(spec.key, d),
     })),
   };
@@ -5115,7 +6013,11 @@ const CPQ_YES_NO_KEYS = new Set<string>([
   "has_iipp",
   ...CPQ_DISCLOSURE_KEYS,
 ]);
-const CPQ_DATE_KEYS = new Set(["expires_on", "license_expires_on", "completed_on"]);
+const CPQ_DATE_KEYS = new Set([
+  "expires_on",
+  "license_expires_on",
+  "completed_on",
+]);
 const CPQ_ENUM_KEYS: Record<string, readonly string[]> = {
   entity_type: ["corporation", "llc", "partnership", "sole_proprietor"],
   qualifier_status: ["active", "inactive"],
@@ -5151,15 +6053,23 @@ function cpqMerge(template: unknown, raw: unknown, base: unknown): unknown {
     );
   }
   const tpl = template as Record<string, unknown>;
-  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const b = base && typeof base === "object" ? (base as Record<string, unknown>) : {};
+  const r =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const b =
+    base && typeof base === "object" ? (base as Record<string, unknown>) : {};
   const out: Record<string, unknown> = {};
   for (const [k, tv] of Object.entries(tpl)) {
     if (k === "project_types") {
       const src = Array.isArray(r[k]) ? r[k] : Array.isArray(b[k]) ? b[k] : [];
-      out[k] = CPQ_ADU_PROJECT_TYPES.filter((t) => (src as unknown[]).includes(t));
+      out[k] = CPQ_ADU_PROJECT_TYPES.filter((t) =>
+        (src as unknown[]).includes(t),
+      );
     } else if (typeof tv === "string") {
-      out[k] = cpqScalar(k, r[k], typeof b[k] === "string" ? (b[k] as string) : tv);
+      out[k] = cpqScalar(
+        k,
+        r[k],
+        typeof b[k] === "string" ? (b[k] as string) : tv,
+      );
     } else {
       out[k] = cpqMerge(tv, r[k], b[k]);
     }
@@ -5168,7 +6078,10 @@ function cpqMerge(template: unknown, raw: unknown, base: unknown): unknown {
 }
 
 /** Whitelist `raw` onto `base` (existing draft) with type + length checks. */
-export function normalizeCpqData(raw: unknown, base?: unknown): ContractorApplicationData {
+export function normalizeCpqData(
+  raw: unknown,
+  base?: unknown,
+): ContractorApplicationData {
   return cpqMerge(cpqEmptyData(), raw, base) as ContractorApplicationData;
 }
 
@@ -5197,7 +6110,9 @@ function parseCpqDocTypes(v: unknown): ContractorApplicationDocType[] {
     }
   }
   return Array.isArray(raw)
-    ? (raw.filter((k) => CPQ_DOC_SPEC_BY_KEY.has(k)) as ContractorApplicationDocType[])
+    ? (raw.filter((k) =>
+        CPQ_DOC_SPEC_BY_KEY.has(k),
+      ) as ContractorApplicationDocType[])
     : [];
 }
 
@@ -5232,7 +6147,9 @@ function cpqOutstandingDocs(
     docs.filter((d) => d.status !== "rejected").map((d) => String(d.doc_type)),
   );
   return reqs.docs
-    .filter((r) => r.applicable && (level === "all" || r.requirement === "core"))
+    .filter(
+      (r) => r.applicable && (level === "all" || r.requirement === "core"),
+    )
     .filter((r) => !have.has(r.key))
     .map((r) => r.key);
 }
@@ -5240,16 +6157,25 @@ function cpqOutstandingDocs(
 async function cpqTemplates(): Promise<ContractorApplicationTemplates> {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN (?, ?)`,
-    [CPQ_TEMPLATE_KEYS.master_contractor_agreement, CPQ_TEMPLATE_KEYS.background_check_authorization],
+    [
+      CPQ_TEMPLATE_KEYS.master_contractor_agreement,
+      CPQ_TEMPLATE_KEYS.background_check_authorization,
+    ],
   );
-  const byKey = new Map(rows.map((r) => [String(r.setting_key), r.setting_value]));
+  const byKey = new Map(
+    rows.map((r) => [String(r.setting_key), r.setting_value]),
+  );
   const pick = (k: string) => {
     const v = String(byKey.get(k) ?? "").trim();
     return /^https:\/\//i.test(v) ? v : null;
   };
   return {
-    master_contractor_agreement: pick(CPQ_TEMPLATE_KEYS.master_contractor_agreement),
-    background_check_authorization: pick(CPQ_TEMPLATE_KEYS.background_check_authorization),
+    master_contractor_agreement: pick(
+      CPQ_TEMPLATE_KEYS.master_contractor_agreement,
+    ),
+    background_check_authorization: pick(
+      CPQ_TEMPLATE_KEYS.background_check_authorization,
+    ),
   };
 }
 
@@ -5260,14 +6186,19 @@ function cpqPrivateBlobToken(): string {
 }
 
 /** Sniff PDF / image magic bytes (never trust the declared Content-Type alone). */
-export function detectCpqDocType(buf: Buffer): { mime: string; ext: string } | null {
+export function detectCpqDocType(
+  buf: Buffer,
+): { mime: string; ext: string } | null {
   if (buf.length >= 5 && buf.subarray(0, 5).toString("latin1") === "%PDF-") {
     return { mime: "application/pdf", ext: "pdf" };
   }
   return detectImageType(buf);
 }
 
-async function readPrivateBlobHead(pathname: string, bytes = 16): Promise<Buffer | null> {
+async function readPrivateBlobHead(
+  pathname: string,
+  bytes = 16,
+): Promise<Buffer | null> {
   const got = await getBlob(pathname, {
     access: "private",
     token: cpqPrivateBlobToken(),
@@ -5326,6 +6257,652 @@ async function deletePrivateBlobs(pathnames: string[]) {
   }
 }
 
+/**
+ * Affiliate Agreement v1 (from the 2026-10-09 EN/ES drafts; reviewer page removed,
+ * Section 15 county = Orange). Seeded into `affiliate_agreement_templates` when no
+ * version exists; later versions are published from admin Settings. Placeholders:
+ * {{effective_date}}, {{affiliate_party}}, {{subscription_price}}.
+ */
+const AFFILIATE_AGREEMENT_V1: Record<Lang, string> = {
+  en: "# Groundwork Affiliate Agreement\n\nThis Affiliate Agreement (\"Agreement\") is made on {{effective_date}} (\"Effective Date\") between:\n\n- **Groundwork Capital Group LLC** (\"Groundwork\"), 2717 W Coast Hwy Ste C, Newport Beach, CA 92663\n- {{affiliate_party}} (\"Affiliate\")\n\n## 1. Purpose\n\nAffiliate will introduce homeowners (\"Clients\") who may want an accessory dwelling unit (\"ADU\") built through Groundwork. Groundwork pays a referral fee for each Client whose ADU project qualifies under Section 7.\n\n## 2. Eligibility\n\nOnly people who have signed this Agreement can earn referral fees. Before any payment, each Affiliate must:\n\n- Be at least 18 years old\n- Provide a signed IRS Form W-9\n- Complete Groundwork's affiliate onboarding\n- Have an active platform subscription under Section 3\n\nA person who refers a Client without a signed Agreement earns nothing.\n\n## 3. Platform subscription\n\nAffiliate runs their referral business on the Groundwork platform. The platform is where Affiliate registers Clients, follows each project and sees fees earned.\n\n- **Price.** {{subscription_price}} per month. Affiliate adds a payment method when signing up. The first 90 days are free; after that, the subscription is charged in advance each month to the payment method on file.\n- **What it pays for.** Access to the platform and its tools. It is a software fee. It is not a payment for the right to earn referral fees from recruiting.\n- **No share to other Affiliates.** No part of any subscription is paid to another Affiliate, Sponsor or Senior Sponsor.\n- **Renewal and cancellation.** The subscription renews each month until Affiliate cancels. Affiliate can cancel at any time on the platform or by email. Cancellation takes effect at the end of the paid month. There is no refund for a month already started.\n- **Past due.** If a payment is more than 10 days late, Groundwork may pause the account. A paused account cannot register new Clients.\n- **Fees already earned.** Clients registered while the subscription was active keep their credit under Section 6, even if the subscription later ends.\n- **No promise of income.** Paying the subscription does not guarantee any Client, project or referral fee.\n\n## 4. Roles and how referral fees are earned\n\nEach qualifying project pays a total of $10 per square foot of the ADU. Who is paid depends on who brought the Client and who recruited that person.\n\n- **Referring Affiliate:** the Affiliate who registers the Client.\n- **Sponsor:** the Affiliate who recruited the Referring Affiliate, as written on the Referring Affiliate's signature page.\n- **Senior Sponsor:** the Affiliate who recruited the Sponsor, as written on the Sponsor's signature page.\n| Situation | Who is paid | Rate per sq ft |\n| A. The Referring Affiliate has no Sponsor | Referring Affiliate | $10.00 |\n| B. The Referring Affiliate has a Sponsor and no Senior Sponsor | Referring Affiliate | $7.00 |\n|  | Sponsor | $3.00 |\n| C. The Referring Affiliate has a Sponsor and a Senior Sponsor | Referring Affiliate | $7.00 |\n|  | Sponsor | $1.50 |\n|  | Senior Sponsor | $1.50 |\n\nA Referring Affiliate who has a Sponsor always earns $7.00 per square foot. Fees are never paid more than two levels above the Referring Affiliate. The Sponsor written on a signature page cannot be changed without Groundwork's written approval.\n\n## 5. Referral fees by ADU model\n\nGroundwork currently offers three ADU models in Fontana.\n\n| Model | Total per project | Referring Affiliate, no Sponsor (A) | Referring Affiliate (B, C) | Sponsor (B) | Sponsor (C) | Senior Sponsor (C) |\n| 445 sq ft, 1 bed / 1 bath | $4,450 | $4,450 | $3,115 | $1,335 | $667.50 | $667.50 |\n| 474 sq ft, 2 bed / 1 bath | $4,740 | $4,740 | $3,318 | $1,422 | $711 | $711 |\n| 830 sq ft, 2 story / 2 bath | $8,300 | $8,300 | $5,810 | $2,490 | $1,245 | $1,245 |\n\nSquare footage means the living area on the approved plans. If a model's approved square footage changes, the fee is recalculated at the same rates.\n\n## 6. Lead registration\n\n- Affiliate registers each Client on the Groundwork platform (name, phone, property address) before Groundwork's first meeting with that Client.\n- Before registering a Client, Affiliate gets the Client's permission to share their contact information with Groundwork and to be contacted by Groundwork.\n- The first Affiliate to register a Client is credited for that Client for 180 days.\n- The fee is earned only if the Client signs Groundwork's construction agreement within those 180 days. After that, the credit ends and the Client can be registered again.\n- A Client already in Groundwork's records, or registered by another Affiliate, cannot be registered again during that period.\n- The platform's date and time stamp decides any dispute about who registered a Client first.\n\n## 7. When referral fees are paid\n\nA fee becomes payable when both of these have happened:\n\n- The Client has signed Groundwork's construction agreement.\n- The project is funded. For a financed project, that is when the financing closes and funds. For a cash project, that is when Groundwork receives the Client's first construction payment.\n\nGroundwork pays within 15 business days after that, by bank transfer, Zelle or check, to the name on Affiliate's W-9. No fee is owed if the Client cancels, does not qualify for financing, or the project does not proceed.\n\nIf a Client's construction agreement is cancelled within 90 days after a fee is paid, Groundwork may deduct that fee from future payments. This applies to everyone paid on that project. If there are no future payments within 60 days, the person who was paid returns the fee within 30 days of Groundwork's written request.\n\n## 8. Taxes\n\nAffiliate is responsible for all taxes on referral fees. Groundwork will issue an IRS Form 1099 when required.\n\n## 9. Recruiting other Affiliates\n\n- Affiliate may recruit other Affiliates. Each one signs this Agreement and names their Sponsor on the signature page.\n- Nothing is paid for recruiting. Fees are paid only on Client projects that qualify under Section 7.\n- Fees stop two levels above the Referring Affiliate, as shown in Section 4.\n- Affiliate does not charge anyone a fee to join, and does not promise income to anyone they recruit.\n\n## 10. Conduct and compliance\n\nAffiliate's role is to introduce Clients. Affiliate will not:\n\n- Quote prices, negotiate, or sign contracts on Groundwork's behalf\n- Give advice on loans, interest rates, credit or financing terms\n- Promise rental income, approval, timelines or results\n- Use Groundwork's name or logo except in materials Groundwork approves\n\nAffiliate will follow all laws that apply to marketing and contacting homeowners, including do-not-call and anti-spam rules.\n\n## 11. Independent contractor\n\nAffiliate is an independent contractor, not an employee, agent or partner of Groundwork. Affiliate pays their own expenses and is not eligible for employee benefits.\n\n## 12. Confidentiality and registered Clients\n\nAffiliate will keep Client information and Groundwork's pricing and business information private, and use it only to perform this Agreement.\n\nWhile a Client's 180-day credit is running, and for 12 months after, Affiliate will not take that Client to another ADU builder or lender for the same project.\n\n## 13. Term and termination\n\nThis Agreement continues until either party ends it with 15 days' written notice. Groundwork may end it immediately if Affiliate breaks Section 10 or 12.\n\n- Fees for Clients whose projects were funded before the end date are still paid.\n- A Client registered before the end date still earns the fee if they sign the construction agreement within 90 days after it. This does not apply when Groundwork ends the Agreement for a breach of Section 10 or 12.\n- When a Sponsor's or Senior Sponsor's Agreement ends, their share on later projects is not paid to anyone else. The Affiliates they recruited stay Affiliates.\n- The platform subscription ends with the Agreement.\n\n## 14. Changes to the program\n\nGroundwork may change rates, models, the subscription price or terms with 30 days' written notice. Changes do not affect Clients registered before the notice.\n\n## 15. General terms\n\n- **Law and disputes.** California law governs this Agreement. The parties will first try to settle any dispute by talking in good faith for 30 days. After that, disputes are heard in the courts of Orange County, California.\n- **Notices.** Notices are sent by email to the addresses on this Agreement.\n- **Signatures.** This Agreement can be signed electronically, and each signed copy counts as an original.\n- **No transfer.** Affiliate cannot transfer this Agreement to anyone else without Groundwork's written approval.\n- **Full agreement.** This is the full agreement between the parties and replaces any earlier understanding. If one part cannot be enforced, the rest stays in effect.\n- **Languages.** If it is signed in English and Spanish, the English version controls.\n",
+  es: '# Acuerdo de Afiliados de Groundwork\n\nEste Acuerdo de Afiliados ("Acuerdo") se celebra el {{effective_date}} ("Fecha de Inicio") entre:\n\n- **Groundwork Capital Group LLC** ("Groundwork"), 2717 W Coast Hwy Ste C, Newport Beach, CA 92663\n- {{affiliate_party}} ("Afiliado")\n\n## 1. Propósito\n\nEl Afiliado presentará a propietarios ("Clientes") que deseen construir una unidad de vivienda accesoria ("ADU") por medio de Groundwork. Groundwork paga una comisión por referido por cada Cliente cuyo proyecto de ADU califique según la Sección 7.\n\n## 2. Requisitos\n\nSolo las personas que hayan firmado este Acuerdo pueden recibir comisiones. Antes de cualquier pago, cada Afiliado debe:\n\n- Tener al menos 18 años\n- Entregar el formulario W-9 del IRS firmado\n- Completar la orientación de afiliados de Groundwork\n- Tener activa la suscripción a la plataforma según la Sección 3\n\nUna persona que refiera a un Cliente sin un Acuerdo firmado no recibe pago.\n\n## 3. Suscripción a la plataforma\n\nEl Afiliado maneja su negocio de referidos en la plataforma de Groundwork. En la plataforma el Afiliado registra a sus Clientes, sigue cada proyecto y ve sus comisiones.\n\n- **Precio.** {{subscription_price}} al mes. El Afiliado registra un método de pago al inscribirse. Los primeros 90 días son gratis; después, la suscripción se cobra por adelantado cada mes al método de pago registrado.\n- **Qué cubre.** El acceso a la plataforma y a sus herramientas. Es un pago por el uso del software. No es un pago por el derecho a ganar comisiones por reclutar.\n- **Nada se reparte a otros Afiliados.** Ninguna parte de una suscripción se paga a otro Afiliado, Patrocinador o Patrocinador Principal.\n- **Renovación y cancelación.** La suscripción se renueva cada mes hasta que el Afiliado la cancele. El Afiliado puede cancelar en cualquier momento en la plataforma o por correo electrónico. La cancelación entra en vigor al terminar el mes pagado. No hay reembolso por un mes ya iniciado.\n- **Pagos atrasados.** Si un pago tiene más de 10 días de atraso, Groundwork puede pausar la cuenta. Una cuenta pausada no puede registrar Clientes nuevos.\n- **Comisiones ya ganadas.** Los Clientes registrados mientras la suscripción estaba activa conservan su crédito según la Sección 6, aunque la suscripción termine después.\n- **Sin promesa de ingresos.** Pagar la suscripción no garantiza ningún Cliente, proyecto ni comisión.\n\n## 4. Funciones y cómo se ganan las comisiones\n\nCada proyecto que califica paga un total de $10 por pie cuadrado del ADU. Quién recibe el pago depende de quién trajo al Cliente y de quién reclutó a esa persona.\n\n- **Afiliado Referente:** el Afiliado que registra al Cliente.\n- **Patrocinador:** el Afiliado que reclutó al Afiliado Referente, según la hoja de firmas del Afiliado Referente.\n- **Patrocinador Principal:** el Afiliado que reclutó al Patrocinador, según la hoja de firmas del Patrocinador.\n| Situación | Quién recibe el pago | Tarifa por pie cuadrado |\n| A. El Afiliado Referente no tiene Patrocinador | Afiliado Referente | $10.00 |\n| B. El Afiliado Referente tiene Patrocinador y no hay Patrocinador Principal | Afiliado Referente | $7.00 |\n|  | Patrocinador | $3.00 |\n| C. El Afiliado Referente tiene Patrocinador y Patrocinador Principal | Afiliado Referente | $7.00 |\n|  | Patrocinador | $1.50 |\n|  | Patrocinador Principal | $1.50 |\n\nUn Afiliado Referente que tiene Patrocinador siempre gana $7.00 por pie cuadrado. Nunca se pagan comisiones más de dos niveles arriba del Afiliado Referente. El Patrocinador escrito en una hoja de firmas no se puede cambiar sin la aprobación por escrito de Groundwork.\n\n## 5. Comisiones por modelo de ADU\n\nGroundwork ofrece actualmente tres modelos de ADU en Fontana.\n\n| Modelo | Total por proyecto | Afiliado Referente, sin Patrocinador (A) | Afiliado Referente (B, C) | Patrocinador (B) | Patrocinador (C) | Patrocinador Principal (C) |\n| 445 pies², 1 recámara / 1 baño | $4,450 | $4,450 | $3,115 | $1,335 | $667.50 | $667.50 |\n| 474 pies², 2 recámaras / 1 baño | $4,740 | $4,740 | $3,318 | $1,422 | $711 | $711 |\n| 830 pies², 2 pisos / 2 baños | $8,300 | $8,300 | $5,810 | $2,490 | $1,245 | $1,245 |\n\nLos pies cuadrados son el área habitable de los planos aprobados. Si cambian los pies cuadrados aprobados de un modelo, la comisión se recalcula con las mismas tarifas.\n\n## 6. Registro de prospectos\n\n- El Afiliado registra a cada Cliente en la plataforma de Groundwork (nombre, teléfono, dirección de la propiedad) antes de la primera reunión de Groundwork con ese Cliente.\n- Antes de registrar a un Cliente, el Afiliado obtiene el permiso del Cliente para compartir sus datos de contacto con Groundwork y para que Groundwork lo contacte.\n- El primer Afiliado que registra a un Cliente recibe el crédito por ese Cliente durante 180 días.\n- La comisión se gana solo si el Cliente firma el contrato de construcción de Groundwork dentro de esos 180 días. Después, el crédito termina y el Cliente se puede registrar de nuevo.\n- Un Cliente que ya está en los registros de Groundwork, o registrado por otro Afiliado, no puede registrarse de nuevo durante ese periodo.\n- La fecha y hora que marca la plataforma decide cualquier disputa sobre quién registró primero a un Cliente.\n\n## 7. Cuándo se pagan las comisiones\n\nUna comisión se vuelve pagadera cuando han pasado estas dos cosas:\n\n- El Cliente firmó el contrato de construcción de Groundwork.\n- El proyecto tiene fondos. En un proyecto financiado, es cuando el financiamiento se cierra y se fondea. En un proyecto de contado, es cuando Groundwork recibe el primer pago de construcción del Cliente.\n\nGroundwork paga dentro de 15 días hábiles después de eso, por transferencia bancaria, Zelle o cheque, al nombre que aparece en el W-9 del Afiliado. No se debe comisión si el Cliente cancela, no califica para el financiamiento o el proyecto no continúa.\n\nSi el contrato de construcción de un Cliente se cancela dentro de 90 días después de pagada una comisión, Groundwork puede descontar esa comisión de pagos futuros. Esto aplica a todos los que recibieron pago por ese proyecto. Si no hay pagos futuros dentro de 60 días, la persona que recibió el pago devuelve la comisión dentro de 30 días de la solicitud por escrito de Groundwork.\n\n## 8. Impuestos\n\nEl Afiliado es responsable de todos los impuestos sobre sus comisiones. Groundwork emitirá el formulario 1099 del IRS cuando se requiera.\n\n## 9. Reclutar a otros Afiliados\n\n- El Afiliado puede reclutar a otros Afiliados. Cada uno firma este Acuerdo y escribe el nombre de su Patrocinador en la hoja de firmas.\n- No se paga nada por reclutar. Las comisiones se pagan solo por proyectos de Clientes que califican según la Sección 7.\n- Las comisiones llegan hasta dos niveles arriba del Afiliado Referente, como se muestra en la Sección 4.\n- El Afiliado no le cobra a nadie por entrar, y no le promete ingresos a nadie que reclute.\n\n## 10. Conducta y cumplimiento\n\nLa función del Afiliado es presentar Clientes. El Afiliado no:\n\n- Cotizará precios, negociará ni firmará contratos en nombre de Groundwork\n- Dará consejos sobre préstamos, tasas de interés, crédito o condiciones de financiamiento\n- Prometerá ingresos por renta, aprobaciones, plazos o resultados\n- Usará el nombre o logotipo de Groundwork excepto en materiales aprobados por Groundwork\n\nEl Afiliado cumplirá con todas las leyes sobre publicidad y contacto con propietarios, incluidas las reglas de no llamar y contra el correo no deseado.\n\n## 11. Contratista independiente\n\nEl Afiliado es un contratista independiente, no empleado, agente ni socio de Groundwork. El Afiliado cubre sus propios gastos y no tiene derecho a prestaciones de empleado.\n\n## 12. Confidencialidad y Clientes registrados\n\nEl Afiliado mantendrá en privado la información de los Clientes y la información de precios y del negocio de Groundwork, y la usará solo para cumplir este Acuerdo.\n\nMientras corre el crédito de 180 días de un Cliente, y durante 12 meses después, el Afiliado no llevará a ese Cliente con otro constructor de ADU ni con otro prestamista para el mismo proyecto.\n\n## 13. Duración y terminación\n\nEste Acuerdo sigue vigente hasta que cualquiera de las partes lo termine con 15 días de aviso por escrito. Groundwork puede terminarlo de inmediato si el Afiliado incumple la Sección 10 o la 12.\n\n- Las comisiones de Clientes cuyos proyectos recibieron fondos antes de la fecha de terminación se siguen pagando.\n- Un Cliente registrado antes de la fecha de terminación todavía genera la comisión si firma el contrato de construcción dentro de los 90 días siguientes. Esto no aplica cuando Groundwork termina el Acuerdo por incumplimiento de la Sección 10 o la 12.\n- Cuando termina el Acuerdo de un Patrocinador o de un Patrocinador Principal, su parte en proyectos posteriores no se paga a nadie más. Los Afiliados que reclutó siguen siendo Afiliados.\n- La suscripción a la plataforma termina junto con el Acuerdo.\n\n## 14. Cambios al programa\n\nGroundwork puede cambiar tarifas, modelos, el precio de la suscripción o las condiciones con 30 días de aviso por escrito. Los cambios no afectan a Clientes registrados antes del aviso.\n\n## 15. Condiciones generales\n\n- **Ley y disputas.** Este Acuerdo se rige por las leyes de California. Las partes primero intentarán resolver cualquier disputa hablando de buena fe durante 30 días. Después, las disputas se resuelven en los tribunales del Condado de Orange, California.\n- **Avisos.** Los avisos se envían por correo electrónico a las direcciones de este Acuerdo.\n- **Firmas.** Este Acuerdo se puede firmar electrónicamente, y cada copia firmada cuenta como original.\n- **Sin traspaso.** El Afiliado no puede traspasar este Acuerdo a otra persona sin la aprobación por escrito de Groundwork.\n- **Acuerdo completo.** Este es el acuerdo completo entre las partes y reemplaza cualquier entendimiento anterior. Si una parte no se puede hacer cumplir, el resto sigue vigente.\n- **Idiomas.** Si se firma en inglés y en español, prevalece la versión en inglés.\n',
+};
+
+// ── Affiliate onboarding: e-signed agreement + online W-9 ──────────────────
+
+/** Blank official IRS W-9 bundled with the function (vercel.json includeFiles). */
+const IRS_W9_PATH = "public/forms/irs-w9-rev-2024-03.pdf";
+const AFFILIATE_SIGNATURE_MAX_CHARS = 300_000;
+
+type AffiliateOnboardingState = {
+  subscription_price_cents: number | null;
+  agreement_signed: boolean;
+  agreement_signed_at: string | null;
+  agreement_version: number | null;
+  /** Signed an older published version (e.g. v2 while v3 is live): asked to re-sign; old terms apply until then. */
+  agreement_outdated: boolean;
+  /** Latest published agreement version. */
+  agreement_current_version: number | null;
+  w9_status: "missing" | "submitted" | "accepted" | "rejected";
+  /** Card on file with an active (or free-period) platform subscription. */
+  billing_ready: boolean;
+  /** Section 2: signed agreement + W-9 on file (not rejected) + active subscription before any payout. */
+  payout_ready: boolean;
+};
+
+async function affiliateOnboardingState(
+  affiliateId: number,
+  db: Pool | PoolConnection = pool,
+): Promise<AffiliateOnboardingState> {
+  const [[a]] = (await db.execute<RowDataPacket[]>(
+    `SELECT status, subscription_price_cents, billing_status, billing_payment_method_id FROM affiliates WHERE id = ? LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  const [[ag]] = (await db.execute<RowDataPacket[]>(
+    `SELECT template_version, signed_at FROM affiliate_agreements
+     WHERE affiliate_id = ? AND status = 'signed' ORDER BY id DESC LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  const [[w9]] = (await db.execute<RowDataPacket[]>(
+    `SELECT status FROM affiliate_w9s WHERE affiliate_id = ? ORDER BY id DESC LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  const w9Status =
+    (w9?.status as AffiliateOnboardingState["w9_status"]) || "missing";
+  const [[cur]] = (await db.execute<RowDataPacket[]>(
+    `SELECT MAX(version) v FROM affiliate_agreement_templates WHERE published_at IS NOT NULL`,
+  )) as unknown as [RowDataPacket[]];
+  const currentVersion = cur?.v != null ? Number(cur.v) : null;
+  return {
+    subscription_price_cents:
+      a?.subscription_price_cents == null
+        ? null
+        : Number(a.subscription_price_cents),
+    agreement_signed: Boolean(ag),
+    agreement_signed_at: ag ? isoDate(ag.signed_at) : null,
+    agreement_version: ag ? Number(ag.template_version) : null,
+    agreement_outdated: Boolean(ag) && currentVersion != null && Number(ag.template_version) < currentVersion,
+    agreement_current_version: currentVersion,
+    w9_status: w9Status,
+    // Billing only gates payouts once the payment processor is configured.
+    // A card saved while pending counts: the free period starts on approval.
+    billing_ready:
+      !billingConfigured() ||
+      ["trialing", "active"].includes(String(a?.billing_status || "none")) ||
+      (Boolean(a?.billing_payment_method_id) && String(a?.status) !== "active"),
+    payout_ready:
+      Boolean(ag) &&
+      (w9Status === "submitted" || w9Status === "accepted") &&
+      (!billingConfigured() ||
+        ["trialing", "active"].includes(String(a?.billing_status || "none"))),
+  };
+}
+
+/** Latest published template; seeds v1 from the bundled drafts on first use. */
+async function loadAffiliateAgreementTemplate(): Promise<{
+  version: number;
+  body_en: string;
+  body_es: string;
+  published_at: string | null;
+}> {
+  const pick = async () => {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT version, body_en, body_es, published_at FROM affiliate_agreement_templates
+       WHERE published_at IS NOT NULL ORDER BY version DESC LIMIT 1`,
+    );
+    return rows[0];
+  };
+  let row = await pick();
+  if (!row) {
+    await pool.execute(
+      `INSERT IGNORE INTO affiliate_agreement_templates (version, body_en, body_es, notes, published_at)
+       VALUES (1, ?, ?, 'Seeded from 2026-10-09 drafts (county: Orange)', NOW())`,
+      [AFFILIATE_AGREEMENT_V1.en, AFFILIATE_AGREEMENT_V1.es],
+    );
+    row = await pick();
+  }
+  return {
+    version: Number(row.version),
+    body_en: String(row.body_en),
+    body_es: String(row.body_es),
+    published_at: isoDate(row.published_at),
+  };
+}
+
+export function formatUsdCents(cents: number): string {
+  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** Long date in Pacific time ("October 15, 2026" / "15 de octubre de 2026"). */
+function pacificLongDate(d: Date, lang: Lang): string {
+  return new Intl.DateTimeFormat(lang === "es" ? "es-US" : "en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(d);
+}
+
+export type AffiliateAgreementParty = {
+  legal_name: string;
+  business_name?: string | null;
+  address: string;
+  phone?: string | null;
+  email: string;
+};
+
+/** Fill {{placeholders}}; unknown ones stay visible so a bad template is caught in review. */
+export function renderAffiliateAgreement(
+  body: string,
+  vars: {
+    effective_date: string;
+    party: AffiliateAgreementParty;
+    subscription_price_cents: number;
+  },
+): string {
+  const p = vars.party;
+  const name = p.business_name
+    ? `${p.legal_name} (${p.business_name})`
+    : p.legal_name;
+  const party = [name, p.address, p.phone, p.email]
+    .filter((x) => String(x || "").trim())
+    .join(", ");
+  const map: Record<string, string> = {
+    effective_date: vars.effective_date,
+    affiliate_party: party,
+    subscription_price: formatUsdCents(vars.subscription_price_cents),
+  };
+  return body.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in map ? map[k] : m));
+}
+
+/** Sponsor / Senior Sponsor names for the signature page (from the chain). */
+async function affiliateSponsorNames(affiliateId: number): Promise<{
+  sponsor_id: number | null;
+  sponsor_name: string | null;
+  senior_sponsor_name: string | null;
+}> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT p.id AS sid, CONCAT(p.first_name,' ',p.last_name) AS sname,
+            CONCAT(g.first_name,' ',g.last_name) AS gname, g.id AS gid
+     FROM affiliates a
+     LEFT JOIN affiliates p ON p.id = a.parent_affiliate_id AND p.id <> a.id
+     LEFT JOIN affiliates g ON g.id = p.parent_affiliate_id AND g.id NOT IN (a.id, p.id)
+     WHERE a.id = ? LIMIT 1`,
+    [affiliateId],
+  );
+  const r = rows[0];
+  return {
+    sponsor_id: r?.sid ? Number(r.sid) : null,
+    sponsor_name: r?.sname ? String(r.sname) : null,
+    senior_sponsor_name: r?.gname ? String(r.gname) : null,
+  };
+}
+
+function parseSignaturePng(raw: unknown): Buffer {
+  const sig = String(raw || "");
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(sig);
+  const buf = m ? Buffer.from(m[1], "base64") : null;
+  if (
+    !buf ||
+    sig.length > AFFILIATE_SIGNATURE_MAX_CHARS ||
+    buf.length < 100 ||
+    detectImageType(buf)?.mime !== "image/png"
+  ) {
+    throw new HttpError(400, "validation.signatureRequired");
+  }
+  return buf;
+}
+
+/** SSN: 9 digits, no 000/666/9xx area, 00 group or 0000 serial. EIN: 9 digits, valid prefix. */
+export function validateTin(type: "ssn" | "ein", raw: unknown): string | null {
+  const d = String(raw || "").replace(/\D/g, "");
+  if (d.length !== 9 || /^(\d)\1{8}$/.test(d)) return null;
+  if (type === "ssn") {
+    const area = d.slice(0, 3);
+    if (area === "000" || area === "666" || area[0] === "9") return null;
+    if (d.slice(3, 5) === "00" || d.slice(5) === "0000") return null;
+    return d;
+  }
+  const invalidEinPrefixes = new Set([
+    "00",
+    "07",
+    "08",
+    "09",
+    "17",
+    "18",
+    "19",
+    "28",
+    "29",
+    "49",
+    "69",
+    "70",
+    "78",
+    "79",
+    "89",
+    "96",
+    "97",
+  ]);
+  return invalidEinPrefixes.has(d.slice(0, 2)) ? null : d;
+}
+
+// ── PDF: signed agreement (pdf-lib, Helvetica / WinAnsi covers EN + ES) ─────
+
+type AgreementPdfInput = {
+  lang: Lang;
+  version: number;
+  bodies: Array<{ lang: Lang; text: string }>;
+  party: AffiliateAgreementParty & { title?: string | null };
+  sponsor_name: string | null;
+  senior_sponsor_name: string | null;
+  signature_png: Buffer;
+  signed_at: Date;
+  signed_ip: string | null;
+  signed_user_agent: string | null;
+  body_sha256: string;
+};
+
+/** WinAnsi-safe text (drop characters Helvetica cannot encode). */
+function pdfSafe(s: string): string {
+  return s
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/ /g, " ")
+    .replace(/[^\x20-\x7E¡-ÿ·•€²]/g, "");
+}
+
+export async function buildAffiliateAgreementPdf(
+  input: AgreementPdfInput,
+): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const ink = rgb(0.055, 0.165, 0.29);
+  const gray = rgb(0.36, 0.39, 0.44);
+  const W = 612;
+  const H = 792;
+  const M = 56;
+  let page = doc.addPage([W, H]);
+  let y = H - M;
+  const L = input.lang === "es";
+  const footer = (p: typeof page, n: number) =>
+    p.drawText(
+      pdfSafe(
+        `Groundwork Capital Group LLC · ${L ? "Acuerdo de Afiliados" : "Affiliate Agreement"} v${input.version} · ${n}`,
+      ),
+      {
+        x: M,
+        y: 28,
+        size: 8,
+        font,
+        color: gray,
+      },
+    );
+  let pageNo = 1;
+  const ensure = (h: number) => {
+    if (y - h < 56) {
+      footer(page, pageNo++);
+      page = doc.addPage([W, H]);
+      y = H - M;
+    }
+  };
+  /** Draw wrapped rich text: **bold** segments, returns height used. */
+  const para = (
+    text: string,
+    opts: {
+      size?: number;
+      indent?: number;
+      gap?: number;
+      color?: typeof ink;
+    } = {},
+  ) => {
+    const size = opts.size ?? 10;
+    const x0 = M + (opts.indent ?? 0);
+    const maxW = W - M - x0;
+    const lead = size * 1.38;
+    const parts = pdfSafe(text)
+      .split(/(\*\*[^*]+\*\*)/)
+      .filter(Boolean)
+      .flatMap((seg) => {
+        const isBold = seg.startsWith("**") && seg.endsWith("**");
+        const t = isBold ? seg.slice(2, -2) : seg;
+        return t
+          .split(/(\s+)/)
+          .filter((w) => w !== "")
+          .map((w) => ({ w, f: isBold ? bold : font }));
+      });
+    let line: { w: string; f: typeof font }[] = [];
+    let lineW = 0;
+    const flush = () => {
+      ensure(lead);
+      let x = x0;
+      for (const t of line) {
+        page.drawText(t.w, {
+          x,
+          y: y - size,
+          size,
+          font: t.f,
+          color: opts.color ?? ink,
+        });
+        x += t.f.widthOfTextAtSize(t.w, size);
+      }
+      y -= lead;
+      line = [];
+      lineW = 0;
+    };
+    for (const t of parts) {
+      const tw = t.f.widthOfTextAtSize(t.w, size);
+      if (/^\s+$/.test(t.w)) {
+        if (line.length) {
+          line.push({ w: " ", f: t.f });
+          lineW += t.f.widthOfTextAtSize(" ", size);
+        }
+        continue;
+      }
+      if (lineW + tw > maxW && line.length) {
+        while (line.length && line[line.length - 1].w === " ") line.pop();
+        flush();
+      }
+      line.push(t);
+      lineW += tw;
+    }
+    if (line.length) flush();
+    y -= opts.gap ?? 4;
+  };
+  const table = (rows: string[][]) => {
+    const cols = Math.max(...rows.map((r) => r.length));
+    const colW = (W - 2 * M) / cols;
+    const size = cols > 4 ? 7 : 8.5;
+    for (const [ri, r] of rows.entries()) {
+      const f = ri === 0 ? bold : font;
+      const cellLines = r.map((c) => {
+        const words = pdfSafe(c).split(/\s+/).filter(Boolean);
+        const lines: string[] = [];
+        let cur = "";
+        for (const w of words) {
+          const next = cur ? `${cur} ${w}` : w;
+          if (f.widthOfTextAtSize(next, size) > colW - 6 && cur) {
+            lines.push(cur);
+            cur = w;
+          } else cur = next;
+        }
+        if (cur) lines.push(cur);
+        return lines;
+      });
+      const h = Math.max(1, ...cellLines.map((l) => l.length)) * size * 1.3 + 6;
+      ensure(h);
+      cellLines.forEach((lines, ci) => {
+        page.drawRectangle({
+          x: M + ci * colW,
+          y: y - h,
+          width: colW,
+          height: h,
+          borderColor: rgb(0.85, 0.82, 0.76),
+          borderWidth: 0.5,
+        });
+        lines.forEach((ln, li) =>
+          page.drawText(ln, {
+            x: M + ci * colW + 3,
+            y: y - 4 - size - li * size * 1.3,
+            size,
+            font: f,
+            color: ink,
+          }),
+        );
+      });
+      y -= h;
+    }
+    y -= 8;
+  };
+  const renderBody = (text: string) => {
+    let tableRows: string[][] = [];
+    const flushTable = () => {
+      if (tableRows.length) table(tableRows);
+      tableRows = [];
+    };
+    for (const raw of text.split("\n")) {
+      const line = raw.trimEnd();
+      if (line.startsWith("|")) {
+        tableRows.push(
+          line
+            .replace(/^\||\|$/g, "")
+            .split("|")
+            .map((c) => c.trim()),
+        );
+        continue;
+      }
+      flushTable();
+      if (!line.trim()) continue;
+      if (line.startsWith("# "))
+        para(`**${line.slice(2)}**`, { size: 16, gap: 10 });
+      else if (line.startsWith("## ")) {
+        y -= 4;
+        para(`**${line.slice(3)}**`, { size: 11.5, gap: 4 });
+      } else if (line.startsWith("- "))
+        para(`•  ${line.slice(2)}`, { indent: 10, gap: 2 });
+      else para(line, { gap: 6 });
+    }
+    flushTable();
+  };
+
+  input.bodies.forEach((b, i) => {
+    if (i > 0) {
+      footer(page, pageNo++);
+      page = doc.addPage([W, H]);
+      y = H - M;
+      para(
+        L
+          ? "**Versión en inglés (prevalece según la Sección 15).** El Afiliado firmó ambas versiones con la firma de la última página."
+          : "**English version (controls under Section 15).**",
+        { size: 9, color: gray, gap: 10 },
+      );
+    }
+    renderBody(b.text);
+  });
+
+  // Signature page
+  footer(page, pageNo++);
+  page = doc.addPage([W, H]);
+  y = H - M;
+  para(`**${L ? "Firmas" : "Signatures"}**`, { size: 14, gap: 12 });
+  para(`**Groundwork Capital Group LLC**`, { gap: 2 });
+  para(
+    L
+      ? "Aceptado electrónicamente por Groundwork Capital Group LLC."
+      : "Accepted electronically by Groundwork Capital Group LLC.",
+    { color: gray, gap: 14 },
+  );
+  para(`**${L ? "Afiliado" : "Affiliate"}**`, { gap: 4 });
+  const p = input.party;
+  const rows: Array<[string, string]> = [
+    [
+      L ? "Nombre" : "Name",
+      p.legal_name + (p.business_name ? ` (${p.business_name})` : ""),
+    ],
+    [L ? "Cargo" : "Title", p.title || "-"],
+    [L ? "Dirección" : "Address", p.address],
+    [L ? "Teléfono" : "Phone", p.phone || "-"],
+    [L ? "Correo" : "Email", p.email],
+    [
+      L
+        ? "Patrocinador (el Afiliado que lo reclutó, si aplica)"
+        : "Sponsor (the Affiliate who recruited you, if any)",
+      input.sponsor_name || (L ? "Ninguno" : "None"),
+    ],
+    [
+      L ? "Patrocinador Principal" : "Senior Sponsor",
+      input.senior_sponsor_name || (L ? "Ninguno" : "None"),
+    ],
+    [L ? "Fecha" : "Date", pacificLongDate(input.signed_at, input.lang)],
+  ];
+  for (const [k, v] of rows) para(`**${k}:** ${v}`, { gap: 2 });
+  y -= 8;
+  ensure(90);
+  para(`**${L ? "Firma" : "Signature"}:**`, { gap: 2 });
+  const img = await doc.embedPng(input.signature_png);
+  const scale = Math.min(220 / img.width, 70 / img.height);
+  page.drawImage(img, {
+    x: M,
+    y: y - img.height * scale,
+    width: img.width * scale,
+    height: img.height * scale,
+  });
+  y -= img.height * scale + 6;
+  page.drawLine({
+    start: { x: M, y },
+    end: { x: M + 240, y },
+    thickness: 0.6,
+    color: gray,
+  });
+  y -= 22;
+  para(
+    `**${L ? "Registro de firma electrónica" : "Electronic signature record"}**`,
+    { size: 9, gap: 2 },
+  );
+  for (const ln of [
+    `${L ? "Firmado" : "Signed"}: ${input.signed_at.toISOString()}`,
+    `IP: ${input.signed_ip || "-"}`,
+    `${L ? "Navegador" : "Browser"}: ${(input.signed_user_agent || "-").slice(0, 160)}`,
+    `${L ? "Versión del acuerdo" : "Agreement version"}: v${input.version} (${input.bodies.map((b) => b.lang.toUpperCase()).join(" + ")})`,
+    `SHA-256: ${input.body_sha256}`,
+  ]) {
+    para(ln, { size: 8, color: gray, gap: 1 });
+  }
+  footer(page, pageNo);
+  return Buffer.from(await doc.save());
+}
+
+// ── PDF: official IRS W-9 (Rev. March 2024) filled + signed ─────────────────
+
+export type W9Input = {
+  legal_name: string;
+  business_name: string | null;
+  tax_classification:
+    | "individual"
+    | "c_corp"
+    | "s_corp"
+    | "partnership"
+    | "trust_estate"
+    | "llc"
+    | "other";
+  llc_tax_class: "C" | "S" | "P" | null;
+  other_classification: string | null;
+  foreign_partners: boolean;
+  exempt_payee_code: string | null;
+  fatca_code: string | null;
+  address: string;
+  city_state_zip: string;
+  tin_type: "ssn" | "ein";
+  tin: string;
+  signature_png: Buffer;
+  signed_at: Date;
+};
+
+const W9_FIELD = (n: string) => `topmostSubform[0].Page1[0].${n}`;
+const W9_CLASS_BOX: Record<W9Input["tax_classification"], number> = {
+  individual: 0,
+  c_corp: 1,
+  s_corp: 2,
+  partnership: 3,
+  trust_estate: 4,
+  llc: 5,
+  other: 6,
+};
+
+/** Bundled blank W-9; falls back to the public copy if the file isn't in the function bundle. */
+async function loadBlankW9(): Promise<Buffer> {
+  try {
+    return fs.readFileSync(path.join(process.cwd(), IRS_W9_PATH));
+  } catch {
+    const r = await globalThis.fetch(
+      `${APP_URL}/${IRS_W9_PATH.replace(/^public\//, "")}`,
+    );
+    const buf = r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+    if (!buf || buf.subarray(0, 5).toString("latin1") !== "%PDF-")
+      throw new HttpError(503, "errors.storageNotConfigured");
+    return buf;
+  }
+}
+
+export async function buildW9Pdf(
+  input: W9Input,
+  template?: Buffer,
+): Promise<Buffer> {
+  const bytes = template ?? (await loadBlankW9());
+  const doc = await PDFDocument.load(bytes);
+  const form = doc.getForm();
+  const text = (n: string, v: string | null) => {
+    if (v) form.getTextField(W9_FIELD(n)).setText(pdfSafe(v));
+  };
+  text("f1_01[0]", input.legal_name);
+  text("f1_02[0]", input.business_name);
+  form
+    .getCheckBox(
+      W9_FIELD(
+        `Boxes3a-b_ReadOrder[0].c1_1[${W9_CLASS_BOX[input.tax_classification]}]`,
+      ),
+    )
+    .check();
+  if (input.tax_classification === "llc")
+    text("Boxes3a-b_ReadOrder[0].f1_03[0]", input.llc_tax_class);
+  if (input.tax_classification === "other")
+    text("Boxes3a-b_ReadOrder[0].f1_04[0]", input.other_classification);
+  if (input.foreign_partners)
+    form.getCheckBox(W9_FIELD("Boxes3a-b_ReadOrder[0].c1_2[0]")).check();
+  text("f1_05[0]", input.exempt_payee_code);
+  text("f1_06[0]", input.fatca_code);
+  text("Address_ReadOrder[0].f1_07[0]", input.address);
+  text("Address_ReadOrder[0].f1_08[0]", input.city_state_zip);
+  text(
+    "f1_09[0]",
+    "Groundwork Capital Group LLC, 2717 W Coast Hwy Ste C, Newport Beach, CA 92663",
+  );
+  const t = input.tin;
+  if (input.tin_type === "ssn") {
+    text("f1_11[0]", t.slice(0, 3));
+    text("f1_12[0]", t.slice(3, 5));
+    text("f1_13[0]", t.slice(5));
+  } else {
+    text("f1_14[0]", t.slice(0, 2));
+    text("f1_15[0]", t.slice(2));
+  }
+  form.flatten();
+  const page = doc.getPages()[0];
+  const img = await doc.embedPng(input.signature_png);
+  const scale = Math.min(200 / img.width, 24 / img.height);
+  page.drawImage(img, {
+    x: 140,
+    y: 194,
+    width: img.width * scale,
+    height: img.height * scale,
+  });
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(input.signed_at),
+    { x: 410, y: 198, size: 10, font },
+  );
+  return Buffer.from(await doc.save());
+}
+
+async function storePrivatePdf(
+  pathname: string,
+  body: Buffer,
+): Promise<string> {
+  await putBlob(pathname, body, {
+    access: "private",
+    token: cpqPrivateBlobToken(),
+    contentType: "application/pdf",
+    addRandomSuffix: false,
+    allowOverwrite: false,
+  });
+  return pathname;
+}
+
 function cpqApplyUrl(token: string) {
   return `${APP_URL}/contractor/apply/${token}`;
 }
@@ -5373,10 +6950,10 @@ async function cpqEnsureApplication(
   );
   if (ex[0]) {
     if (opts.dueAt && !ex[0].due_at && CPQ_EDITABLE.includes(ex[0].status)) {
-      await conn.execute(`UPDATE contractor_applications SET due_at = ? WHERE id = ?`, [
-        opts.dueAt,
-        ex[0].id,
-      ]);
+      await conn.execute(
+        `UPDATE contractor_applications SET due_at = ? WHERE id = ?`,
+        [opts.dueAt, ex[0].id],
+      );
     }
     return {
       id: Number(ex[0].id),
@@ -5425,7 +7002,9 @@ async function cpqEnsureApplication(
         conn,
         id,
         "created",
-        opts.adminId ? { type: "admin", adminId: opts.adminId } : { type: "system" },
+        opts.adminId
+          ? { type: "admin", adminId: opts.adminId }
+          : { type: "system" },
       );
       return { id, application_number: number, status: "draft", created: true };
     } catch (e: any) {
@@ -5450,7 +7029,10 @@ async function cpqEnsureApplication(
   throw new HttpError(500, "errors.server");
 }
 
-async function cpqMintToken(conn: Pool | PoolConnection, applicationId: number): Promise<string> {
+async function cpqMintToken(
+  conn: Pool | PoolConnection,
+  applicationId: number,
+): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
   await conn.execute(
     `DELETE FROM contractor_application_tokens WHERE application_id = ? AND expires_at < NOW()`,
@@ -5492,75 +7074,171 @@ async function sendCpqLinkEmail(opts: {
 }) {
   const { lang, first } = opts;
   const due = opts.dueAt
-    ? new Date(opts.dueAt).toLocaleDateString(lang === "es" ? "es-US" : "en-US", {
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-        timeZone: "America/Los_Angeles",
-      })
+    ? new Date(opts.dueAt).toLocaleDateString(
+        lang === "es" ? "es-US" : "en-US",
+        {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "America/Los_Angeles",
+        },
+      )
     : null;
-  const docsLine = (opts.docTypes || []).map((k) => `• ${cpqDocLabel(lang, k)}`).join("\n");
-  const copy: Record<CpqEmailVariant, { subject: string; headline: string; paragraphs: string[]; cta: string }> = {
+  const docsLine = (opts.docTypes || [])
+    .map((k) => `• ${cpqDocLabel(lang, k)}`)
+    .join("\n");
+  const copy: Record<
+    CpqEmailVariant,
+    { subject: string; headline: string; paragraphs: string[]; cta: string }
+  > = {
     new: {
-      subject: tr(lang, "Complete your Groundwork contractor prequalification", "Completa tu precalificación de contratista Groundwork"),
-      headline: tr(lang, "Let's get you prequalified.", "Vamos a precalificarte."),
+      subject: tr(
+        lang,
+        "Complete your Groundwork contractor prequalification",
+        "Completa tu precalificación de contratista Groundwork",
+      ),
+      headline: tr(
+        lang,
+        "Let's get you prequalified.",
+        "Vamos a precalificarte.",
+      ),
       paragraphs: [
-        tr(lang, `Hi ${first}, thanks for your interest in building ADUs with Groundwork Capital. Every contractor on our team completes a short online prequalification: company, licensing, insurance, experience and supporting documents.`, `Hola ${first}, gracias por tu interés en construir ADUs con Groundwork Capital. Todo contratista de nuestro equipo completa una precalificación en línea: empresa, licencias, seguros, experiencia y documentos de respaldo.`),
-        tr(lang, "Save and come back anytime — this secure link works for 30 days. Have your CSLB license, bond, W-9 and certificates of insurance handy.", "Guarda y regresa cuando quieras — este enlace seguro funciona por 30 días. Ten a la mano tu licencia CSLB, fianza, W-9 y certificados de seguro."),
+        tr(
+          lang,
+          `Hi ${first}, thanks for your interest in building ADUs with Groundwork Capital. Every contractor on our team completes a short online prequalification: company, licensing, insurance, experience and supporting documents.`,
+          `Hola ${first}, gracias por tu interés en construir ADUs con Groundwork Capital. Todo contratista de nuestro equipo completa una precalificación en línea: empresa, licencias, seguros, experiencia y documentos de respaldo.`,
+        ),
+        tr(
+          lang,
+          "Save and come back anytime. This secure link works for 30 days. Have your CSLB license, bond, W-9 and certificates of insurance handy.",
+          "Guarda y regresa cuando quieras. Este enlace seguro funciona por 30 días. Ten a la mano tu licencia CSLB, fianza, W-9 y certificados de seguro.",
+        ),
       ],
       cta: tr(lang, "Start application", "Iniciar solicitud"),
     },
     existing: {
-      subject: tr(lang, "Action needed: Groundwork contractor prequalification", "Acción requerida: precalificación de contratista Groundwork"),
-      headline: tr(lang, "Please update your prequalification.", "Actualiza tu precalificación."),
+      subject: tr(
+        lang,
+        "Action needed: Groundwork contractor prequalification",
+        "Acción requerida: precalificación de contratista Groundwork",
+      ),
+      headline: tr(
+        lang,
+        "Please update your prequalification.",
+        "Actualiza tu precalificación.",
+      ),
       paragraphs: [
-        tr(lang, `Hi ${first}, we're asking every contractor on the Groundwork team to complete our prequalification application${due ? ` by ${due}` : ""}. Your portal access is not affected while you complete it.`, `Hola ${first}, estamos pidiendo a todos los contratistas del equipo Groundwork que completen la solicitud de precalificación${due ? ` antes del ${due}` : ""}. Tu acceso al portal no se ve afectado mientras la completas.`),
-        tr(lang, "Save and come back anytime — this secure link works for 30 days.", "Guarda y regresa cuando quieras — este enlace seguro funciona por 30 días."),
+        tr(
+          lang,
+          `Hi ${first}, we're asking every contractor on the Groundwork team to complete our prequalification application${due ? ` by ${due}` : ""}. Your portal access is not affected while you complete it.`,
+          `Hola ${first}, estamos pidiendo a todos los contratistas del equipo Groundwork que completen la solicitud de precalificación${due ? ` antes del ${due}` : ""}. Tu acceso al portal no se ve afectado mientras la completas.`,
+        ),
+        tr(
+          lang,
+          "Save and come back anytime. This secure link works for 30 days.",
+          "Guarda y regresa cuando quieras. Este enlace seguro funciona por 30 días.",
+        ),
       ],
       cta: tr(lang, "Open application", "Abrir solicitud"),
     },
     reminder: {
-      subject: tr(lang, "Reminder: finish your Groundwork prequalification", "Recordatorio: termina tu precalificación Groundwork"),
+      subject: tr(
+        lang,
+        "Reminder: finish your Groundwork prequalification",
+        "Recordatorio: termina tu precalificación Groundwork",
+      ),
       headline: tr(lang, "You're almost there.", "Ya casi terminas."),
       paragraphs: [
-        tr(lang, `Hi ${first}, your prequalification application is still in progress${due ? ` and due ${due}` : ""}. Pick up right where you left off.`, `Hola ${first}, tu solicitud de precalificación sigue en progreso${due ? ` y vence el ${due}` : ""}. Continúa donde la dejaste.`),
+        tr(
+          lang,
+          `Hi ${first}, your prequalification application is still in progress${due ? ` and due ${due}` : ""}. Pick up right where you left off.`,
+          `Hola ${first}, tu solicitud de precalificación sigue en progreso${due ? ` y vence el ${due}` : ""}. Continúa donde la dejaste.`,
+        ),
       ],
       cta: tr(lang, "Continue application", "Continuar solicitud"),
     },
     info_request: {
-      subject: tr(lang, "We need a few more items — Groundwork prequalification", "Necesitamos algunos datos más — precalificación Groundwork"),
-      headline: tr(lang, "A few more items, please.", "Unos datos más, por favor."),
+      subject: tr(
+        lang,
+        "We need a few more items · Groundwork prequalification",
+        "Necesitamos algunos datos más. Precalificación Groundwork",
+      ),
+      headline: tr(
+        lang,
+        "A few more items, please.",
+        "Unos datos más, por favor.",
+      ),
       paragraphs: [
-        tr(lang, `Hi ${first}, our team reviewed your application and needs the following before we can finish:`, `Hola ${first}, nuestro equipo revisó tu solicitud y necesita lo siguiente para terminar:`),
+        tr(
+          lang,
+          `Hi ${first}, our team reviewed your application and needs the following before we can finish:`,
+          `Hola ${first}, nuestro equipo revisó tu solicitud y necesita lo siguiente para terminar:`,
+        ),
         ...(opts.note ? [opts.note] : []),
         ...(docsLine ? [docsLine] : []),
       ],
       cta: tr(lang, "Update application", "Actualizar solicitud"),
     },
     resend: {
-      subject: tr(lang, "Your Groundwork prequalification link", "Tu enlace de precalificación Groundwork"),
-      headline: tr(lang, "Here's your secure link.", "Aquí está tu enlace seguro."),
+      subject: tr(
+        lang,
+        "Your Groundwork prequalification link",
+        "Tu enlace de precalificación Groundwork",
+      ),
+      headline: tr(
+        lang,
+        "Here's your secure link.",
+        "Aquí está tu enlace seguro.",
+      ),
       paragraphs: [
-        tr(lang, `Hi ${first}, here's a fresh link to your prequalification application. It works for 30 days.`, `Hola ${first}, aquí tienes un enlace nuevo a tu solicitud de precalificación. Funciona por 30 días.`),
+        tr(
+          lang,
+          `Hi ${first}, here's a fresh link to your prequalification application. It works for 30 days.`,
+          `Hola ${first}, aquí tienes un enlace nuevo a tu solicitud de precalificación. Funciona por 30 días.`,
+        ),
       ],
       cta: tr(lang, "Open application", "Abrir solicitud"),
     },
     missing_docs: {
-      subject: tr(lang, "Documents still needed — Groundwork prequalification", "Documentos pendientes — precalificación Groundwork"),
-      headline: tr(lang, "Thanks for applying — a few documents are still missing.", "Gracias por aplicar — faltan algunos documentos."),
+      subject: tr(
+        lang,
+        "Documents still needed · Groundwork prequalification",
+        "Documentos pendientes. Precalificación Groundwork",
+      ),
+      headline: tr(
+        lang,
+        "Thanks for applying. A few documents are still missing.",
+        "Gracias por aplicar. Faltan algunos documentos.",
+      ),
       paragraphs: [
-        tr(lang, `Hi ${first}, we received your application. Please upload the remaining documents so we can complete the review:`, `Hola ${first}, recibimos tu solicitud. Sube los documentos restantes para completar la revisión:`),
+        tr(
+          lang,
+          `Hi ${first}, we received your application. Please upload the remaining documents so we can complete the review:`,
+          `Hola ${first}, recibimos tu solicitud. Sube los documentos restantes para completar la revisión:`,
+        ),
         ...(docsLine ? [docsLine] : []),
       ],
       cta: tr(lang, "Upload documents", "Subir documentos"),
     },
     expiring: {
-      subject: tr(lang, "Your insurance or license documents are expiring", "Tus documentos de seguro o licencia están por vencer"),
-      headline: tr(lang, "Keep your compliance current.", "Mantén tu cumplimiento al día."),
+      subject: tr(
+        lang,
+        "Your insurance or license documents are expiring",
+        "Tus documentos de seguro o licencia están por vencer",
+      ),
+      headline: tr(
+        lang,
+        "Keep your compliance current.",
+        "Mantén tu cumplimiento al día.",
+      ),
       paragraphs: [
-        tr(lang, `Hi ${first}, the following documents on file with Groundwork are expiring. Please upload the renewal — our agreement requires notice within 10 days of any change.`, `Hola ${first}, los siguientes documentos registrados con Groundwork están por vencer. Sube la renovación — nuestro acuerdo requiere aviso dentro de 10 días de cualquier cambio.`),
+        tr(
+          lang,
+          `Hi ${first}, the following documents on file with Groundwork are expiring. Please upload the renewal. Our agreement requires notice within 10 days of any change.`,
+          `Hola ${first}, los siguientes documentos registrados con Groundwork están por vencer. Sube la renovación. Nuestro acuerdo requiere aviso dentro de 10 días de cualquier cambio.`,
+        ),
         (opts.expiring || [])
-          .map((x) => `• ${cpqDocLabel(lang, x.doc_type)} — ${x.expires_on}`)
+          .map((x) => `• ${cpqDocLabel(lang, x.doc_type)} · ${x.expires_on}`)
           .join("\n"),
       ].filter(Boolean),
       cta: tr(lang, "Upload renewal", "Subir renovación"),
@@ -5576,7 +7254,9 @@ async function sendCpqLinkEmail(opts: {
       paragraphs: c.paragraphs,
       details: [
         [tr(lang, "Application #", "Solicitud #"), opts.number],
-        ...(due ? ([[tr(lang, "Due", "Vence"), due]] as Array<[string, string]>) : []),
+        ...(due
+          ? ([[tr(lang, "Due", "Vence"), due]] as Array<[string, string]>)
+          : []),
       ],
       cta: { url: cpqApplyUrl(opts.token), label: c.cta },
     }),
@@ -5593,7 +7273,11 @@ async function sendContractorApplicationLink(opts: {
   variant?: CpqEmailVariant;
   note?: string | null;
   docTypes?: string[];
-}): Promise<{ applicationId: number; applicationNumber: string; status: ContractorApplicationStatus }> {
+}): Promise<{
+  applicationId: number;
+  applicationNumber: string;
+  status: ContractorApplicationStatus;
+}> {
   const [kRows] = await pool.execute<RowDataPacket[]>(
     `SELECT id, email, first_name, status, preferred_language FROM contractors WHERE id = ? LIMIT 1`,
     [opts.contractorId],
@@ -5622,13 +7306,16 @@ async function sendContractorApplicationLink(opts: {
       conn,
       app.id,
       "link_sent",
-      opts.adminId ? { type: "admin", adminId: opts.adminId } : { type: "system" },
+      opts.adminId
+        ? { type: "admin", adminId: opts.adminId }
+        : { type: "system" },
       null,
       { variant: opts.variant || (isExisting ? "existing" : "new") },
     );
     return { app, token, dueRow: d[0]?.due_at ?? null };
   });
-  const variant: CpqEmailVariant = opts.variant ?? (isExisting ? "existing" : "new");
+  const variant: CpqEmailVariant =
+    opts.variant ?? (isExisting ? "existing" : "new");
   await sendCpqLinkEmail({
     to: String(k.email),
     first: String(k.first_name || ""),
@@ -5640,7 +7327,11 @@ async function sendContractorApplicationLink(opts: {
     note: opts.note,
     docTypes: opts.docTypes,
   });
-  return { applicationId: app.id, applicationNumber: app.application_number, status: app.status };
+  return {
+    applicationId: app.id,
+    applicationNumber: app.application_number,
+    status: app.status,
+  };
 }
 
 /** "Welcome to the crew" email shared by staff approve, application approve and MCP. */
@@ -5648,16 +7339,39 @@ async function sendContractorApprovedEmail(c: {
   email: string;
   first_name: string;
   preferred_language: unknown;
+  /** When set, the email states the membership terms (free period end, monthly price). */
+  id?: number;
 }) {
   const lang = asLang(c.preferred_language);
+  const membership = c.id ? await loadBilling("contractor", c.id) : null;
+  const price = membership?.price_cents
+    ? `$${(membership.price_cents / 100).toFixed(2)}`
+    : null;
+  const membershipLine =
+    membership &&
+    price &&
+    membership.status === "trialing" &&
+    membership.trial_ends_at
+      ? tr(
+          lang,
+          `Your platform membership is active: ${membership.trial_days} days free, then ${price}/month starting ${pacificLongDate(new Date(membership.trial_ends_at), "en")}. You can cancel anytime from the portal.`,
+          `Tu membresía de la plataforma está activa: ${membership.trial_days} días gratis y luego ${price}/mes a partir del ${pacificLongDate(new Date(membership.trial_ends_at), "es")}. Puedes cancelar cuando quieras desde el portal.`,
+        )
+      : membership && price && !membership.in_good_standing
+        ? tr(
+            lang,
+            `To open the portal, add a card for your platform membership: ${membership.trial_days} days free, then ${price}/month.`,
+            `Para abrir el portal, agrega una tarjeta para tu membresía: ${membership.trial_days} días gratis y luego ${price}/mes.`,
+          )
+        : null;
   await safeSend(
     String(c.email),
     tplPortalNotice({
       lang,
       subject: tr(
         lang,
-        "You're approved — Groundwork contractor portal",
-        "Estás aprobado — portal de contratistas Groundwork",
+        "You're approved · Groundwork contractor portal",
+        "Estás aprobado. Portal de contratistas Groundwork",
       ),
       headline: tr(lang, "Welcome to the crew.", "Bienvenido al equipo."),
       paragraphs: [
@@ -5671,10 +7385,15 @@ async function sendContractorApprovedEmail(c: {
           "Sign in with a one-time code to manage projects, photos, and draws.",
           "Entra con un código de un solo uso para gestionar proyectos, fotos y desembolsos.",
         ),
+        ...(membershipLine ? [membershipLine] : []),
       ],
       cta: {
         url: `${APP_URL}/contractor/login`,
-        label: tr(lang, "Open contractor portal", "Abrir portal de contratistas"),
+        label: tr(
+          lang,
+          "Open contractor portal",
+          "Abrir portal de contratistas",
+        ),
       },
     }),
   );
@@ -5696,7 +7415,9 @@ async function assertContractorActivationAllowed(
     );
     if (rows[0]?.status === "approved") return { override: null };
   }
-  const reason = String(overrideReason ?? "").trim().slice(0, 500);
+  const reason = String(overrideReason ?? "")
+    .trim()
+    .slice(0, 500);
   if (user.role === "super_admin") {
     if (reason.length >= 5) return { override: reason };
     throw new HttpError(409, "errors.contractorOverrideReasonRequired");
@@ -5710,35 +7431,98 @@ async function recordContractorActivationOverride(
   reason: string,
 ) {
   const app = await cpqEnsureApplication(pool, contractorId, { adminId });
-  await cpqLogEvent(pool, app.id, "activation_override", { type: "admin", adminId }, reason);
+  await cpqLogEvent(
+    pool,
+    app.id,
+    "activation_override",
+    { type: "admin", adminId },
+    reason,
+  );
 }
 
 // ── PDF snapshot ─────────────────────────────────────────────────────────────
 
 const CPQ_DOC_LABELS: Record<ContractorApplicationDocType, [string, string]> = {
-  cslb_license: ["CSLB Contractor License (Class B or C-47)", "Licencia de contratista CSLB (Clase B o C-47)"],
-  license_bond: ["Contractor's License Bond ($25,000 min.)", "Fianza de licencia de contratista ($25,000 mín.)"],
-  articles_sos: ["Articles of Incorporation / Organization & SOS Statement of Info", "Acta constitutiva / organización y declaración SOS"],
-  business_license: ["City / County Business License", "Licencia comercial de ciudad / condado"],
+  cslb_license: [
+    "CSLB Contractor License (Class B or C-47)",
+    "Licencia de contratista CSLB (Clase B o C-47)",
+  ],
+  license_bond: [
+    "Contractor's License Bond ($25,000 min.)",
+    "Fianza de licencia de contratista ($25,000 mín.)",
+  ],
+  articles_sos: [
+    "Articles of Incorporation / Organization & SOS Statement of Info",
+    "Acta constitutiva / organización y declaración SOS",
+  ],
+  business_license: [
+    "City / County Business License",
+    "Licencia comercial de ciudad / condado",
+  ],
   w9: ["W-9 Form", "Formulario W-9"],
-  coi_general_liability: ["COI - General Liability (Additional Insured endorsement)", "COI - Responsabilidad general (asegurado adicional)"],
-  workers_comp: ["Workers' Comp Certificate or CSLB Exemption", "Certificado de compensación laboral o exención CSLB"],
+  coi_general_liability: [
+    "COI - General Liability (Additional Insured endorsement)",
+    "COI - Responsabilidad general (asegurado adicional)",
+  ],
+  workers_comp: [
+    "Workers' Comp Certificate or CSLB Exemption",
+    "Certificado de compensación laboral o exención CSLB",
+  ],
   coi_auto: ["COI - Commercial Auto", "COI - Auto comercial"],
-  coi_umbrella: ["COI - Umbrella / Excess Liability", "COI - Paraguas / responsabilidad excedente"],
-  company_profile: ["Company Profile / Resume", "Perfil de la empresa / currículum"],
-  portfolio: ["ADU Project Portfolio (photos & details)", "Portafolio de proyectos ADU (fotos y detalles)"],
-  final_inspections: ["Final Inspection Sign-offs / Certificates of Occupancy", "Inspecciones finales / certificados de ocupación"],
-  financial_statements: ["Financial Statements (last 2 years)", "Estados financieros (últimos 2 años)"],
+  coi_umbrella: [
+    "COI - Umbrella / Excess Liability",
+    "COI - Paraguas / responsabilidad excedente",
+  ],
+  company_profile: [
+    "Company Profile / Resume",
+    "Perfil de la empresa / currículum",
+  ],
+  portfolio: [
+    "ADU Project Portfolio (photos & details)",
+    "Portafolio de proyectos ADU (fotos y detalles)",
+  ],
+  final_inspections: [
+    "Final Inspection Sign-offs / Certificates of Occupancy",
+    "Inspecciones finales / certificados de ocupación",
+  ],
+  financial_statements: [
+    "Financial Statements (last 2 years)",
+    "Estados financieros (últimos 2 años)",
+  ],
   bank_reference: ["Bank Reference Letter", "Carta de referencia bancaria"],
-  surety_letter: ["Surety Bonding Capacity Letter", "Carta de capacidad de fianza"],
-  iipp: ["Injury & Illness Prevention Program (IIPP)", "Programa de prevención de lesiones y enfermedades (IIPP)"],
-  emr_osha: ["EMR Letter / Cal/OSHA 300A Logs", "Carta EMR / registros Cal/OSHA 300A"],
-  epa_rrp: ["EPA RRP Lead-Safe Certificate", "Certificado EPA RRP de plomo seguro"],
+  surety_letter: [
+    "Surety Bonding Capacity Letter",
+    "Carta de capacidad de fianza",
+  ],
+  iipp: [
+    "Injury & Illness Prevention Program (IIPP)",
+    "Programa de prevención de lesiones y enfermedades (IIPP)",
+  ],
+  emr_osha: [
+    "EMR Letter / Cal/OSHA 300A Logs",
+    "Carta EMR / registros Cal/OSHA 300A",
+  ],
+  epa_rrp: [
+    "EPA RRP Lead-Safe Certificate",
+    "Certificado EPA RRP de plomo seguro",
+  ],
   dir_registration: ["DIR Registration", "Registro DIR"],
-  sample_contract: ["Sample Home Improvement Contract", "Contrato modelo de mejoras al hogar"],
-  warranty_policy: ["Written Warranty Policy", "Política de garantía por escrito"],
-  background_check_authorization: ["Signed Background Check Authorization", "Autorización firmada de verificación de antecedentes"],
-  master_contractor_agreement: ["Signed Master Contractor Agreement", "Acuerdo maestro de contratista firmado"],
+  sample_contract: [
+    "Sample Home Improvement Contract",
+    "Contrato modelo de mejoras al hogar",
+  ],
+  warranty_policy: [
+    "Written Warranty Policy",
+    "Política de garantía por escrito",
+  ],
+  background_check_authorization: [
+    "Signed Background Check Authorization",
+    "Autorización firmada de verificación de antecedentes",
+  ],
+  master_contractor_agreement: [
+    "Signed Master Contractor Agreement",
+    "Acuerdo maestro de contratista firmado",
+  ],
 };
 
 const CPQ_PDF_COPY = {
@@ -5763,7 +7547,7 @@ const CPQ_PDF_COPY = {
       certification: "11. Authorization & certification",
       office: "For office use only",
     },
-    redacted: "Restricted — visible to finance-authorized staff only.",
+    redacted: "Restricted. Visible to finance-authorized staff only.",
     yes: "Yes",
     no: "No",
     attached: "Attached",
@@ -5803,7 +7587,8 @@ const CPQ_PDF_COPY = {
       certification: "11. Autorización y certificación",
       office: "Solo para uso de oficina",
     },
-    redacted: "Restringido — visible solo para personal autorizado de finanzas.",
+    redacted:
+      "Restringido. Visible solo para personal autorizado de finanzas.",
     yes: "Sí",
     no: "No",
     attached: "Adjunto",
@@ -5845,53 +7630,137 @@ const CPQ_FIELD_LABELS: Record<string, [string, string]> = {
   "company.service_area": ["Service area", "Área de servicio"],
   "licensing.cslb_license_number": ["CSLB license #", "# de licencia CSLB"],
   "licensing.classifications": ["Classification(s)", "Clasificación(es)"],
-  "licensing.license_expires_on": ["License expiration", "Vencimiento de licencia"],
-  "licensing.qualifier_name": ["Qualifier (RMO / RME)", "Calificador (RMO / RME)"],
+  "licensing.license_expires_on": [
+    "License expiration",
+    "Vencimiento de licencia",
+  ],
+  "licensing.qualifier_name": [
+    "Qualifier (RMO / RME)",
+    "Calificador (RMO / RME)",
+  ],
   "licensing.qualifier_title": ["Qualifier title", "Cargo del calificador"],
   "licensing.qualifier_status": ["Qualifier status", "Estado del calificador"],
   "licensing.bond_company": ["License bond company", "Compañía de fianza"],
   "licensing.bond_number": ["Bond number", "Número de fianza"],
   "licensing.bond_amount": ["Bond amount", "Monto de fianza"],
-  "licensing.business_license_numbers": ["City / county business license #(s)", "# de licencia comercial"],
-  "licensing.dir_registration_number": ["DIR registration #", "# de registro DIR"],
-  "licensing.license_disciplined": ["License ever suspended / revoked / disciplined?", "¿Licencia suspendida / revocada / sancionada?"],
-  "licensing.epa_rrp_certified": ["EPA RRP Lead-Safe certified?", "¿Certificado EPA RRP de plomo?"],
-  "insurance.general_liability": ["General liability", "Responsabilidad general"],
+  "licensing.business_license_numbers": [
+    "City / county business license #(s)",
+    "# de licencia comercial",
+  ],
+  "licensing.dir_registration_number": [
+    "DIR registration #",
+    "# de registro DIR",
+  ],
+  "licensing.license_disciplined": [
+    "License ever suspended / revoked / disciplined?",
+    "¿Licencia suspendida / revocada / sancionada?",
+  ],
+  "licensing.epa_rrp_certified": [
+    "EPA RRP Lead-Safe certified?",
+    "¿Certificado EPA RRP de plomo?",
+  ],
+  "insurance.general_liability": [
+    "General liability",
+    "Responsabilidad general",
+  ],
   "insurance.workers_comp": ["Workers' compensation", "Compensación laboral"],
   "insurance.commercial_auto": ["Commercial auto", "Auto comercial"],
   "insurance.umbrella": ["Umbrella / excess", "Paraguas / excedente"],
-  "insurance.wc_exempt": ["Exempt from workers' comp?", "¿Exento de compensación laboral?"],
-  "insurance.builders_risk_available": ["Builder's risk per project?", "¿Seguro de riesgo de construcción por proyecto?"],
-  "experience.years_building_adus": ["Years building ADUs", "Años construyendo ADUs"],
-  "experience.adus_completed_3yrs": ["ADUs completed (last 3 yrs)", "ADUs terminados (últimos 3 años)"],
-  "experience.typical_value_range": ["Typical project value range", "Rango típico de valor"],
-  "experience.max_concurrent_projects": ["Max. concurrent projects", "Máx. proyectos simultáneos"],
+  "insurance.wc_exempt": [
+    "Exempt from workers' comp?",
+    "¿Exento de compensación laboral?",
+  ],
+  "insurance.builders_risk_available": [
+    "Builder's risk per project?",
+    "¿Seguro de riesgo de construcción por proyecto?",
+  ],
+  "experience.years_building_adus": [
+    "Years building ADUs",
+    "Años construyendo ADUs",
+  ],
+  "experience.adus_completed_3yrs": [
+    "ADUs completed (last 3 yrs)",
+    "ADUs terminados (últimos 3 años)",
+  ],
+  "experience.typical_value_range": [
+    "Typical project value range",
+    "Rango típico de valor",
+  ],
+  "experience.max_concurrent_projects": [
+    "Max. concurrent projects",
+    "Máx. proyectos simultáneos",
+  ],
   "experience.project_types": ["Project types", "Tipos de proyecto"],
-  "experience.recent_projects": ["Recent ADU projects", "Proyectos ADU recientes"],
+  "experience.recent_projects": [
+    "Recent ADU projects",
+    "Proyectos ADU recientes",
+  ],
   personnel: ["Key personnel", "Personal clave"],
   "references.clients": ["Client references", "Referencias de clientes"],
-  "references.suppliers": ["Supplier / subcontractor references", "Referencias de proveedores / subcontratistas"],
+  "references.suppliers": [
+    "Supplier / subcontractor references",
+    "Referencias de proveedores / subcontratistas",
+  ],
   "financial.bank_name": ["Bank name", "Banco"],
   "financial.bank_contact": ["Bank contact", "Contacto bancario"],
   "financial.bank_phone": ["Bank phone", "Teléfono del banco"],
   "financial.surety_company": ["Surety company", "Compañía afianzadora"],
-  "financial.single_bonding_capacity": ["Single project bonding capacity", "Capacidad de fianza por proyecto"],
-  "financial.aggregate_bonding_capacity": ["Aggregate bonding capacity", "Capacidad de fianza total"],
-  "financial.revenue_recent_year": ["Annual revenue (most recent year)", "Ingresos anuales (año más reciente)"],
-  "financial.revenue_prior_year": ["Annual revenue (prior year)", "Ingresos anuales (año anterior)"],
-  "safety.emr": ["Experience Modification Rate (EMR)", "Tasa de modificación de experiencia (EMR)"],
-  "safety.osha_recordables_3yrs": ["Cal/OSHA recordable incidents (3 yrs)", "Incidentes registrables Cal/OSHA (3 años)"],
+  "financial.single_bonding_capacity": [
+    "Single project bonding capacity",
+    "Capacidad de fianza por proyecto",
+  ],
+  "financial.aggregate_bonding_capacity": [
+    "Aggregate bonding capacity",
+    "Capacidad de fianza total",
+  ],
+  "financial.revenue_recent_year": [
+    "Annual revenue (most recent year)",
+    "Ingresos anuales (año más reciente)",
+  ],
+  "financial.revenue_prior_year": [
+    "Annual revenue (prior year)",
+    "Ingresos anuales (año anterior)",
+  ],
+  "safety.emr": [
+    "Experience Modification Rate (EMR)",
+    "Tasa de modificación de experiencia (EMR)",
+  ],
+  "safety.osha_recordables_3yrs": [
+    "Cal/OSHA recordable incidents (3 yrs)",
+    "Incidentes registrables Cal/OSHA (3 años)",
+  ],
   "safety.safety_officer": ["Safety officer", "Oficial de seguridad"],
   "safety.has_iipp": ["Written IIPP?", "¿IIPP por escrito?"],
-  "safety.osha_citations_3yrs": ["Cal/OSHA citations (3 yrs)?", "¿Citaciones Cal/OSHA (3 años)?"],
-  "safety.lawsuits_5yrs": ["Lawsuits / arbitrations / judgments (5 yrs)?", "¿Demandas / arbitrajes / sentencias (5 años)?"],
-  "safety.cslb_complaints_5yrs": ["CSLB complaints (5 yrs)?", "¿Quejas CSLB (5 años)?"],
-  "safety.liens_5yrs": ["Mechanic's liens / stop notices (5 yrs)?", "¿Gravámenes / avisos de paro (5 años)?"],
-  "safety.failed_to_complete": ["Ever failed to complete a project?", "¿Alguna vez no terminó un proyecto?"],
+  "safety.osha_citations_3yrs": [
+    "Cal/OSHA citations (3 yrs)?",
+    "¿Citaciones Cal/OSHA (3 años)?",
+  ],
+  "safety.lawsuits_5yrs": [
+    "Lawsuits / arbitrations / judgments (5 yrs)?",
+    "¿Demandas / arbitrajes / sentencias (5 años)?",
+  ],
+  "safety.cslb_complaints_5yrs": [
+    "CSLB complaints (5 yrs)?",
+    "¿Quejas CSLB (5 años)?",
+  ],
+  "safety.liens_5yrs": [
+    "Mechanic's liens / stop notices (5 yrs)?",
+    "¿Gravámenes / avisos de paro (5 años)?",
+  ],
+  "safety.failed_to_complete": [
+    "Ever failed to complete a project?",
+    "¿Alguna vez no terminó un proyecto?",
+  ],
   "safety.bankruptcy_7yrs": ["Bankruptcy (7 yrs)?", "¿Bancarrota (7 años)?"],
   "safety.disclosure_explanation": ["Explanation", "Explicación"],
-  "warranty.period": ["Workmanship warranty period", "Período de garantía de mano de obra"],
-  "warranty.terms": ["Warranty terms / coverage", "Términos / cobertura de garantía"],
+  "warranty.period": [
+    "Workmanship warranty period",
+    "Período de garantía de mano de obra",
+  ],
+  "warranty.terms": [
+    "Warranty terms / coverage",
+    "Términos / cobertura de garantía",
+  ],
 };
 
 const CPQ_ENTITY_LABELS: Record<string, [string, string]> = {
@@ -5943,52 +7812,90 @@ export function buildContractorApplicationPdf(input: {
   const label = (path: string) => CPQ_FIELD_LABELS[path]?.[L] ?? path;
   const yn = (v: string) => (v === "yes" ? c.yes : v === "no" ? c.no : "");
   const field = (path: string, value: unknown) => pdf.row(label(path), value);
-  const ynField = (path: string, value: string) => pdf.row(label(path), yn(value));
-  const join = (...parts: string[]) => parts.map((p) => p.trim()).filter(Boolean).join(" · ");
+  const ynField = (path: string, value: string) =>
+    pdf.row(label(path), yn(value));
+  const join = (...parts: string[]) =>
+    parts
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .join(" · ");
 
   pdf.title(c.hiring + ": Groundwork Capital", c.title);
   pdf.para(c.sub, 9, PDF_MUTED);
   pdf.row(c.number, input.number);
   pdf.row(c.status, input.status);
-  pdf.row(c.received, input.submittedAt ? input.submittedAt.slice(0, 10) : null);
+  pdf.row(
+    c.received,
+    input.submittedAt ? input.submittedAt.slice(0, 10) : null,
+  );
 
   pdf.heading(c.sections.company);
-  for (const k of Object.keys(d.company) as Array<keyof ContractorApplicationData["company"]>) {
-    const v = k === "entity_type" ? CPQ_ENTITY_LABELS[d.company.entity_type]?.[L] ?? "" : d.company[k];
+  for (const k of Object.keys(d.company) as Array<
+    keyof ContractorApplicationData["company"]
+  >) {
+    const v =
+      k === "entity_type"
+        ? (CPQ_ENTITY_LABELS[d.company.entity_type]?.[L] ?? "")
+        : d.company[k];
     field(`company.${k}`, v);
   }
 
   pdf.heading(c.sections.licensing);
-  for (const k of Object.keys(d.licensing) as Array<keyof ContractorApplicationData["licensing"]>) {
-    if (k === "license_disciplined" || k === "epa_rrp_certified") ynField(`licensing.${k}`, d.licensing[k]);
+  for (const k of Object.keys(d.licensing) as Array<
+    keyof ContractorApplicationData["licensing"]
+  >) {
+    if (k === "license_disciplined" || k === "epa_rrp_certified")
+      ynField(`licensing.${k}`, d.licensing[k]);
     else field(`licensing.${k}`, d.licensing[k]);
   }
 
   pdf.heading(c.sections.insurance);
-  for (const k of ["general_liability", "workers_comp", "commercial_auto", "umbrella"] as const) {
+  for (const k of [
+    "general_liability",
+    "workers_comp",
+    "commercial_auto",
+    "umbrella",
+  ] as const) {
     const p = d.insurance[k];
-    field(`insurance.${k}`, join(p.carrier, p.policy_number, p.limits, p.expires_on));
+    field(
+      `insurance.${k}`,
+      join(p.carrier, p.policy_number, p.limits, p.expires_on),
+    );
   }
   ynField("insurance.wc_exempt", d.insurance.wc_exempt);
-  ynField("insurance.builders_risk_available", d.insurance.builders_risk_available);
+  ynField(
+    "insurance.builders_risk_available",
+    d.insurance.builders_risk_available,
+  );
 
   pdf.heading(c.sections.experience);
   field("experience.years_building_adus", d.experience.years_building_adus);
   field("experience.adus_completed_3yrs", d.experience.adus_completed_3yrs);
   field("experience.typical_value_range", d.experience.typical_value_range);
-  field("experience.max_concurrent_projects", d.experience.max_concurrent_projects);
+  field(
+    "experience.max_concurrent_projects",
+    d.experience.max_concurrent_projects,
+  );
   field(
     "experience.project_types",
-    d.experience.project_types.map((t) => CPQ_PROJECT_TYPE_LABELS[t]?.[L] ?? t).join(", "),
+    d.experience.project_types
+      .map((t) => CPQ_PROJECT_TYPE_LABELS[t]?.[L] ?? t)
+      .join(", "),
   );
   pdf.subheading(label("experience.recent_projects"));
   d.experience.recent_projects.forEach((p, i) =>
-    pdf.row(`${i + 1}`, join(p.address, p.type_sqft, p.contract_value, p.completed_on)),
+    pdf.row(
+      `${i + 1}`,
+      join(p.address, p.type_sqft, p.contract_value, p.completed_on),
+    ),
   );
 
   pdf.heading(c.sections.personnel);
   d.personnel.forEach((p, i) =>
-    pdf.row(`${i + 1}`, join(p.name, p.role, p.years_experience, p.certifications)),
+    pdf.row(
+      `${i + 1}`,
+      join(p.name, p.role, p.years_experience, p.certifications),
+    ),
   );
 
   pdf.heading(c.sections.references);
@@ -5998,14 +7905,19 @@ export function buildContractorApplicationPdf(input: {
   );
   pdf.subheading(label("references.suppliers"));
   d.references.suppliers.forEach((r, i) =>
-    pdf.row(`${i + 1}`, join(r.company, r.contact_name, r.phone, r.relationship)),
+    pdf.row(
+      `${i + 1}`,
+      join(r.company, r.contact_name, r.phone, r.relationship),
+    ),
   );
 
   pdf.heading(c.sections.financial);
   if (input.redactFinancial) {
     pdf.para(c.redacted, 10, PDF_MUTED);
   } else {
-    for (const k of Object.keys(d.financial) as Array<keyof ContractorApplicationData["financial"]>) {
+    for (const k of Object.keys(d.financial) as Array<
+      keyof ContractorApplicationData["financial"]
+    >) {
       field(`financial.${k}`, d.financial[k]);
     }
   }
@@ -6024,7 +7936,9 @@ export function buildContractorApplicationPdf(input: {
 
   pdf.heading(c.sections.documents);
   for (const r of input.requirements.docs) {
-    const rows = input.docs.filter((x) => x.doc_type === r.key && x.status !== "rejected");
+    const rows = input.docs.filter(
+      (x) => x.doc_type === r.key && x.status !== "rejected",
+    );
     const exp = rows.map((x) => x.expires_on).filter(Boolean)[0];
     const state = !r.applicable ? c.na : rows.length ? c.attached : c.missing;
     pdf.row(CPQ_DOC_LABELS[r.key][L], exp ? `${state} · ${exp}` : state);
@@ -6052,7 +7966,8 @@ export function buildContractorApplicationPdf(input: {
 
   return pdf.finish(
     `${c.title} ${input.number}`,
-    (i, total) => `Groundwork Capital · ${input.number} · ${c.page} ${i} ${c.of} ${total}`,
+    (i, total) =>
+      `Groundwork Capital · ${input.number} · ${c.page} ${i} ${c.of} ${total}`,
   );
 }
 
@@ -6060,8 +7975,11 @@ export function buildContractorApplicationPdf(input: {
 
 /** Resolve a magic-link token → application + contractor (404 when unknown/expired). */
 async function loadCpqByToken(raw: unknown): Promise<RowDataPacket> {
-  const t = String(raw || "").trim().toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(t)) throw new HttpError(404, "errors.applicationLinkInvalid");
+  const t = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(t))
+    throw new HttpError(404, "errors.applicationLinkInvalid");
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT a.*, t.id AS token_id,
             k.email AS k_email, k.first_name AS k_first, k.last_name AS k_last,
@@ -6095,7 +8013,10 @@ async function loadCpqDocs(applicationId: number): Promise<RowDataPacket[]> {
   return rows;
 }
 
-function mapCpqDoc(r: RowDataPacket, redact = false): ContractorApplicationDocument {
+function mapCpqDoc(
+  r: RowDataPacket,
+  redact = false,
+): ContractorApplicationDocument {
   return {
     id: Number(r.id),
     doc_type: String(r.doc_type) as ContractorApplicationDocType,
@@ -6128,7 +8049,8 @@ async function buildCpqPublicView(
       data,
       submitted_at: cpqIso(row.submitted_at),
       due_at: cpqIso(row.due_at),
-      info_request_note: row.info_request_note == null ? null : String(row.info_request_note),
+      info_request_note:
+        row.info_request_note == null ? null : String(row.info_request_note),
       info_request_doc_types: parseCpqDocTypes(row.info_request_doc_types_json),
       signer: {
         signer_name: row.signer_name ?? null,
@@ -6152,7 +8074,9 @@ async function buildCpqPublicView(
   };
 }
 
-async function loadAdminCpqRow(contractorId: number): Promise<RowDataPacket | null> {
+async function loadAdminCpqRow(
+  contractorId: number,
+): Promise<RowDataPacket | null> {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT a.*, k.email AS k_email, k.first_name AS k_first, k.status AS k_status,
             k.preferred_language AS k_lang,
@@ -6166,7 +8090,9 @@ async function loadAdminCpqRow(contractorId: number): Promise<RowDataPacket | nu
   return rows[0] || null;
 }
 
-async function requireAdminCpqRow(contractorId: number): Promise<RowDataPacket> {
+async function requireAdminCpqRow(
+  contractorId: number,
+): Promise<RowDataPacket> {
   const row = await loadAdminCpqRow(contractorId);
   if (!row) throw new HttpError(404, "errors.applicationNotFound");
   return row;
@@ -6202,7 +8128,8 @@ function registerContractorApplicationRoutes(
     limiters.lead,
     route(async (req, res) => {
       const email = normalizeEmail(req.body?.email);
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT k.first_name, k.preferred_language, k.status AS k_status,
                 a.id AS app_id, a.application_number, a.status AS app_status, a.due_at
@@ -6212,9 +8139,15 @@ function registerContractorApplicationRoutes(
         [email],
       );
       const r = rows[0];
-      if (r && String(r.k_status) !== "suspended" && String(r.app_status) !== "denied") {
+      if (
+        r &&
+        String(r.k_status) !== "suspended" &&
+        String(r.app_status) !== "denied"
+      ) {
         const token = await cpqMintToken(pool, Number(r.app_id));
-        await cpqLogEvent(pool, Number(r.app_id), "link_resent", { type: "contractor" });
+        await cpqLogEvent(pool, Number(r.app_id), "link_resent", {
+          type: "contractor",
+        });
         await sendCpqLinkEmail({
           to: email,
           first: String(r.first_name || ""),
@@ -6246,7 +8179,9 @@ function registerContractorApplicationRoutes(
            WHERE contractor_id = ? AND accepted_at IS NULL`,
           [row.contractor_id],
         );
-        await cpqLogEvent(pool, Number(row.id), "invite_accepted", { type: "contractor" });
+        await cpqLogEvent(pool, Number(row.id), "invite_accepted", {
+          type: "contractor",
+        });
       }
       res.json(await buildCpqPublicView(row, req.query.lang));
     }),
@@ -6257,8 +8192,12 @@ function registerContractorApplicationRoutes(
     cpqLimiter,
     route(async (req, res) => {
       const row = await loadCpqByToken(req.params.token);
-      if (!CPQ_EDITABLE.includes(row.status)) throw new HttpError(409, "errors.applicationLocked");
-      const merged = normalizeCpqData(req.body?.data ?? {}, parseCpqData(row.data_json));
+      if (!CPQ_EDITABLE.includes(row.status))
+        throw new HttpError(409, "errors.applicationLocked");
+      const merged = normalizeCpqData(
+        req.body?.data ?? {},
+        parseCpqData(row.data_json),
+      );
       const rawStep = Number(req.body?.current_step);
       const step = Number.isInteger(rawStep)
         ? Math.min(Math.max(rawStep, 0), 20)
@@ -6278,7 +8217,10 @@ function registerContractorApplicationRoutes(
           row.id,
         ],
       );
-      res.json({ ok: true, requirements: cpqRequirements(merged, await cpqTemplates()) });
+      res.json({
+        ok: true,
+        requirements: cpqRequirements(merged, await cpqTemplates()),
+      });
     }),
   );
 
@@ -6289,8 +8231,11 @@ function registerContractorApplicationRoutes(
       const row = await loadCpqByToken(req.params.token);
       const spec = CPQ_DOC_SPEC_BY_KEY.get(req.body?.doc_type);
       if (!spec) throw new HttpError(400, "validation.invalidField");
-      if (!cpqCanUploadDoc(row.status, spec)) throw new HttpError(409, "errors.applicationLocked");
-      const contentType = String(req.body?.content_type || "").toLowerCase().trim();
+      if (!cpqCanUploadDoc(row.status, spec))
+        throw new HttpError(409, "errors.applicationLocked");
+      const contentType = String(req.body?.content_type || "")
+        .toLowerCase()
+        .trim();
       const ext = CPQ_MIME_EXT[contentType];
       if (!ext) throw new HttpError(400, "validation.documentFile");
       const size = Number(req.body?.size_bytes);
@@ -6330,7 +8275,8 @@ function registerContractorApplicationRoutes(
       const row = await loadCpqByToken(req.params.token);
       const spec = CPQ_DOC_SPEC_BY_KEY.get(req.body?.doc_type);
       if (!spec) throw new HttpError(400, "validation.invalidField");
-      if (!cpqCanUploadDoc(row.status, spec)) throw new HttpError(409, "errors.applicationLocked");
+      if (!cpqCanUploadDoc(row.status, spec))
+        throw new HttpError(409, "errors.applicationLocked");
       const pathname = String(req.body?.pathname || "");
       const prefix = `cpq/${row.application_number}/${spec.key}/`;
       const ext = pathname.split(".").pop() || "";
@@ -6363,7 +8309,12 @@ function registerContractorApplicationRoutes(
       }
       const sniff = await readPrivateBlobHead(pathname);
       const kind = sniff ? detectCpqDocType(sniff) : null;
-      if (!kind || kind.ext !== ext || meta.size <= 0 || meta.size > CPQ_DOC_MAX_BYTES) {
+      if (
+        !kind ||
+        kind.ext !== ext ||
+        meta.size <= 0 ||
+        meta.size > CPQ_DOC_MAX_BYTES
+      ) {
         await deletePrivateBlobs([pathname]);
         throw new HttpError(400, "validation.documentFile");
       }
@@ -6387,12 +8338,28 @@ function registerContractorApplicationRoutes(
           `INSERT INTO contractor_application_documents
              (application_id, doc_type, blob_pathname, blob_url, file_name, mime_type, size_bytes, expires_on)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [row.id, spec.key, pathname, meta.url, fileName, kind.mime, meta.size, expiresOn],
+          [
+            row.id,
+            spec.key,
+            pathname,
+            meta.url,
+            fileName,
+            kind.mime,
+            meta.size,
+            expiresOn,
+          ],
         );
-        await cpqLogEvent(conn, Number(row.id), "document_uploaded", { type: "contractor" }, null, {
-          doc_type: spec.key,
-          replaced: replaced.length,
-        });
+        await cpqLogEvent(
+          conn,
+          Number(row.id),
+          "document_uploaded",
+          { type: "contractor" },
+          null,
+          {
+            doc_type: spec.key,
+            replaced: replaced.length,
+          },
+        );
         return Number(r.insertId);
       });
       await deletePrivateBlobs(replaced);
@@ -6444,14 +8411,29 @@ function registerContractorApplicationRoutes(
     route(async (req, res) => {
       const row = await loadCpqByToken(req.params.token);
       const doc = await loadOwnCpqDoc(row, req.params.docId);
-      const removable = ["draft", "needs_info", "submitted", "in_review"].includes(row.status);
+      const removable = [
+        "draft",
+        "needs_info",
+        "submitted",
+        "in_review",
+      ].includes(row.status);
       if (!removable || doc.status === "accepted") {
         throw new HttpError(409, "errors.applicationLocked");
       }
-      await pool.execute(`DELETE FROM contractor_application_documents WHERE id = ?`, [doc.id]);
-      await cpqLogEvent(pool, Number(row.id), "document_removed", { type: "contractor" }, null, {
-        doc_type: doc.doc_type,
-      });
+      await pool.execute(
+        `DELETE FROM contractor_application_documents WHERE id = ?`,
+        [doc.id],
+      );
+      await cpqLogEvent(
+        pool,
+        Number(row.id),
+        "document_removed",
+        { type: "contractor" },
+        null,
+        {
+          doc_type: doc.doc_type,
+        },
+      );
       await deletePrivateBlobs([String(doc.blob_pathname)]);
       res.json({ ok: true });
     }),
@@ -6467,25 +8449,95 @@ function registerContractorApplicationRoutes(
     }),
   );
 
+  // Membership card (saved during the application; the free period starts on approval).
+  app.get(
+    `${base}/billing`,
+    cpqLimiter,
+    route(async (req, res) => {
+      const row = await loadCpqByToken(req.params.token);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        ok: true,
+        billing: await loadBilling("contractor", Number(row.contractor_id)),
+      });
+    }),
+  );
+
+  app.post(
+    `${base}/billing/setup`,
+    cpqLimiter,
+    route(async (req, res) => {
+      const row = await loadCpqByToken(req.params.token);
+      if (String(row.status) === "denied")
+        throw new HttpError(409, "errors.applicationLocked");
+      res.json({
+        ok: true,
+        client_secret: await createBillingSetup(
+          "contractor",
+          Number(row.contractor_id),
+        ),
+      });
+    }),
+  );
+
+  app.post(
+    `${base}/billing/activate`,
+    cpqLimiter,
+    route(async (req, res) => {
+      const row = await loadCpqByToken(req.params.token);
+      if (String(row.status) === "denied")
+        throw new HttpError(409, "errors.applicationLocked");
+      const id = Number(row.contractor_id);
+      await activateBillingCard(
+        "contractor",
+        id,
+        String(req.body?.setup_intent_id || ""),
+      );
+      res.json({ ok: true, billing: await loadBilling("contractor", id) });
+    }),
+  );
+
   app.post(
     `${base}/submit`,
     cpqLimiter,
     route(async (req, res) => {
       const rawToken = String(req.params.token);
       const row = await loadCpqByToken(rawToken);
-      if (!CPQ_EDITABLE.includes(row.status)) throw new HttpError(409, "errors.applicationLocked");
+      if (!CPQ_EDITABLE.includes(row.status))
+        throw new HttpError(409, "errors.applicationLocked");
+      // Membership card first (nothing is charged until approval).
+      const membership = await loadBilling(
+        "contractor",
+        Number(row.contractor_id),
+      );
+      if (membership.configured && !membership.waived && !membership.card) {
+        throw new HttpError(409, "errors.cardRequiredToSubmit");
+      }
       const b = req.body || {};
-      if (b.certify !== true) throw new HttpError(400, "validation.certifyRequired");
-      const signerName = String(b.signer_name || "").trim().slice(0, 200);
-      const signerTitle = String(b.signer_title || "").trim().slice(0, 120);
+      if (b.certify !== true)
+        throw new HttpError(400, "validation.certifyRequired");
+      const signerName = String(b.signer_name || "")
+        .trim()
+        .slice(0, 200);
+      const signerTitle = String(b.signer_title || "")
+        .trim()
+        .slice(0, 120);
       const signerEmail = normalizeEmail(b.signer_email);
-      const signerPhone = String(b.signer_phone || "").trim().slice(0, 40);
-      if (signerName.length < 2) throw new HttpError(400, "validation.signerNameRequired");
-      if (!signerTitle) throw new HttpError(400, "validation.signerTitleRequired");
-      if (!isValidEmail(signerEmail)) throw new HttpError(400, "validation.emailInvalid");
-      if (signerPhone.replace(/\D/g, "").length < 10) throw new HttpError(400, "validation.phoneMin");
+      const signerPhone = String(b.signer_phone || "")
+        .trim()
+        .slice(0, 40);
+      if (signerName.length < 2)
+        throw new HttpError(400, "validation.signerNameRequired");
+      if (!signerTitle)
+        throw new HttpError(400, "validation.signerTitleRequired");
+      if (!isValidEmail(signerEmail))
+        throw new HttpError(400, "validation.emailInvalid");
+      if (signerPhone.replace(/\D/g, "").length < 10)
+        throw new HttpError(400, "validation.phoneMin");
       const sig = String(b.signature_image || "");
-      const sigMatch = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(sig);
+      const sigMatch = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(
+        sig,
+      );
       const sigBuf = sigMatch ? Buffer.from(sigMatch[1], "base64") : null;
       if (
         !sigBuf ||
@@ -6501,14 +8553,20 @@ function registerContractorApplicationRoutes(
       if (reqs.missing_fields.length) {
         return res
           .status(400)
-          .json({ error: "validation.applicationIncomplete", missing_fields: reqs.missing_fields });
+          .json({
+            error: "validation.applicationIncomplete",
+            missing_fields: reqs.missing_fields,
+          });
       }
       const docs = await loadCpqDocs(Number(row.id));
       const missingCore = cpqOutstandingDocs(reqs, docs, "core");
       if (missingCore.length) {
         return res
           .status(400)
-          .json({ error: "validation.applicationDocsMissing", missing_docs: missingCore });
+          .json({
+            error: "validation.applicationDocsMissing",
+            missing_docs: missingCore,
+          });
       }
       const certText = CPQ_CERTIFICATION_TEXT[lang];
       const resubmitted = row.status === "needs_info";
@@ -6535,10 +8593,16 @@ function registerContractorApplicationRoutes(
             row.id,
           ],
         );
-        if (r.affectedRows !== 1) throw new HttpError(409, "errors.applicationLocked");
-        await cpqLogEvent(conn, Number(row.id), resubmitted ? "resubmitted" : "submitted", {
-          type: "contractor",
-        });
+        if (r.affectedRows !== 1)
+          throw new HttpError(409, "errors.applicationLocked");
+        await cpqLogEvent(
+          conn,
+          Number(row.id),
+          resubmitted ? "resubmitted" : "submitted",
+          {
+            type: "contractor",
+          },
+        );
       });
       const missingAll = cpqOutstandingDocs(reqs, docs, "all");
       const kLang = asLang(row.k_lang);
@@ -6548,10 +8612,14 @@ function registerContractorApplicationRoutes(
           lang: kLang,
           subject: tr(
             kLang,
-            `Application received — ${row.application_number}`,
-            `Solicitud recibida — ${row.application_number}`,
+            `Application received · ${row.application_number}`,
+            `Solicitud recibida · ${row.application_number}`,
           ),
-          headline: tr(kLang, "We received your application.", "Recibimos tu solicitud."),
+          headline: tr(
+            kLang,
+            "We received your application.",
+            "Recibimos tu solicitud.",
+          ),
           paragraphs: [
             tr(
               kLang,
@@ -6565,11 +8633,18 @@ function registerContractorApplicationRoutes(
                     "To finish the review, please upload these documents within 14 days:",
                     "Para terminar la revisión, sube estos documentos dentro de 14 días:",
                   ),
-                  missingAll.map((k) => `• ${cpqDocLabel(kLang, k)}`).join("\n"),
+                  missingAll
+                    .map((k) => `• ${cpqDocLabel(kLang, k)}`)
+                    .join("\n"),
                 ]
               : []),
           ],
-          details: [[tr(kLang, "Application #", "Solicitud #"), String(row.application_number)]],
+          details: [
+            [
+              tr(kLang, "Application #", "Solicitud #"),
+              String(row.application_number),
+            ],
+          ],
           cta: {
             url: cpqApplyUrl(rawToken),
             label: missingAll.length
@@ -6585,7 +8660,11 @@ function registerContractorApplicationRoutes(
           `${resubmitted ? "Prequalification resubmitted" : "New prequalification"} · ${company}`,
           `${resubmitted ? "Precalificación reenviada" : "Nueva precalificación"} · ${company}`,
         ),
-        headline: tr(l, "Contractor application ready for review", "Solicitud de contratista lista para revisión"),
+        headline: tr(
+          l,
+          "Contractor application ready for review",
+          "Solicitud de contratista lista para revisión",
+        ),
         paragraphs: [
           tr(
             l,
@@ -6594,10 +8673,16 @@ function registerContractorApplicationRoutes(
           ),
         ],
         details: [
-          [tr(l, "Application #", "Solicitud #"), String(row.application_number)],
+          [
+            tr(l, "Application #", "Solicitud #"),
+            String(row.application_number),
+          ],
           [tr(l, "Company", "Empresa"), company],
           ["CSLB", data.licensing.cslb_license_number || "—"],
-          [tr(l, "Documents still owed", "Documentos pendientes"), String(missingAll.length)],
+          [
+            tr(l, "Documents still owed", "Documentos pendientes"),
+            String(missingAll.length),
+          ],
         ],
         cta: {
           url: `${APP_URL}/admin/contractors/${row.contractor_id}#application`,
@@ -6642,7 +8727,8 @@ function registerContractorApplicationRoutes(
     route(async (_req, res) => {
       const user = portalUser(res);
       const appRow = await cpqEnsureApplication(pool, user.id);
-      if (appRow.status === "denied") throw new HttpError(409, "errors.applicationLocked");
+      if (appRow.status === "denied")
+        throw new HttpError(409, "errors.applicationLocked");
       const token = await cpqMintToken(pool, appRow.id);
       res.json({ ok: true, path: `/contractor/apply/${token}` });
     }),
@@ -6667,7 +8753,10 @@ function registerContractorApplicationRoutes(
       const settingKey = CPQ_TEMPLATE_KEYS[kind];
       if (!settingKey) throw new HttpError(400, "validation.invalidField");
       const body = req.body;
-      if (!Buffer.isBuffer(body) || detectCpqDocType(body)?.mime !== "application/pdf") {
+      if (
+        !Buffer.isBuffer(body) ||
+        detectCpqDocType(body)?.mime !== "application/pdf"
+      ) {
         throw new HttpError(400, "validation.pdfFile");
       }
       const url = await storePublicBlobFile(
@@ -6684,7 +8773,10 @@ function registerContractorApplicationRoutes(
     "/api/admin/cpq-templates/:kind",
     requireAdmin("approvals"),
     route(async (req, res) => {
-      const settingKey = CPQ_TEMPLATE_KEYS[String(req.params.kind) as keyof typeof CPQ_TEMPLATE_KEYS];
+      const settingKey =
+        CPQ_TEMPLATE_KEYS[
+          String(req.params.kind) as keyof typeof CPQ_TEMPLATE_KEYS
+        ];
       if (!settingKey) throw new HttpError(400, "validation.invalidField");
       await upsertSystemSetting(settingKey, "");
       res.json({ ok: true, templates: await cpqTemplates() });
@@ -6717,14 +8809,24 @@ function registerContractorApplicationRoutes(
       let failed = 0;
       for (const r of rows) {
         try {
-          await sendContractorApplicationLink({ contractorId: Number(r.id), adminId: user.id });
+          await sendContractorApplicationLink({
+            contractorId: Number(r.id),
+            adminId: user.id,
+          });
           sent++;
         } catch (e: any) {
           failed++;
           console.error("[cpq] bulk send failed:", r.id, e?.message ?? e);
         }
       }
-      res.json({ ok: true, dry_run: false, count: total, sent, failed, remaining: Math.max(0, total - sent) });
+      res.json({
+        ok: true,
+        dry_run: false,
+        count: total,
+        sent,
+        failed,
+        remaining: Math.max(0, total - sent),
+      });
     }),
   );
 
@@ -6779,8 +8881,13 @@ function registerContractorApplicationRoutes(
           due_at: cpqIso(row.due_at),
           sent_at: cpqIso(row.sent_at),
           last_reminder_at: cpqIso(row.last_reminder_at),
-          info_request_note: row.info_request_note == null ? null : String(row.info_request_note),
-          info_request_doc_types: parseCpqDocTypes(row.info_request_doc_types_json),
+          info_request_note:
+            row.info_request_note == null
+              ? null
+              : String(row.info_request_note),
+          info_request_doc_types: parseCpqDocTypes(
+            row.info_request_doc_types_json,
+          ),
           signer: {
             signer_name: row.signer_name ?? null,
             signer_title: row.signer_title ?? null,
@@ -6792,16 +8899,22 @@ function registerContractorApplicationRoutes(
             signed_user_agent: row.signed_user_agent ?? null,
           },
           office: {
-            reviewed_by_name: row.reviewer_name ? String(row.reviewer_name).trim() : null,
+            reviewed_by_name: row.reviewer_name
+              ? String(row.reviewer_name).trim()
+              : null,
             reviewed_at: cpqIso(row.reviewed_at),
             license_verified: bit(row.license_verified),
             insurance_verified: bit(row.insurance_verified),
-            decision_notes: row.decision_notes == null ? null : String(row.decision_notes),
+            decision_notes:
+              row.decision_notes == null ? null : String(row.decision_notes),
           },
           created_at: new Date(row.created_at).toISOString(),
         },
         documents: docs.map((d) =>
-          mapCpqDoc(d, !canFinance && !!CPQ_DOC_SPEC_BY_KEY.get(d.doc_type)?.sensitive),
+          mapCpqDoc(
+            d,
+            !canFinance && !!CPQ_DOC_SPEC_BY_KEY.get(d.doc_type)?.sensitive,
+          ),
         ),
         requirements,
         events: events.map((e) => ({
@@ -6831,7 +8944,10 @@ function registerContractorApplicationRoutes(
       );
       const doc = docs[0];
       if (!doc) throw new HttpError(404, "errors.notFound");
-      if (CPQ_DOC_SPEC_BY_KEY.get(doc.doc_type)?.sensitive && !adminCan(user.role, "finance.read")) {
+      if (
+        CPQ_DOC_SPEC_BY_KEY.get(doc.doc_type)?.sensitive &&
+        !adminCan(user.role, "finance.read")
+      ) {
         throw new HttpError(403, "errors.forbidden");
       }
       await redirectToPrivateBlob(res, String(doc.blob_pathname));
@@ -6874,7 +8990,9 @@ function registerContractorApplicationRoutes(
           reviewed_at: cpqIso(row.reviewed_at),
           license_verified: bit(row.license_verified),
           insurance_verified: bit(row.insurance_verified),
-          decision: ["approved", "denied"].includes(String(row.status)) ? String(row.status) : null,
+          decision: ["approved", "denied"].includes(String(row.status))
+            ? String(row.status)
+            : null,
           notes: row.decision_notes ?? null,
         },
         lang,
@@ -6901,9 +9019,12 @@ function registerContractorApplicationRoutes(
         [id],
       );
       if (!k[0]) throw new HttpError(404, "errors.notFound");
-      if (String(k[0].status) === "suspended") throw new HttpError(409, "errors.contractorSuspended");
+      if (String(k[0].status) === "suspended")
+        throw new HttpError(409, "errors.contractorSuspended");
       const existing = await loadAdminCpqRow(id);
-      const st = existing ? (String(existing.status) as ContractorApplicationStatus) : null;
+      const st = existing
+        ? (String(existing.status) as ContractorApplicationStatus)
+        : null;
       if (st === "denied") throw new HttpError(409, "errors.applicationLocked");
       const variant: CpqEmailVariant | undefined =
         st === "needs_info"
@@ -6928,13 +9049,20 @@ function registerContractorApplicationRoutes(
         contractorId: id,
         adminId: user.id,
         variant,
-        note: variant === "info_request" ? existing?.info_request_note ?? null : null,
+        note:
+          variant === "info_request"
+            ? (existing?.info_request_note ?? null)
+            : null,
         docTypes:
           variant === "info_request"
             ? parseCpqDocTypes(existing?.info_request_doc_types_json)
             : docTypes,
       });
-      res.json({ ok: true, application_number: out.applicationNumber, status: out.status });
+      res.json({
+        ok: true,
+        application_number: out.applicationNumber,
+        status: out.status,
+      });
     }),
   );
 
@@ -6957,10 +9085,24 @@ function registerContractorApplicationRoutes(
       updates.reviewed_by_admin_id = user.id;
       updates.reviewed_at = new Date();
       if (String(row.status) === "submitted") updates.status = "in_review";
-      await applyUpdate(pool, "contractor_applications", Number(row.id), updates);
-      await cpqLogEvent(pool, Number(row.id), "review_updated", { type: "admin", adminId: user.id }, null, {
-        fields: Object.keys(updates).filter((k) => !["reviewed_by_admin_id", "reviewed_at"].includes(k)),
-      });
+      await applyUpdate(
+        pool,
+        "contractor_applications",
+        Number(row.id),
+        updates,
+      );
+      await cpqLogEvent(
+        pool,
+        Number(row.id),
+        "review_updated",
+        { type: "admin", adminId: user.id },
+        null,
+        {
+          fields: Object.keys(updates).filter(
+            (k) => !["reviewed_by_admin_id", "reviewed_at"].includes(k),
+          ),
+        },
+      );
       res.json({ ok: true });
     }),
   );
@@ -6976,8 +9118,11 @@ function registerContractorApplicationRoutes(
       if (!["accepted", "rejected", "uploaded"].includes(status)) {
         throw new HttpError(400, "validation.invalidField");
       }
-      const note = req.body?.review_note ? String(req.body.review_note).trim().slice(0, 500) : null;
-      if (status === "rejected" && !note) throw new HttpError(400, "validation.rejectNoteRequired");
+      const note = req.body?.review_note
+        ? String(req.body.review_note).trim().slice(0, 500)
+        : null;
+      if (status === "rejected" && !note)
+        throw new HttpError(400, "validation.rejectNoteRequired");
       const [r] = await pool.execute<ResultSetHeader>(
         `UPDATE contractor_application_documents
          SET status = ?, review_note = ?, reviewed_by_admin_id = ?, reviewed_at = NOW()
@@ -6992,9 +9137,16 @@ function registerContractorApplicationRoutes(
           [user.id, row.id],
         );
       }
-      await cpqLogEvent(pool, Number(row.id), `document_${status}`, { type: "admin", adminId: user.id }, note, {
-        document_id: docId,
-      });
+      await cpqLogEvent(
+        pool,
+        Number(row.id),
+        `document_${status}`,
+        { type: "admin", adminId: user.id },
+        note,
+        {
+          document_id: docId,
+        },
+      );
       res.json({ ok: true });
     }),
   );
@@ -7006,11 +9158,16 @@ function registerContractorApplicationRoutes(
       const user = portalUser(res);
       const contractorId = parseId(req.params.id);
       const row = await requireAdminCpqRow(contractorId);
-      if (!["submitted", "in_review", "needs_info"].includes(String(row.status))) {
+      if (
+        !["submitted", "in_review", "needs_info"].includes(String(row.status))
+      ) {
         throw new HttpError(409, "errors.applicationLocked");
       }
-      const note = String(req.body?.note || "").trim().slice(0, 2000);
-      if (note.length < 5) throw new HttpError(400, "validation.infoRequestNoteRequired");
+      const note = String(req.body?.note || "")
+        .trim()
+        .slice(0, 2000);
+      if (note.length < 5)
+        throw new HttpError(400, "validation.infoRequestNoteRequired");
       const docTypes = parseCpqDocTypeList(req.body?.doc_types);
       const token = await withTx(async (conn) => {
         await conn.execute(
@@ -7021,9 +9178,16 @@ function registerContractorApplicationRoutes(
            WHERE id = ?`,
           [note, JSON.stringify(docTypes), user.id, row.id],
         );
-        await cpqLogEvent(conn, Number(row.id), "info_requested", { type: "admin", adminId: user.id }, note, {
-          doc_types: docTypes,
-        });
+        await cpqLogEvent(
+          conn,
+          Number(row.id),
+          "info_requested",
+          { type: "admin", adminId: user.id },
+          note,
+          {
+            doc_types: docTypes,
+          },
+        );
         return cpqMintToken(conn, Number(row.id));
       });
       await sendCpqLinkEmail({
@@ -7051,14 +9215,25 @@ function registerContractorApplicationRoutes(
       if (decision !== "approved" && decision !== "denied") {
         throw new HttpError(400, "validation.invalidField");
       }
-      if (!["submitted", "in_review", "needs_info"].includes(String(row.status))) {
+      if (
+        !["submitted", "in_review", "needs_info"].includes(String(row.status))
+      ) {
         throw new HttpError(409, "errors.applicationLocked");
       }
-      const notes = String(req.body?.notes || "").trim().slice(0, 5000) || null;
-      const message = String(req.body?.message || "").trim().slice(0, 2000) || null;
+      const notes =
+        String(req.body?.notes || "")
+          .trim()
+          .slice(0, 5000) || null;
+      const message =
+        String(req.body?.message || "")
+          .trim()
+          .slice(0, 2000) || null;
       let missing: ContractorApplicationDocType[] = [];
       if (decision === "approved") {
-        if (Number(row.license_verified) !== 1 || Number(row.insurance_verified) !== 1) {
+        if (
+          Number(row.license_verified) !== 1 ||
+          Number(row.insurance_verified) !== 1
+        ) {
           throw new HttpError(409, "errors.applicationVerifyFirst");
         }
         const data = parseCpqData(row.data_json);
@@ -7067,13 +9242,23 @@ function registerContractorApplicationRoutes(
           await loadCpqDocs(Number(row.id)),
           "all",
         );
-        if (missing.length && !(req.body?.allow_missing === true && (notes?.length ?? 0) >= 5)) {
-          return res.status(409).json({ error: "errors.applicationDocsMissing", missing_docs: missing });
+        if (
+          missing.length &&
+          !(req.body?.allow_missing === true && (notes?.length ?? 0) >= 5)
+        ) {
+          return res
+            .status(409)
+            .json({
+              error: "errors.applicationDocsMissing",
+              missing_docs: missing,
+            });
         }
       }
       const kStatus = String(row.k_status);
-      const activate = decision === "approved" && ["pending", "invited"].includes(kStatus);
-      const deactivate = decision === "denied" && ["pending", "invited"].includes(kStatus);
+      const activate =
+        decision === "approved" && ["pending", "invited"].includes(kStatus);
+      const deactivate =
+        decision === "denied" && ["pending", "invited"].includes(kStatus);
       await withTx(async (conn) => {
         await conn.execute(
           `UPDATE contractor_applications
@@ -7095,19 +9280,38 @@ function registerContractorApplicationRoutes(
           );
         }
         if (deactivate) {
-          await conn.execute(`UPDATE contractors SET status = 'inactive' WHERE id = ?`, [contractorId]);
+          await conn.execute(
+            `UPDATE contractors SET status = 'inactive' WHERE id = ?`,
+            [contractorId],
+          );
         }
-        await cpqLogEvent(conn, Number(row.id), decision, { type: "admin", adminId: user.id }, notes, {
-          ...(missing.length ? { approved_with_missing: missing } : {}),
-          contractor_status: activate ? "active" : deactivate ? "inactive" : kStatus,
-        });
+        await cpqLogEvent(
+          conn,
+          Number(row.id),
+          decision,
+          { type: "admin", adminId: user.id },
+          notes,
+          {
+            ...(missing.length ? { approved_with_missing: missing } : {}),
+            contractor_status: activate
+              ? "active"
+              : deactivate
+                ? "inactive"
+                : kStatus,
+          },
+        );
       });
+      // Membership: the free period starts now; a denied applicant's card is released.
+      if (decision === "approved")
+        await startBillingOnApproval("contractor", contractorId);
+      else await releaseBillingCard("contractor", contractorId);
       const lang = asLang(row.k_lang);
       if (activate) {
         await sendContractorApprovedEmail({
           email: String(row.k_email),
           first_name: String(row.k_first || ""),
           preferred_language: row.k_lang,
+          id: contractorId,
         });
       } else {
         const approved = decision === "approved";
@@ -7116,8 +9320,16 @@ function registerContractorApplicationRoutes(
           tplPortalNotice({
             lang,
             subject: approved
-              ? tr(lang, "Your Groundwork prequalification is approved", "Tu precalificación Groundwork está aprobada")
-              : tr(lang, "Update on your Groundwork application", "Actualización sobre tu solicitud Groundwork"),
+              ? tr(
+                  lang,
+                  "Your Groundwork prequalification is approved",
+                  "Tu precalificación Groundwork está aprobada",
+                )
+              : tr(
+                  lang,
+                  "Update on your Groundwork application",
+                  "Actualización sobre tu solicitud Groundwork",
+                ),
             headline: approved
               ? tr(lang, "You're prequalified.", "Estás precalificado.")
               : tr(lang, "Thank you for applying.", "Gracias por aplicar."),
@@ -7125,8 +9337,8 @@ function registerContractorApplicationRoutes(
               approved
                 ? tr(
                     lang,
-                    `Hi ${row.k_first}, your prequalification ${row.application_number} is approved. Keep your license, bond and insurance current — we'll remind you before anything expires.`,
-                    `Hola ${row.k_first}, tu precalificación ${row.application_number} está aprobada. Mantén vigentes tu licencia, fianza y seguros — te recordaremos antes de que algo venza.`,
+                    `Hi ${row.k_first}, your prequalification ${row.application_number} is approved. Keep your license, bond and insurance current. We'll remind you before anything expires.`,
+                    `Hola ${row.k_first}, tu precalificación ${row.application_number} está aprobada. Mantén vigentes tu licencia, fianza y seguros. Te recordaremos antes de que algo venza.`,
                   )
                 : tr(
                     lang,
@@ -7139,7 +9351,11 @@ function registerContractorApplicationRoutes(
               ? {
                   cta: {
                     url: `${APP_URL}/contractor/login`,
-                    label: tr(lang, "Open contractor portal", "Abrir portal de contratistas"),
+                    label: tr(
+                      lang,
+                      "Open contractor portal",
+                      "Abrir portal de contratistas",
+                    ),
                   },
                 }
               : {}),
@@ -7149,7 +9365,11 @@ function registerContractorApplicationRoutes(
       res.json({
         ok: true,
         status: decision,
-        contractor_status: activate ? "active" : deactivate ? "inactive" : kStatus,
+        contractor_status: activate
+          ? "active"
+          : deactivate
+            ? "inactive"
+            : kStatus,
       });
     }),
   );
@@ -7161,9 +9381,13 @@ function registerContractorApplicationRoutes(
       const user = portalUser(res);
       const contractorId = parseId(req.params.id);
       const row = await requireAdminCpqRow(contractorId);
-      if (String(row.status) === "draft") throw new HttpError(409, "errors.applicationLocked");
-      const note = String(req.body?.note || "").trim().slice(0, 2000);
-      if (note.length < 5) throw new HttpError(400, "validation.infoRequestNoteRequired");
+      if (String(row.status) === "draft")
+        throw new HttpError(409, "errors.applicationLocked");
+      const note = String(req.body?.note || "")
+        .trim()
+        .slice(0, 2000);
+      if (note.length < 5)
+        throw new HttpError(400, "validation.infoRequestNoteRequired");
       const token = await withTx(async (conn) => {
         await conn.execute(
           `UPDATE contractor_applications
@@ -7176,12 +9400,25 @@ function registerContractorApplicationRoutes(
            WHERE id = ?`,
           [note, row.id],
         );
-        if (String(row.status) === "denied" && String(row.k_status) === "inactive") {
-          await conn.execute(`UPDATE contractors SET status = 'pending' WHERE id = ?`, [contractorId]);
+        if (
+          String(row.status) === "denied" &&
+          String(row.k_status) === "inactive"
+        ) {
+          await conn.execute(
+            `UPDATE contractors SET status = 'pending' WHERE id = ?`,
+            [contractorId],
+          );
         }
-        await cpqLogEvent(conn, Number(row.id), "reopened", { type: "admin", adminId: user.id }, note, {
-          from: String(row.status),
-        });
+        await cpqLogEvent(
+          conn,
+          Number(row.id),
+          "reopened",
+          { type: "admin", adminId: user.id },
+          note,
+          {
+            from: String(row.status),
+          },
+        );
         return cpqMintToken(conn, Number(row.id));
       });
       await sendCpqLinkEmail({
@@ -7202,7 +9439,10 @@ function registerContractorApplicationRoutes(
   const cron = async (req: Request, res: Response) => {
     try {
       const secret = String(process.env.CRON_SECRET || "").trim();
-      if (!secret || String(req.headers.authorization || "") !== `Bearer ${secret}`) {
+      if (
+        !secret ||
+        String(req.headers.authorization || "") !== `Bearer ${secret}`
+      ) {
         return res.status(401).json({ error: "errors.unauthorized" });
       }
       // Tests scope the sweep to their own fixtures (shared DB).
@@ -7210,7 +9450,10 @@ function registerContractorApplicationRoutes(
         process.env.VITEST === "true" && req.query.email_prefix
           ? String(req.query.email_prefix)
           : null;
-      res.json({ ok: true, ...(await runContractorApplicationCron(new Date(), emailPrefix)) });
+      res.json({
+        ok: true,
+        ...(await runContractorApplicationCron(new Date(), emailPrefix)),
+      });
     } catch (e: any) {
       console.error("[cron.contractor-applications] failed:", e?.message ?? e);
       res.status(500).json({ error: "errors.server" });
@@ -7224,11 +9467,17 @@ function registerContractorApplicationRoutes(
 const CPQ_DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Daily compliance sweep (idempotent; each step caps its batch). */
-async function runContractorApplicationCron(now = new Date(), emailPrefix: string | null = null) {
+async function runContractorApplicationCron(
+  now = new Date(),
+  emailPrefix: string | null = null,
+) {
   const out = { reminders: 0, missing_docs: 0, overdue: 0, expiring: 0 };
   const scopeSql = emailPrefix ? " AND k.email LIKE ?" : "";
-  const scope = emailPrefix ? [`${emailPrefix.replace(/[%_\\]/g, "\\$&")}%`] : [];
-  const daysSince = (v: unknown) => (now.getTime() - new Date(v as string).getTime()) / CPQ_DAY_MS;
+  const scope = emailPrefix
+    ? [`${emailPrefix.replace(/[%_\\]/g, "\\$&")}%`]
+    : [];
+  const daysSince = (v: unknown) =>
+    (now.getTime() - new Date(v as string).getTime()) / CPQ_DAY_MS;
   const templates = await cpqTemplates();
 
   // 1) Draft / needs-info reminders.
@@ -7290,9 +9539,16 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
       `UPDATE contractor_applications SET reminder_count = reminder_count + 1, last_reminder_at = ? WHERE id = ?`,
       [now, a.id],
     );
-    await cpqLogEvent(pool, Number(a.id), "missing_docs_reminder", { type: "system" }, null, {
-      doc_types: missing,
-    });
+    await cpqLogEvent(
+      pool,
+      Number(a.id),
+      "missing_docs_reminder",
+      { type: "system" },
+      null,
+      {
+        doc_types: missing,
+      },
+    );
     await sendCpqLinkEmail({
       to: String(a.email),
       first: String(a.first_name || ""),
@@ -7316,15 +9572,25 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
     [now, ...scope],
   );
   for (const a of overdue) {
-    await pool.execute(`UPDATE contractor_applications SET overdue_notified_at = ? WHERE id = ?`, [
-      now,
-      a.id,
-    ]);
-    await cpqLogEvent(pool, Number(a.id), "overdue_flagged", { type: "system" });
+    await pool.execute(
+      `UPDATE contractor_applications SET overdue_notified_at = ? WHERE id = ?`,
+      [now, a.id],
+    );
+    await cpqLogEvent(pool, Number(a.id), "overdue_flagged", {
+      type: "system",
+    });
     const who = String(a.company || `${a.first_name} ${a.last_name}`);
     await notifyStaff("contractor_compliance_alert", (l) => ({
-      subject: tr(l, `Prequalification overdue · ${who}`, `Precalificación vencida · ${who}`),
-      headline: tr(l, "Contractor missed the prequalification deadline", "Contratista no cumplió la fecha de precalificación"),
+      subject: tr(
+        l,
+        `Prequalification overdue · ${who}`,
+        `Precalificación vencida · ${who}`,
+      ),
+      headline: tr(
+        l,
+        "Contractor missed the prequalification deadline",
+        "Contratista no cumplió la fecha de precalificación",
+      ),
       paragraphs: [
         tr(
           l,
@@ -7332,7 +9598,9 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
           "El acceso al portal no cambió. Da seguimiento o suspende desde el registro del contratista si es necesario.",
         ),
       ],
-      details: [[tr(l, "Application #", "Solicitud #"), String(a.application_number)]],
+      details: [
+        [tr(l, "Application #", "Solicitud #"), String(a.application_number)],
+      ],
       cta: {
         url: `${APP_URL}/admin/contractors/${a.contractor_id}#application`,
         label: tr(l, "Open contractor", "Abrir contratista"),
@@ -7342,7 +9610,9 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
   }
 
   // 4) Expiring license / bond / insurance documents on approved files.
-  const horizon = new Date(now.getTime() + CPQ_EXPIRY_THRESHOLDS[0] * CPQ_DAY_MS)
+  const horizon = new Date(
+    now.getTime() + CPQ_EXPIRY_THRESHOLDS[0] * CPQ_DAY_MS,
+  )
     .toISOString()
     .slice(0, 10);
   const [expiring] = await pool.execute<RowDataPacket[]>(
@@ -7358,16 +9628,40 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
      ORDER BY d.expires_on ASC LIMIT 300`,
     [horizon, ...scope],
   );
-  const byApp = new Map<number, { row: RowDataPacket; items: Array<{ id: number; doc_type: string; expires_on: string; threshold: number }> }>();
+  const byApp = new Map<
+    number,
+    {
+      row: RowDataPacket;
+      items: Array<{
+        id: number;
+        doc_type: string;
+        expires_on: string;
+        threshold: number;
+      }>;
+    }
+  >();
   for (const d of expiring) {
     const exp = cpqDateOnly(d.expires_on) as string;
-    const daysLeft = Math.floor((new Date(`${exp}T00:00:00Z`).getTime() - now.getTime()) / CPQ_DAY_MS);
+    const daysLeft = Math.floor(
+      (new Date(`${exp}T00:00:00Z`).getTime() - now.getTime()) / CPQ_DAY_MS,
+    );
     // Smallest threshold already crossed; skip when that threshold was already sent.
-    const threshold = [...CPQ_EXPIRY_THRESHOLDS].reverse().find((t) => daysLeft <= t);
+    const threshold = [...CPQ_EXPIRY_THRESHOLDS]
+      .reverse()
+      .find((t) => daysLeft <= t);
     if (threshold === undefined) continue;
-    if (d.expiry_reminded_days != null && Number(d.expiry_reminded_days) <= threshold) continue;
+    if (
+      d.expiry_reminded_days != null &&
+      Number(d.expiry_reminded_days) <= threshold
+    )
+      continue;
     const g = byApp.get(Number(d.app_id)) || { row: d, items: [] };
-    g.items.push({ id: Number(d.id), doc_type: String(d.doc_type), expires_on: exp, threshold });
+    g.items.push({
+      id: Number(d.id),
+      doc_type: String(d.doc_type),
+      expires_on: exp,
+      threshold,
+    });
     byApp.set(Number(d.app_id), g);
   }
   for (const [appId, g] of byApp) {
@@ -7378,9 +9672,16 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
       );
     }
     const token = await cpqMintToken(pool, appId);
-    await cpqLogEvent(pool, appId, "expiry_reminder", { type: "system" }, null, {
-      doc_types: g.items.map((i) => i.doc_type),
-    });
+    await cpqLogEvent(
+      pool,
+      appId,
+      "expiry_reminder",
+      { type: "system" },
+      null,
+      {
+        doc_types: g.items.map((i) => i.doc_type),
+      },
+    );
     await sendCpqLinkEmail({
       to: String(g.row.email),
       first: String(g.row.first_name || ""),
@@ -7391,14 +9692,24 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
       expiring: g.items,
     });
     if (g.items.some((i) => i.threshold === 0)) {
-      const who = String(g.row.company || `${g.row.first_name} ${g.row.last_name}`);
+      const who = String(
+        g.row.company || `${g.row.first_name} ${g.row.last_name}`,
+      );
       await notifyStaff("contractor_compliance_alert", (l) => ({
-        subject: tr(l, `Contractor document expired · ${who}`, `Documento de contratista vencido · ${who}`),
-        headline: tr(l, "License, bond or insurance on file has expired", "Licencia, fianza o seguro registrado venció"),
+        subject: tr(
+          l,
+          `Contractor document expired · ${who}`,
+          `Documento de contratista vencido · ${who}`,
+        ),
+        headline: tr(
+          l,
+          "License, bond or insurance on file has expired",
+          "Licencia, fianza o seguro registrado venció",
+        ),
         paragraphs: [
           g.items
             .filter((i) => i.threshold === 0)
-            .map((i) => `• ${cpqDocLabel(l, i.doc_type)} — ${i.expires_on}`)
+            .map((i) => `• ${cpqDocLabel(l, i.doc_type)} · ${i.expires_on}`)
             .join("\n"),
         ],
         cta: {
@@ -7414,13 +9725,21 @@ async function runContractorApplicationCron(now = new Date(), emailPrefix: strin
 
 // ─── Duplicates review: queue, merge, delete, dismiss, link ────────────────
 
-const DEDUPE_TABLE: Record<DedupeEntity, "leads" | "clients" | "affiliates" | "contractors"> = {
+const DEDUPE_TABLE: Record<
+  DedupeEntity,
+  "leads" | "clients" | "affiliates" | "contractors"
+> = {
   lead: "leads",
   client: "clients",
   affiliate: "affiliates",
   contractor: "contractors",
 };
-const DEDUPE_ENTITIES: DedupeEntity[] = ["lead", "client", "affiliate", "contractor"];
+const DEDUPE_ENTITIES: DedupeEntity[] = [
+  "lead",
+  "client",
+  "affiliate",
+  "contractor",
+];
 /** Projects that never left the pipeline's first step and hold nothing — safe to drop with their client. */
 const EMPTY_PROJECT_SQL = `p.milestone IN ('lead', 'cancelled')
   AND NOT EXISTS (SELECT 1 FROM affiliate_commissions ac WHERE ac.project_id = p.id)
@@ -7428,7 +9747,11 @@ const EMPTY_PROJECT_SQL = `p.milestone IN ('lead', 'cancelled')
   AND NOT EXISTS (SELECT 1 FROM project_contracts pc WHERE pc.project_id = p.id)
   AND NOT EXISTS (SELECT 1 FROM project_photos ph WHERE ph.project_id = p.id)`;
 
-async function countSql(exec: Pool | PoolConnection, sql: string, params: unknown[]): Promise<number> {
+async function countSql(
+  exec: Pool | PoolConnection,
+  sql: string,
+  params: unknown[],
+): Promise<number> {
   const [rows] = await exec.execute<RowDataPacket[]>(sql, params as any[]);
   return Number(rows[0]?.n || 0);
 }
@@ -7441,49 +9764,83 @@ export async function dedupeLinksAndBlockers(
 ): Promise<{ links: Record<string, number>; delete_blockers: string[] }> {
   const links: Record<string, number> = {};
   const blockers: string[] = [];
-  const c = (sql: string, params: unknown[] = [id]) => countSql(exec, sql, params);
+  const c = (sql: string, params: unknown[] = [id]) =>
+    countSql(exec, sql, params);
   if (entity === "lead") {
-    links.projects = await c(`SELECT COUNT(*) n FROM projects WHERE lead_id = ?`);
+    links.projects = await c(
+      `SELECT COUNT(*) n FROM projects WHERE lead_id = ?`,
+    );
     links.clients = await c(`SELECT COUNT(*) n FROM clients WHERE lead_id = ?`);
     return { links, delete_blockers: blockers };
   }
   if (entity === "client") {
-    links.projects = await c(`SELECT COUNT(*) n FROM projects WHERE client_id = ?`);
-    links.conversations = await c(`SELECT COUNT(*) n FROM conversations WHERE client_id = ?`);
+    links.projects = await c(
+      `SELECT COUNT(*) n FROM projects WHERE client_id = ?`,
+    );
+    links.conversations = await c(
+      `SELECT COUNT(*) n FROM conversations WHERE client_id = ?`,
+    );
     links.leads = await c(`SELECT COUNT(*) n FROM leads WHERE client_id = ?`);
-    const active = await c(`SELECT COUNT(*) n FROM projects p WHERE p.client_id = ? AND NOT (${EMPTY_PROJECT_SQL})`);
+    const active = await c(
+      `SELECT COUNT(*) n FROM projects p WHERE p.client_id = ? AND NOT (${EMPTY_PROJECT_SQL})`,
+    );
     if (active) blockers.push("projects_in_progress");
     if (links.conversations) blockers.push("conversations");
     return { links, delete_blockers: blockers };
   }
   if (entity === "affiliate") {
     links.projects = await c(
-      `SELECT COUNT(*) n FROM projects WHERE affiliate_id = ? OR closer_affiliate_id = ? OR parent_affiliate_id = ?`,
-      [id, id, id],
+      `SELECT COUNT(*) n FROM projects WHERE affiliate_id = ? OR closer_affiliate_id = ? OR parent_affiliate_id = ? OR grandparent_affiliate_id = ?`,
+      [id, id, id, id],
     );
-    links.commissions = await c(`SELECT COUNT(*) n FROM affiliate_commissions WHERE affiliate_id = ?`);
-    links.referred_clients = await c(`SELECT COUNT(*) n FROM clients WHERE affiliate_id = ?`);
-    links.sub_affiliates = await c(`SELECT COUNT(*) n FROM affiliates WHERE parent_affiliate_id = ?`);
-    links.leads = await c(`SELECT COUNT(*) n FROM leads WHERE affiliate_id = ? OR converted_affiliate_id = ?`, [id, id]);
+    links.commissions = await c(
+      `SELECT COUNT(*) n FROM affiliate_commissions WHERE affiliate_id = ?`,
+    );
+    links.referred_clients = await c(
+      `SELECT COUNT(*) n FROM clients WHERE affiliate_id = ?`,
+    );
+    links.sub_affiliates = await c(
+      `SELECT COUNT(*) n FROM affiliates WHERE parent_affiliate_id = ?`,
+    );
+    links.agreements = await c(
+      `SELECT COUNT(*) n FROM affiliate_agreements WHERE affiliate_id = ?`,
+    );
+    links.w9s = await c(
+      `SELECT COUNT(*) n FROM affiliate_w9s WHERE affiliate_id = ?`,
+    );
+    links.leads = await c(
+      `SELECT COUNT(*) n FROM leads WHERE affiliate_id = ? OR converted_affiliate_id = ?`,
+      [id, id],
+    );
     if (links.projects) blockers.push("projects");
     if (links.commissions) blockers.push("commissions");
     if (links.referred_clients) blockers.push("referred_clients");
     if (links.sub_affiliates) blockers.push("sub_affiliates");
+    // Never cascade-delete a signed agreement or W-9 (merge keeps them instead).
+    if (links.agreements || links.w9s) blockers.push("signed_documents");
     return { links, delete_blockers: blockers };
   }
-  links.projects = await c(`SELECT COUNT(*) n FROM projects WHERE contractor_id = ?`);
-  links.draws = await c(`SELECT COUNT(*) n FROM draw_requests WHERE contractor_id = ?`);
+  links.projects = await c(
+    `SELECT COUNT(*) n FROM projects WHERE contractor_id = ?`,
+  );
+  links.draws = await c(
+    `SELECT COUNT(*) n FROM draw_requests WHERE contractor_id = ?`,
+  );
   links.applications = await c(
     `SELECT COUNT(*) n FROM contractor_applications WHERE contractor_id = ? AND status <> 'draft'`,
   );
-  links.leads = await c(`SELECT COUNT(*) n FROM leads WHERE converted_contractor_id = ?`);
+  links.leads = await c(
+    `SELECT COUNT(*) n FROM leads WHERE converted_contractor_id = ?`,
+  );
   if (links.projects) blockers.push("projects");
   if (links.draws) blockers.push("draws");
   if (links.applications) blockers.push("prequalification");
   return { links, delete_blockers: blockers };
 }
 
-type DedupeNode = Omit<DuplicateMember, "links" | "delete_blockers"> & { keys: string[] };
+type DedupeNode = Omit<DuplicateMember, "links" | "delete_blockers"> & {
+  keys: string[];
+};
 
 /** Pure: group records sharing an email or phone into review clusters (union-find). */
 export function buildDuplicateClusters(
@@ -7522,7 +9879,9 @@ export function buildDuplicateClusters(
     const root = find(`${n.entity}:${n.id}`);
     groups.set(root, [...(groups.get(root) || []), n]);
   }
-  const out: Array<Omit<DuplicateCluster, "members"> & { members: DedupeNode[] }> = [];
+  const out: Array<
+    Omit<DuplicateCluster, "members"> & { members: DedupeNode[] }
+  > = [];
   for (const members of groups.values()) {
     if (members.length < 2) continue;
     const people = members.filter((m) => m.entity !== "lead");
@@ -7537,19 +9896,32 @@ export function buildDuplicateClusters(
       // One person + one lead: fine when the lead already points at that person.
       const p = people[0];
       const l = leads[0];
-      if (l.linked && l.linked.entity === p.entity && l.linked.id === p.id) continue;
+      if (l.linked && l.linked.entity === p.entity && l.linked.id === p.id)
+        continue;
       kind = "lead_of_person";
     }
-    const signature = dedupeSignature(members.map((m) => `${m.entity}:${m.id}`));
+    const signature = dedupeSignature(
+      members.map((m) => `${m.entity}:${m.id}`),
+    );
     if (dismissed.has(signature)) continue;
     const keyCount = new Map<string, number>();
-    for (const m of members) for (const k of m.keys) keyCount.set(k, (keyCount.get(k) || 0) + 1);
-    const order: Record<DedupeEntity, number> = { client: 0, affiliate: 1, contractor: 2, lead: 3 };
+    for (const m of members)
+      for (const k of m.keys) keyCount.set(k, (keyCount.get(k) || 0) + 1);
+    const order: Record<DedupeEntity, number> = {
+      client: 0,
+      affiliate: 1,
+      contractor: 2,
+      lead: 3,
+    };
     out.push({
       signature,
       kind,
-      match_keys: [...keyCount.entries()].filter(([, n]) => n > 1).map(([k]) => k),
-      members: [...members].sort((a, b) => order[a.entity] - order[b.entity] || a.id - b.id),
+      match_keys: [...keyCount.entries()]
+        .filter(([, n]) => n > 1)
+        .map(([k]) => k),
+      members: [...members].sort(
+        (a, b) => order[a.entity] - order[b.entity] || a.id - b.id,
+      ),
     });
   }
   const rank: Record<DuplicateCluster["kind"], number> = {
@@ -7629,7 +10001,9 @@ async function loadDedupeNodes(): Promise<DedupeNode[]> {
 }
 
 async function loadDuplicateClusters(): Promise<DuplicateCluster[]> {
-  const [dis] = await pool.query<RowDataPacket[]>(`SELECT signature FROM people_dedupe_dismissals`);
+  const [dis] = await pool.query<RowDataPacket[]>(
+    `SELECT signature FROM people_dedupe_dismissals`,
+  );
   const clusters = buildDuplicateClusters(
     await loadDedupeNodes(),
     new Set(dis.map((d) => String(d.signature))),
@@ -7645,7 +10019,11 @@ async function loadDuplicateClusters(): Promise<DuplicateCluster[]> {
   return out;
 }
 
-async function loadDedupeRow(entity: DedupeEntity, id: number, exec: Pool | PoolConnection = pool) {
+async function loadDedupeRow(
+  entity: DedupeEntity,
+  id: number,
+  exec: Pool | PoolConnection = pool,
+) {
   const [rows] = await exec.execute<RowDataPacket[]>(
     `SELECT * FROM \`${DEDUPE_TABLE[entity]}\` WHERE id = ? LIMIT 1 FOR UPDATE`,
     [id],
@@ -7654,7 +10032,8 @@ async function loadDedupeRow(entity: DedupeEntity, id: number, exec: Pool | Pool
   return rows[0];
 }
 
-const appendNote = (a: unknown, b: string) => [a ? String(a) : "", b].filter(Boolean).join("\n").slice(0, 60000);
+const appendNote = (a: unknown, b: string) =>
+  [a ? String(a) : "", b].filter(Boolean).join("\n").slice(0, 60000);
 
 /**
  * Merge `removeId` into `keepId` (same entity): move every reference, fill the
@@ -7668,7 +10047,11 @@ export async function mergeDuplicateRecords(opts: {
   adminId: number;
   reason?: string | null;
   dryRun?: boolean;
-}): Promise<{ moves: Record<string, number>; blockers: string[]; warnings: string[] }> {
+}): Promise<{
+  moves: Record<string, number>;
+  blockers: string[];
+  warnings: string[];
+}> {
   const { entity, keepId, removeId } = opts;
   if (keepId === removeId) throw new HttpError(400, "validation.invalidField");
   return withTx(async (conn) => {
@@ -7680,10 +10063,19 @@ export async function mergeDuplicateRecords(opts: {
     // [table.column, sql] — sql is an UPDATE moving removeId → keepId.
     const plan: Array<[string, string, unknown[]]> = [];
     const mv = (label: string, table: string, col: string, extraWhere = "") =>
-      plan.push([label, `UPDATE \`${table}\` SET \`${col}\` = ? WHERE \`${col}\` = ?${extraWhere}`, [keepId, removeId]]);
+      plan.push([
+        label,
+        `UPDATE \`${table}\` SET \`${col}\` = ? WHERE \`${col}\` = ?${extraWhere}`,
+        [keepId, removeId],
+      ]);
     const fill: Record<string, unknown> = {};
     const fillBlank = (col: string) => {
-      if ((keep[col] == null || keep[col] === "") && rm[col] != null && rm[col] !== "") fill[col] = rm[col];
+      if (
+        (keep[col] == null || keep[col] === "") &&
+        rm[col] != null &&
+        rm[col] !== ""
+      )
+        fill[col] = rm[col];
     };
     let recipientKind: "leads" | "affiliates" | "contractors" | null = null;
 
@@ -7691,32 +10083,114 @@ export async function mergeDuplicateRecords(opts: {
       mv("projects.lead_id", "projects", "lead_id");
       mv("clients.lead_id", "clients", "lead_id");
       recipientKind = "leads";
-      for (const col of ["first_name", "last_name", "property_address", "affiliate_id", "referral_code", "client_id", "converted_affiliate_id", "converted_contractor_id", "audience_tag"]) fillBlank(col);
-      fill.submission_count = Number(keep.submission_count || 1) + Number(rm.submission_count || 1);
-      fill.soft_pull_consent = Math.max(Number(keep.soft_pull_consent || 0), Number(rm.soft_pull_consent || 0));
-      fill.sms_marketing_consent = Math.max(Number(keep.sms_marketing_consent || 0), Number(rm.sms_marketing_consent || 0));
-      fill.notes = appendNote(keep.notes, `[merged lead #${removeId} · ${rm.source || "?"} · ${new Date(rm.created_at).toISOString().slice(0, 10)}] ${rm.full_name} · ${rm.email} · ${rm.phone}${rm.notes ? ` — ${rm.notes}` : ""}`);
-      if (keep.event_id == null && rm.event_id != null) blockers.push("event_rsvp");
+      for (const col of [
+        "first_name",
+        "last_name",
+        "property_address",
+        "affiliate_id",
+        "referral_code",
+        "client_id",
+        "converted_affiliate_id",
+        "converted_contractor_id",
+        "audience_tag",
+      ])
+        fillBlank(col);
+      fill.submission_count =
+        Number(keep.submission_count || 1) + Number(rm.submission_count || 1);
+      fill.soft_pull_consent = Math.max(
+        Number(keep.soft_pull_consent || 0),
+        Number(rm.soft_pull_consent || 0),
+      );
+      fill.sms_marketing_consent = Math.max(
+        Number(keep.sms_marketing_consent || 0),
+        Number(rm.sms_marketing_consent || 0),
+      );
+      fill.notes = appendNote(
+        keep.notes,
+        `[merged lead #${removeId} · ${rm.source || "?"} · ${new Date(rm.created_at).toISOString().slice(0, 10)}] ${rm.full_name} · ${rm.email} · ${rm.phone}${rm.notes ? ` — ${rm.notes}` : ""}`,
+      );
+      if (keep.event_id == null && rm.event_id != null)
+        blockers.push("event_rsvp");
     } else if (entity === "client") {
       mv("projects.client_id", "projects", "client_id");
-      mv("affiliate_commissions.client_id", "affiliate_commissions", "client_id");
+      mv(
+        "affiliate_commissions.client_id",
+        "affiliate_commissions",
+        "client_id",
+      );
       mv("leads.client_id", "leads", "client_id");
       mv("contacts.converted_client_id", "contacts", "converted_client_id");
-      mv("conversation_unknown_contacts.linked_client_id", "conversation_unknown_contacts", "linked_client_id");
+      mv(
+        "conversation_unknown_contacts.linked_client_id",
+        "conversation_unknown_contacts",
+        "linked_client_id",
+      );
       mv("conversations.client_id", "conversations", "client_id");
-      for (const col of ["email", "phone", "address_line1", "address_line2", "city", "state", "zip", "affiliate_id", "assigned_admin_id", "lead_id", "avatar_url", "email_verified_at"]) fillBlank(col);
-      fill.admin_notes = appendNote(keep.admin_notes, `[merged client #${removeId} · ${rm.first_name} ${rm.last_name} · ${rm.email || "no email"} · ${rm.phone || "no phone"}]${rm.admin_notes ? ` ${rm.admin_notes}` : ""}`);
-      if (keep.email && rm.email && normalizeEmail(keep.email) !== normalizeEmail(rm.email)) {
+      for (const col of [
+        "email",
+        "phone",
+        "address_line1",
+        "address_line2",
+        "city",
+        "state",
+        "zip",
+        "affiliate_id",
+        "assigned_admin_id",
+        "lead_id",
+        "avatar_url",
+        "email_verified_at",
+      ])
+        fillBlank(col);
+      fill.admin_notes = appendNote(
+        keep.admin_notes,
+        `[merged client #${removeId} · ${rm.first_name} ${rm.last_name} · ${rm.email || "no email"} · ${rm.phone || "no phone"}]${rm.admin_notes ? ` ${rm.admin_notes}` : ""}`,
+      );
+      if (
+        keep.email &&
+        rm.email &&
+        normalizeEmail(keep.email) !== normalizeEmail(rm.email)
+      ) {
         warnings.push("removed_email_login_stops");
       }
     } else if (entity === "affiliate") {
-      for (const col of ["affiliate_id", "closer_affiliate_id", "parent_affiliate_id"]) mv(`projects.${col}`, "projects", col);
+      for (const col of [
+        "affiliate_id",
+        "closer_affiliate_id",
+        "parent_affiliate_id",
+        "grandparent_affiliate_id",
+      ])
+        mv(`projects.${col}`, "projects", col);
+      // Signed agreements / W-9s are legal records: keep them with the survivor.
+      mv(
+        "affiliate_agreements.affiliate_id",
+        "affiliate_agreements",
+        "affiliate_id",
+      );
+      mv(
+        "affiliate_agreements.sponsor_affiliate_id",
+        "affiliate_agreements",
+        "sponsor_affiliate_id",
+      );
+      mv("affiliate_w9s.affiliate_id", "affiliate_w9s", "affiliate_id");
       mv("clients.affiliate_id", "clients", "affiliate_id");
       mv("leads.affiliate_id", "leads", "affiliate_id");
       mv("leads.converted_affiliate_id", "leads", "converted_affiliate_id");
-      mv("affiliates.parent_affiliate_id", "affiliates", "parent_affiliate_id", ` AND id <> ${Number(keepId)}`);
-      mv("affiliate_link_clicks.affiliate_id", "affiliate_link_clicks", "affiliate_id");
-      mv("affiliate_commissions.affiliate_id", "affiliate_commissions", "affiliate_id");
+      mv(
+        "affiliates.parent_affiliate_id",
+        "affiliates",
+        "parent_affiliate_id",
+        ` AND id <> ${Number(keepId)}`,
+      );
+      mv(
+        "affiliate_link_clicks.affiliate_id",
+        "affiliate_link_clicks",
+        "affiliate_id",
+      );
+      mv(
+        "affiliate_commissions.affiliate_id",
+        "affiliate_commissions",
+        "affiliate_id",
+      );
       recipientKind = "affiliates";
       const clash = await countSql(
         conn,
@@ -7725,15 +10199,34 @@ export async function mergeDuplicateRecords(opts: {
         [keepId, removeId],
       );
       if (clash) blockers.push("commission_same_project");
-      if (Number(keep.parent_affiliate_id) === removeId) fill.parent_affiliate_id = rm.parent_affiliate_id ?? null;
-      for (const col of ["phone", "company", "avatar_url", "bio"]) fillBlank(col);
-      fill.notes = appendNote(keep.notes, `[merged affiliate #${removeId} · ${rm.email} · code ${rm.referral_code}${rm.slug ? ` · /r/${rm.slug}` : ""}]${rm.notes ? ` ${rm.notes}` : ""}`);
+      if (Number(keep.parent_affiliate_id) === removeId)
+        fill.parent_affiliate_id = rm.parent_affiliate_id ?? null;
+      for (const col of [
+        "phone",
+        "company",
+        "avatar_url",
+        "bio",
+        "subscription_price_cents",
+      ])
+        fillBlank(col);
+      fill.notes = appendNote(
+        keep.notes,
+        `[merged affiliate #${removeId} · ${rm.email} · code ${rm.referral_code}${rm.slug ? ` · /r/${rm.slug}` : ""}]${rm.notes ? ` ${rm.notes}` : ""}`,
+      );
       warnings.push("removed_tracking_link_stops");
     } else {
       mv("projects.contractor_id", "projects", "contractor_id");
-      mv("project_photos.uploaded_by_contractor_id", "project_photos", "uploaded_by_contractor_id");
+      mv(
+        "project_photos.uploaded_by_contractor_id",
+        "project_photos",
+        "uploaded_by_contractor_id",
+      );
       mv("draw_requests.contractor_id", "draw_requests", "contractor_id");
-      mv("contractor_invites.contractor_id", "contractor_invites", "contractor_id");
+      mv(
+        "contractor_invites.contractor_id",
+        "contractor_invites",
+        "contractor_id",
+      );
       mv("leads.converted_contractor_id", "leads", "converted_contractor_id");
       recipientKind = "contractors";
       const [apps] = await conn.execute<RowDataPacket[]>(
@@ -7742,15 +10235,29 @@ export async function mergeDuplicateRecords(opts: {
       );
       const keepApp = apps.find((a) => Number(a.contractor_id) === keepId);
       const rmApp = apps.find((a) => Number(a.contractor_id) === removeId);
-      if (rmApp && !keepApp) mv("contractor_applications.contractor_id", "contractor_applications", "contractor_id");
-      else if (rmApp && keepApp && rmApp.status !== "draft") blockers.push("both_prequalified");
-      for (const col of ["phone", "company", "license_number", "avatar_url"]) fillBlank(col);
-      fill.notes = appendNote(keep.notes, `[merged contractor #${removeId} · ${rm.email}]${rm.notes ? ` ${rm.notes}` : ""}`);
+      if (rmApp && !keepApp)
+        mv(
+          "contractor_applications.contractor_id",
+          "contractor_applications",
+          "contractor_id",
+        );
+      else if (rmApp && keepApp && rmApp.status !== "draft")
+        blockers.push("both_prequalified");
+      for (const col of ["phone", "company", "license_number", "avatar_url"])
+        fillBlank(col);
+      fill.notes = appendNote(
+        keep.notes,
+        `[merged contractor #${removeId} · ${rm.email}]${rm.notes ? ` ${rm.notes}` : ""}`,
+      );
     }
 
     for (const [label] of plan) {
       const [table, col] = label.split(".");
-      moves[label] = await countSql(conn, `SELECT COUNT(*) n FROM \`${table}\` WHERE \`${col}\` = ?`, [removeId]);
+      moves[label] = await countSql(
+        conn,
+        `SELECT COUNT(*) n FROM \`${table}\` WHERE \`${col}\` = ?`,
+        [removeId],
+      );
     }
     if (recipientKind) {
       moves["campaign_recipients"] = await countSql(
@@ -7765,9 +10272,13 @@ export async function mergeDuplicateRecords(opts: {
 
     // Unique email: free it on the duplicate before the survivor takes it.
     if ("email" in fill) {
-      await conn.execute(`UPDATE \`${DEDUPE_TABLE[entity]}\` SET email = NULL WHERE id = ?`, [removeId]);
+      await conn.execute(
+        `UPDATE \`${DEDUPE_TABLE[entity]}\` SET email = NULL WHERE id = ?`,
+        [removeId],
+      );
     }
-    for (const [, sql, params] of plan) await conn.execute(sql, params as any[]);
+    for (const [, sql, params] of plan)
+      await conn.execute(sql, params as any[]);
     if (recipientKind) {
       await conn.execute(
         `DELETE s FROM campaign_recipient_state s
@@ -7784,7 +10295,9 @@ export async function mergeDuplicateRecords(opts: {
       }
     }
     await applyUpdate(conn, DEDUPE_TABLE[entity], keepId, fill);
-    await conn.execute(`DELETE FROM \`${DEDUPE_TABLE[entity]}\` WHERE id = ?`, [removeId]);
+    await conn.execute(`DELETE FROM \`${DEDUPE_TABLE[entity]}\` WHERE id = ?`, [
+      removeId,
+    ]);
     await logDedupe({
       action: "merge",
       entity,
@@ -7810,27 +10323,50 @@ export async function deleteDuplicateRecord(opts: {
 }): Promise<{ blockers: string[]; removed_projects: number }> {
   return withTx(async (conn) => {
     const row = await loadDedupeRow(opts.entity, opts.id, conn);
-    const { delete_blockers } = await dedupeLinksAndBlockers(opts.entity, opts.id, conn);
+    const { delete_blockers } = await dedupeLinksAndBlockers(
+      opts.entity,
+      opts.id,
+      conn,
+    );
     const removedProjects =
       opts.entity === "client"
-        ? await countSql(conn, `SELECT COUNT(*) n FROM projects p WHERE p.client_id = ? AND ${EMPTY_PROJECT_SQL}`, [opts.id])
+        ? await countSql(
+            conn,
+            `SELECT COUNT(*) n FROM projects p WHERE p.client_id = ? AND ${EMPTY_PROJECT_SQL}`,
+            [opts.id],
+          )
         : 0;
     if (opts.dryRun || delete_blockers.length) {
       return { blockers: delete_blockers, removed_projects: removedProjects };
     }
     if (opts.entity === "client") {
-      await conn.execute(`DELETE p FROM projects p WHERE p.client_id = ? AND ${EMPTY_PROJECT_SQL}`, [opts.id]);
-      await conn.execute(`UPDATE leads SET client_id = NULL WHERE client_id = ?`, [opts.id]);
+      await conn.execute(
+        `DELETE p FROM projects p WHERE p.client_id = ? AND ${EMPTY_PROJECT_SQL}`,
+        [opts.id],
+      );
+      await conn.execute(
+        `UPDATE leads SET client_id = NULL WHERE client_id = ?`,
+        [opts.id],
+      );
     }
     if (opts.entity === "affiliate") {
-      await conn.execute(`UPDATE leads SET affiliate_id = NULL WHERE affiliate_id = ?`, [opts.id]);
+      await conn.execute(
+        `UPDATE leads SET affiliate_id = NULL WHERE affiliate_id = ?`,
+        [opts.id],
+      );
     }
     if (opts.entity === "lead") {
       for (const kind of ["campaign_recipient_state", "campaign_send_logs"]) {
-        await conn.execute(`DELETE FROM ${kind} WHERE recipient_kind = 'leads' AND recipient_id = ?`, [opts.id]);
+        await conn.execute(
+          `DELETE FROM ${kind} WHERE recipient_kind = 'leads' AND recipient_id = ?`,
+          [opts.id],
+        );
       }
     }
-    await conn.execute(`DELETE FROM \`${DEDUPE_TABLE[opts.entity]}\` WHERE id = ?`, [opts.id]);
+    await conn.execute(
+      `DELETE FROM \`${DEDUPE_TABLE[opts.entity]}\` WHERE id = ?`,
+      [opts.id],
+    );
     await logDedupe({
       action: "delete",
       entity: opts.entity,
@@ -7844,7 +10380,10 @@ export async function deleteDuplicateRecord(opts: {
     if (opts.entity !== "lead") {
       const [orphans] = await conn.execute<RowDataPacket[]>(
         `SELECT id FROM leads WHERE email = ? OR ${phone10Sql("phone")} = ? LIMIT 50`,
-        [row.email ? normalizeEmail(row.email) : "", normalizePhoneLast10(row.phone) || "x"],
+        [
+          row.email ? normalizeEmail(row.email) : "",
+          normalizePhoneLast10(row.phone) || "x",
+        ],
       );
       for (const o of orphans) await linkLeadToPerson(Number(o.id), conn);
     }
@@ -7852,19 +10391,516 @@ export async function deleteDuplicateRecord(opts: {
   });
 }
 
+// ─── Move back to Leads (undo a client conversion) ───────────────────────────
+
+const CLIENT_REVERT_LEAD_STATUSES = [
+  "new",
+  "contacted",
+  "qualified",
+  "closed",
+] as const;
+type ClientRevertLeadStatus = (typeof CLIENT_REVERT_LEAD_STATUSES)[number];
+
+type ClientRevertPlanRow = {
+  client_id: number;
+  client_name: string;
+  origin: "lead" | "contact" | "unknown" | "new_lead";
+  leads: Array<{ id: number; full_name: string; status: string }>;
+  contact_id: number | null;
+  unknown_contact_ids: number[];
+  affiliate_id: number | null;
+  counts: {
+    conversations: number;
+    projects: number;
+    notes: number;
+    invites: number;
+  };
+  blockers: string[];
+};
+
+/**
+ * Where a client came from + what an undo would touch + why it is refused.
+ * Refused once real work exists (portal used, project past "Lead", contractor,
+ * money, draws, contracts, photos); texts / calls / notes / deal status /
+ * an unused invite never block — they are preserved.
+ */
+async function loadClientRevertPlan(
+  clientId: number,
+  exec: Pool | PoolConnection = pool,
+): Promise<{ plan: ClientRevertPlanRow; client: RowDataPacket }> {
+  const [[client]] = (await exec.query<RowDataPacket[]>(
+    `SELECT * FROM clients WHERE id = ? LIMIT 1`,
+    [clientId],
+  )) as unknown as [RowDataPacket[]];
+  if (!client) throw new HttpError(404, "errors.notFound");
+  const c = (sql: string, params: unknown[] = [clientId]) =>
+    countSql(exec, sql, params);
+
+  // Leads: linked by convert / create-prospect / auto-link, or the same person by email / phone.
+  const email = client.email ? normalizeEmail(client.email) : "";
+  const phone10 = normalizePhoneLast10(client.phone) || "";
+  const [leadRows] = await exec.query<RowDataPacket[]>(
+    `SELECT id, full_name, status FROM leads
+     WHERE (client_id = ? OR id = ?
+        OR (client_id IS NULL AND converted_affiliate_id IS NULL AND converted_contractor_id IS NULL
+            AND status <> 'spam' AND ((? <> '' AND email = ?) OR (? <> '' AND ${phone10Sql("phone")} = ?))))
+     ORDER BY (client_id = ?) DESC, (id = ?) DESC, COALESCE(last_submitted_at, created_at) DESC
+     LIMIT 10`,
+    [
+      clientId,
+      Number(client.lead_id || 0),
+      email,
+      email,
+      phone10,
+      phone10,
+      clientId,
+      Number(client.lead_id || 0),
+    ],
+  );
+  const [[contact]] = (await exec.query<RowDataPacket[]>(
+    `SELECT id FROM contacts WHERE converted_client_id = ? AND deleted_at IS NULL ORDER BY converted_at DESC LIMIT 1`,
+    [clientId],
+  )) as unknown as [RowDataPacket[]];
+  const [unknownRows] = await exec.query<RowDataPacket[]>(
+    `SELECT id FROM conversation_unknown_contacts WHERE linked_client_id = ? ORDER BY id`,
+    [clientId],
+  );
+  const origin: ClientRevertPlanRow["origin"] = leadRows.length
+    ? "lead"
+    : contact
+      ? "contact"
+      : unknownRows.length
+        ? "unknown"
+        : "new_lead";
+
+  const blockers: string[] = [];
+  const portalUsed =
+    client.last_login_at != null ||
+    client.email_verified_at != null ||
+    (await c(`SELECT COUNT(*) n FROM client_sessions WHERE client_id = ?`)) >
+      0 ||
+    (await c(
+      `SELECT COUNT(*) n FROM client_portal_invites WHERE client_id = ? AND accepted_at IS NOT NULL`,
+    )) > 0;
+  if (portalUsed) blockers.push("portal_used");
+  if (
+    await c(
+      `SELECT COUNT(*) n FROM projects p WHERE p.client_id = ? AND NOT (${EMPTY_PROJECT_SQL})`,
+    )
+  ) {
+    blockers.push("projects_in_progress");
+  }
+  if (
+    await c(
+      `SELECT COUNT(*) n FROM projects WHERE client_id = ? AND contractor_id IS NOT NULL`,
+    )
+  ) {
+    blockers.push("contractor_assigned");
+  }
+  if (
+    await c(`SELECT COUNT(*) n FROM affiliate_commissions WHERE client_id = ?`)
+  )
+    blockers.push("commissions");
+  const conversations = await c(
+    `SELECT COUNT(*) n FROM conversations WHERE client_id = ?`,
+  );
+  // Threads need a phone to live on an unknown contact; a new lead needs email or phone.
+  if (
+    (origin === "new_lead" && !email && !phone10) ||
+    (conversations > 0 &&
+      origin !== "contact" &&
+      !unknownRows.length &&
+      !phone10)
+  ) {
+    blockers.push("missing_contact_info");
+  }
+
+  const notes =
+    (await c(`SELECT COUNT(*) n FROM client_updates WHERE client_id = ?`)) +
+    (String(client.admin_notes || "").trim() ? 1 : 0);
+  return {
+    client,
+    plan: {
+      client_id: clientId,
+      client_name:
+        `${client.first_name || ""} ${client.last_name || ""}`.trim(),
+      origin,
+      leads: leadRows.map((l) => ({
+        id: Number(l.id),
+        full_name: String(l.full_name || ""),
+        status: String(l.status),
+      })),
+      contact_id: contact ? Number(contact.id) : null,
+      unknown_contact_ids: unknownRows.map((u) => Number(u.id)),
+      affiliate_id:
+        client.affiliate_id != null ? Number(client.affiliate_id) : null,
+      counts: {
+        conversations,
+        projects: await c(
+          `SELECT COUNT(*) n FROM projects WHERE client_id = ?`,
+        ),
+        notes,
+        invites: await c(
+          `SELECT COUNT(*) n FROM client_portal_invites WHERE client_id = ? AND accepted_at IS NULL`,
+        ),
+      },
+      blockers,
+    },
+  };
+}
+
+/** Plain-text record of the client's notes + deal history (kept on the lead / thread). */
+async function clientNotesDigest(
+  client: RowDataPacket,
+  exec: Pool | PoolConnection,
+): Promise<string> {
+  const [updates] = await exec.query<RowDataPacket[]>(
+    `SELECT u.kind, u.visibility, u.body, u.deal_status_label_en, u.created_at,
+            CONCAT(a.first_name, ' ', a.last_name) AS author
+     FROM client_updates u LEFT JOIN admins a ON a.id = u.created_by_admin_id
+     WHERE u.client_id = ? ORDER BY u.created_at ASC, u.id ASC LIMIT 200`,
+    [Number(client.id)],
+  );
+  const day = (d: unknown) => (isoDate(d) || "").slice(0, 10);
+  const lines: string[] = [];
+  if (String(client.admin_notes || "").trim())
+    lines.push(`Client notes: ${String(client.admin_notes).trim()}`);
+  for (const u of updates) {
+    const who = u.author ? ` (${String(u.author).trim()})` : "";
+    const shared =
+      u.visibility === "affiliate" ? " [shared with affiliate]" : "";
+    if (u.kind === "deal_status") {
+      lines.push(
+        `${day(u.created_at)} Deal status → ${u.deal_status_label_en || "—"}${u.body ? `: ${u.body}` : ""}${who}${shared}`,
+      );
+    } else if (u.body) {
+      lines.push(`${day(u.created_at)} ${u.body}${who}${shared}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Undo a client conversion. Lead origin → the lead(s) return to Active;
+ * CRM contact → un-converted; Conversations unknown → reopened; created
+ * directly → a new lead. Threads move first (conversations cascade with the
+ * client), notes are copied, empty projects + unused invites are removed, and
+ * the full client snapshot is audited (people_dedupe_log action=revert).
+ */
+export async function revertClientToLead(opts: {
+  clientId: number;
+  adminId: number;
+  leadStatus?: string | null;
+  reason?: string | null;
+  dryRun?: boolean;
+}): Promise<{
+  plan: ClientRevertPlanRow;
+  result: {
+    lead_id: number | null;
+    contact_id: number | null;
+    unknown_contact_id: number | null;
+  } | null;
+}> {
+  const status: ClientRevertLeadStatus | null =
+    opts.leadStatus &&
+    (CLIENT_REVERT_LEAD_STATUSES as readonly string[]).includes(opts.leadStatus)
+      ? (opts.leadStatus as ClientRevertLeadStatus)
+      : null;
+  if (opts.leadStatus && !status)
+    throw new HttpError(400, "validation.invalidField");
+  if (opts.dryRun)
+    return {
+      plan: (await loadClientRevertPlan(opts.clientId)).plan,
+      result: null,
+    };
+
+  const out = await withTx(async (conn) => {
+    // Lock the client row so a concurrent edit / second undo can't interleave.
+    await conn.query(`SELECT id FROM clients WHERE id = ? FOR UPDATE`, [
+      opts.clientId,
+    ]);
+    const { plan, client } = await loadClientRevertPlan(opts.clientId, conn);
+    if (plan.blockers.length) {
+      throw new HttpError(409, "errors.clientRevertBlocked", {
+        blockers: plan.blockers,
+        plan,
+      });
+    }
+    const clientId = opts.clientId;
+    const digest = await clientNotesDigest(client, conn);
+    const [projects] = await conn.query<RowDataPacket[]>(
+      `SELECT * FROM projects WHERE client_id = ?`,
+      [clientId],
+    );
+    const [updates] = await conn.query<RowDataPacket[]>(
+      `SELECT * FROM client_updates WHERE client_id = ?`,
+      [clientId],
+    );
+    const [convs] = await conn.query<RowDataPacket[]>(
+      `SELECT id, channel, ofg_number_id FROM conversations WHERE client_id = ? ORDER BY last_message_at DESC, id DESC`,
+      [clientId],
+    );
+    const stamp = new Date().toISOString().slice(0, 10);
+    const header = `— Moved back from client #${clientId} on ${stamp}${opts.reason ? ` · ${opts.reason}` : ""} —`;
+
+    // 1) Threads first: conversations ON DELETE CASCADE with the client.
+    let unknownHome: number | null = null;
+    if (plan.origin === "contact" && plan.contact_id) {
+      await conn.query(
+        `UPDATE conversations SET contact_id = ?, client_id = NULL WHERE client_id = ?`,
+        [plan.contact_id, clientId],
+      );
+    } else {
+      // Reopen the unknown contact(s) this client absorbed; route each thread to its line's unknown contact.
+      await conn.query(
+        `UPDATE conversation_unknown_contacts SET status = 'open', linked_client_id = NULL WHERE linked_client_id = ?`,
+        [clientId],
+      );
+      for (const cv of convs) {
+        const lineId =
+          cv.ofg_number_id != null ? Number(cv.ofg_number_id) : null;
+        const [[reuse]] = (await conn.query<RowDataPacket[]>(
+          `SELECT id FROM conversation_unknown_contacts
+           WHERE id IN (?) AND status = 'open' AND (ofg_number_id <=> ?) LIMIT 1`,
+          [
+            plan.unknown_contact_ids.length ? plan.unknown_contact_ids : [0],
+            lineId,
+          ],
+        )) as unknown as [RowDataPacket[]];
+        const unknownId = reuse
+          ? Number(reuse.id)
+          : client.phone
+            ? (
+                await findOrCreateOpenUnknownContact({
+                  phoneRaw: String(client.phone),
+                  ofgNumberId: lineId,
+                  exec: conn,
+                })
+              ).unknownId
+            : plan.unknown_contact_ids[0];
+        await conn.query(
+          `UPDATE conversations SET unknown_contact_id = ?, client_id = NULL WHERE id = ?`,
+          [unknownId, Number(cv.id)],
+        );
+        unknownHome ??= unknownId;
+      }
+      unknownHome ??= plan.unknown_contact_ids[0] ?? null;
+      // Inbox ordering / previews follow the moved threads.
+      await conn.query(
+        `UPDATE conversation_unknown_contacts u
+         JOIN (SELECT unknown_contact_id, MAX(last_message_at) at FROM conversations
+               WHERE unknown_contact_id IS NOT NULL GROUP BY unknown_contact_id) x ON x.unknown_contact_id = u.id
+         SET u.last_message_at = GREATEST(COALESCE(u.last_message_at, x.at), x.at)
+         WHERE u.id IN (?)`,
+        [
+          [
+            ...new Set([
+              ...plan.unknown_contact_ids,
+              ...(unknownHome ? [unknownHome] : []),
+            ]),
+          ].concat([0]),
+        ],
+      );
+    }
+
+    // 2) Where the person lives now + notes kept with them.
+    let leadId: number | null = null;
+    if (plan.origin === "lead") {
+      leadId = plan.leads[0].id;
+      await conn.query(
+        `UPDATE leads SET client_id = NULL${status ? ", status = ?" : ""} WHERE id IN (?)`,
+        [...(status ? [status] : []), plan.leads.map((l) => l.id)],
+      );
+    } else if (plan.origin === "new_lead") {
+      const first = String(client.first_name || "").trim();
+      const last = String(client.last_name || "").trim();
+      const [ins] = await conn.query<ResultSetHeader>(
+        `INSERT INTO leads
+           (first_name, last_name, full_name, email, phone, property_address, preferred_language,
+            affiliate_id, source, status, mode, last_submitted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'client_revert', ?, 'standard', NOW())`,
+        [
+          first || null,
+          last || null,
+          `${first} ${last}`.trim() || "Unknown",
+          client.email ? normalizeEmail(client.email) : "",
+          client.phone ? String(client.phone) : "",
+          [client.address_line1, client.city, client.zip]
+            .filter(Boolean)
+            .join(", ") || null,
+          client.preferred_language === "es" ? "es" : "en",
+          client.affiliate_id ?? null,
+          status || "contacted",
+        ],
+      );
+      leadId = Number(ins.insertId);
+    }
+    if (leadId) {
+      await conn.query(
+        `UPDATE leads SET notes = CONCAT_WS('\n\n', NULLIF(notes, ''), ?) WHERE id = ?`,
+        [digest ? `${header}\n${digest}` : header, leadId],
+      );
+    }
+    if (plan.origin === "contact" && plan.contact_id) {
+      await conn.query(
+        `UPDATE contacts SET converted_client_id = NULL, converted_at = NULL,
+           admin_notes = CONCAT_WS('\n\n', NULLIF(admin_notes, ''), ?)
+         WHERE id = ?`,
+        [digest ? `${header}\n${digest}` : header, plan.contact_id],
+      );
+    }
+    if (plan.origin === "unknown" && digest) {
+      const [[thread]] = (await conn.query<RowDataPacket[]>(
+        `SELECT id FROM conversations WHERE unknown_contact_id = ? ORDER BY channel = 'sms' DESC, last_message_at DESC LIMIT 1`,
+        [unknownHome],
+      )) as unknown as [RowDataPacket[]];
+      if (thread) {
+        await conn.query(
+          `INSERT INTO conversation_messages (conversation_id, direction, channel, body, sent_by_admin_id)
+           VALUES (?, 'internal', 'internal', ?, ?)`,
+          [Number(thread.id), `${header}\n${digest}`, opts.adminId],
+        );
+      }
+    }
+
+    // 3) Remove the client: empty projects (RESTRICT) first; invites / sessions / updates cascade.
+    await conn.query(
+      `DELETE p FROM projects p WHERE p.client_id = ? AND ${EMPTY_PROJECT_SQL}`,
+      [clientId],
+    );
+    await conn.query(`DELETE FROM clients WHERE id = ?`, [clientId]);
+
+    await logDedupe({
+      action: "revert",
+      entity: "client",
+      recordId: clientId,
+      targetEntity: leadId ? "lead" : null,
+      targetId: leadId,
+      adminId: opts.adminId,
+      reason: opts.reason ?? null,
+      snapshot: {
+        origin: plan.origin,
+        removed: client,
+        projects,
+        client_updates: updates,
+        moved: {
+          conversations: convs.map((cv) => Number(cv.id)),
+          to_contact_id: plan.origin === "contact" ? plan.contact_id : null,
+          to_unknown_contact_id: unknownHome,
+        },
+        restored_lead_ids:
+          plan.origin === "lead" ? plan.leads.map((l) => l.id) : [],
+        created_lead_id: plan.origin === "new_lead" ? leadId : null,
+        lead_status: status,
+      },
+      exec: conn,
+    });
+    return {
+      plan,
+      result: {
+        lead_id: leadId,
+        contact_id: plan.origin === "contact" ? plan.contact_id : null,
+        unknown_contact_id:
+          plan.origin === "unknown" || plan.origin === "lead"
+            ? unknownHome
+            : null,
+      },
+    };
+  });
+
+  const name = out.plan.client_name || `#${opts.clientId}`;
+  await notifyStaff("lead_converted", (l) => ({
+    subject: tr(
+      l,
+      `Conversion undone · ${name}`,
+      `Conversión deshecha · ${name}`,
+    ),
+    headline: tr(l, "A client was moved back.", "Un cliente fue regresado."),
+    paragraphs: [
+      tr(
+        l,
+        out.plan.origin === "unknown"
+          ? `${name} is back in Conversations as an unknown contact.`
+          : out.plan.origin === "contact"
+            ? `${name} is back in Contacts.`
+            : `${name} is back in Leads.`,
+        out.plan.origin === "unknown"
+          ? `${name} regresó a Conversaciones como contacto desconocido.`
+          : out.plan.origin === "contact"
+            ? `${name} regresó a Contactos.`
+            : `${name} regresó a Leads.`,
+      ),
+      ...(opts.reason ? [opts.reason] : []),
+    ],
+    cta: {
+      url: `${APP_URL}${out.result?.lead_id ? "/admin/leads" : out.result?.contact_id ? `/admin/contacts/${out.result.contact_id}` : "/admin/conversations"}`,
+      label: tr(l, "Open", "Abrir"),
+    },
+  }));
+  await publishConversationRealtime({
+    type: "unknown_linked",
+    payload: {
+      client_id: opts.clientId,
+      unknown_contact_id: out.result?.unknown_contact_id ?? null,
+      reverted: true,
+    },
+  });
+  return out;
+}
+
 function parseDedupeEntity(v: unknown): DedupeEntity {
   const e = String(v || "") as DedupeEntity;
-  if (!DEDUPE_ENTITIES.includes(e)) throw new HttpError(400, "validation.invalidField");
+  if (!DEDUPE_ENTITIES.includes(e))
+    throw new HttpError(400, "validation.invalidField");
   return e;
 }
 
 function registerDuplicatesRoutes(app: Express) {
+  // Move back to Leads (undo a client conversion) — super_admin + admin.
+  app.get(
+    "/api/admin/clients/:id/revert-preview",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const out = await revertClientToLead({
+        clientId: parseId(req.params.id),
+        adminId: portalUser(res).id,
+        dryRun: true,
+      });
+      res.json({ ok: true, dry_run: true, plan: out.plan, result: null });
+    }),
+  );
+
+  app.post(
+    "/api/admin/clients/:id/revert-to-lead",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const b = req.body || {};
+      const out = await revertClientToLead({
+        clientId: parseId(req.params.id),
+        adminId: portalUser(res).id,
+        leadStatus: b.lead_status ? String(b.lead_status) : null,
+        reason: b.reason ? String(b.reason).trim().slice(0, 500) || null : null,
+        dryRun: b.dry_run === true,
+      });
+      res.json({
+        ok: true,
+        dry_run: b.dry_run === true,
+        plan: out.plan,
+        result: out.result,
+      });
+    }),
+  );
+
   app.get(
     "/api/admin/duplicates",
     requireAdmin("people.read"),
     route(async (_req, res) => {
       const clusters = await loadDuplicateClusters();
-      const body: AdminDuplicatesResponse = { ok: true, clusters, total: clusters.length };
+      const body: AdminDuplicatesResponse = {
+        ok: true,
+        clusters,
+        total: clusters.length,
+      };
       res.json(body);
     }),
   );
@@ -7883,7 +10919,9 @@ function registerDuplicatesRoutes(app: Express) {
         dryRun: b.dry_run === true,
       });
       if (out.blockers.length && b.dry_run !== true) {
-        throw new HttpError(409, "errors.mergeBlocked", { blockers: out.blockers });
+        throw new HttpError(409, "errors.mergeBlocked", {
+          blockers: out.blockers,
+        });
       }
       res.json({ ok: true, dry_run: b.dry_run === true, ...out });
     }),
@@ -7902,7 +10940,9 @@ function registerDuplicatesRoutes(app: Express) {
         dryRun: b.dry_run === true,
       });
       if (out.blockers.length && b.dry_run !== true) {
-        throw new HttpError(409, "errors.deleteBlocked", { blockers: out.blockers });
+        throw new HttpError(409, "errors.deleteBlocked", {
+          blockers: out.blockers,
+        });
       }
       res.json({ ok: true, dry_run: b.dry_run === true, ...out });
     }),
@@ -7913,11 +10953,17 @@ function registerDuplicatesRoutes(app: Express) {
     requireAdmin("approvals"),
     route(async (req, res) => {
       const signature = String(req.body?.signature || "").trim();
-      const reason = String(req.body?.reason || "").trim().slice(0, 500);
-      if (!/^[a-z]+:\d+(\|[a-z]+:\d+)+$/.test(signature) || signature.length > 500) {
+      const reason = String(req.body?.reason || "")
+        .trim()
+        .slice(0, 500);
+      if (
+        !/^[a-z]+:\d+(\|[a-z]+:\d+)+$/.test(signature) ||
+        signature.length > 500
+      ) {
         throw new HttpError(400, "validation.invalidField");
       }
-      if (reason.length < SHARED_PHONE_REASON_MIN) throw new HttpError(400, "validation.dismissReasonRequired");
+      if (reason.length < SHARED_PHONE_REASON_MIN)
+        throw new HttpError(400, "validation.dismissReasonRequired");
       const user = portalUser(res);
       await pool.execute(
         `INSERT INTO people_dedupe_dismissals (signature, admin_id, reason) VALUES (?, ?, ?)
@@ -7944,11 +10990,16 @@ function registerDuplicatesRoutes(app: Express) {
     route(async (req, res) => {
       const leadId = parseId(req.body?.lead_id);
       const entity = parseDedupeEntity(req.body?.entity);
-      if (entity === "lead") throw new HttpError(400, "validation.invalidField");
+      if (entity === "lead")
+        throw new HttpError(400, "validation.invalidField");
       const personId = parseId(req.body?.id);
       await loadDedupeRow(entity, personId);
       const col =
-        entity === "client" ? "client_id" : entity === "affiliate" ? "converted_affiliate_id" : "converted_contractor_id";
+        entity === "client"
+          ? "client_id"
+          : entity === "affiliate"
+            ? "converted_affiliate_id"
+            : "converted_contractor_id";
       const [r] = await pool.execute<ResultSetHeader>(
         `UPDATE leads SET client_id = NULL, converted_affiliate_id = NULL, converted_contractor_id = NULL,
            ${col} = ? WHERE id = ?`,
@@ -7998,15 +11049,22 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const email = normalizeEmail(b.email);
-      const phone = String(b.phone || "").trim().slice(0, 40);
+      const phone = String(b.phone || "")
+        .trim()
+        .slice(0, 40);
       const company = b.company ? String(b.company).trim().slice(0, 200) : null;
       const lang = asLang(b.preferred_language);
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (phone.replace(/\D/g, "").length < 10) {
         throw new HttpError(400, "validation.phoneMin");
       }
@@ -8023,45 +11081,40 @@ function registerFeatureRoutes(
         phone,
       });
 
-      await withNewAffiliateCodes(first, last, async ({ code, slug }) => {
-        await pool.execute(
-          `INSERT INTO affiliates
+      const affiliateId = await withNewAffiliateCodes(
+        first,
+        last,
+        async ({ code, slug }) => {
+          const [ins] = await pool.execute<ResultSetHeader>(
+            `INSERT INTO affiliates
              (email, first_name, last_name, phone, company, status, preferred_language,
               referral_code, slug)
            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-          [email, first, last, phone, company, lang, code, slug],
-        );
-      });
-
-      await safeSend(
-        email,
-        tplPortalNotice({
-          lang,
-          subject: tr(
-            lang,
-            "Affiliate application received — Groundwork Capital",
-            "Solicitud de afiliado recibida — Groundwork Capital",
-          ),
-          headline: tr(lang, "You're in the queue.", "Estás en la fila."),
-          paragraphs: [
-            tr(
-              lang,
-              `Hi ${first}, thanks for applying to the Groundwork affiliate program.`,
-              `Hola ${first}, gracias por aplicar al programa de afiliados de Groundwork.`,
-            ),
-            tr(
-              lang,
-              "Our team reviews every application. Once approved you'll get an email and can sign in with a one-time code — no password needed.",
-              "Nuestro equipo revisa cada solicitud. Al aprobarse recibirás un correo y podrás entrar con un código de un solo uso — sin contraseña.",
-            ),
-          ],
-        }),
+            [email, first, last, phone, company, lang, code, slug],
+          );
+          return Number(ins.insertId);
+        },
       );
+
+      // Welcome email + text: presentation + secure link (agreement, W-9, card).
+      await sendAffiliateWelcome(affiliateId);
       await notifyStaff("affiliate_signup", (l) => ({
-        subject: tr(l, `New affiliate application: ${first} ${last}`, `Nueva solicitud de afiliado: ${first} ${last}`),
-        headline: tr(l, "New affiliate application", "Nueva solicitud de afiliado"),
+        subject: tr(
+          l,
+          `New affiliate application: ${first} ${last}`,
+          `Nueva solicitud de afiliado: ${first} ${last}`,
+        ),
+        headline: tr(
+          l,
+          "New affiliate application",
+          "Nueva solicitud de afiliado",
+        ),
         paragraphs: [
-          tr(l, "Review and approve in the admin portal.", "Revisa y aprueba en el portal de administración."),
+          tr(
+            l,
+            "Review and approve in the admin portal.",
+            "Revisa y aprueba en el portal de administración.",
+          ),
         ],
         details: [
           [tr(l, "Name", "Nombre"), `${first} ${last}`],
@@ -8069,7 +11122,10 @@ function registerFeatureRoutes(
           [tr(l, "Phone", "Teléfono"), phone],
           [tr(l, "Company", "Empresa"), company || "—"],
         ],
-        cta: { url: `${APP_URL}/admin/affiliates`, label: tr(l, "Open affiliates", "Abrir afiliados") },
+        cta: {
+          url: `${APP_URL}/admin/affiliates`,
+          label: tr(l, "Open affiliates", "Abrir afiliados"),
+        },
       }));
       res.status(201).json({ ok: true, message: "Application received" });
     }),
@@ -8081,10 +11137,16 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const email = normalizeEmail(b.email);
-      const phone = String(b.phone || "").trim().slice(0, 40);
+      const phone = String(b.phone || "")
+        .trim()
+        .slice(0, 40);
       const address = b.address_line1
         ? String(b.address_line1).trim().slice(0, 255)
         : null;
@@ -8093,7 +11155,8 @@ function registerFeatureRoutes(
       const lang = asLang(b.preferred_language);
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (phone.replace(/\D/g, "").length < 10) {
         throw new HttpError(400, "validation.phoneMin");
       }
@@ -8114,10 +11177,14 @@ function registerFeatureRoutes(
               lang: existLang,
               subject: tr(
                 existLang,
-                "We still have your homeowner application — Groundwork",
-                "Aún tenemos tu solicitud de propietario — Groundwork",
+                "We still have your homeowner application · Groundwork",
+                "Aún tenemos tu solicitud de propietario · Groundwork",
               ),
-              headline: tr(existLang, "You're still in the queue.", "Sigues en la fila."),
+              headline: tr(
+                existLang,
+                "You're still in the queue.",
+                "Sigues en la fila.",
+              ),
               paragraphs: [
                 tr(
                   existLang,
@@ -8128,10 +11195,22 @@ function registerFeatureRoutes(
             }),
           );
           await notifyStaff("client_signup_reminder", (l) => ({
-            subject: tr(l, `Homeowner re-applied · ${existFirst}`, `Propietario reaplicó · ${existFirst}`),
-            headline: tr(l, "Pending homeowner nudged signup again.", "Propietario pendiente volvió a solicitar."),
+            subject: tr(
+              l,
+              `Homeowner re-applied · ${existFirst}`,
+              `Propietario reaplicó · ${existFirst}`,
+            ),
+            headline: tr(
+              l,
+              "Pending homeowner nudged signup again.",
+              "Propietario pendiente volvió a solicitar.",
+            ),
             paragraphs: [
-              tr(l, "Open the client record to approve when ready.", "Abre el registro del cliente para aprobar cuando corresponda."),
+              tr(
+                l,
+                "Open the client record to approve when ready.",
+                "Abre el registro del cliente para aprobar cuando corresponda.",
+              ),
             ],
             details: [["Email", email]],
             cta: {
@@ -8187,8 +11266,8 @@ function registerFeatureRoutes(
             lang,
             subject: tr(
               lang,
-              "Homeowner application received — Groundwork Capital",
-              "Solicitud de propietario recibida — Groundwork Capital",
+              "Homeowner application received · Groundwork Capital",
+              "Solicitud de propietario recibida · Groundwork Capital",
             ),
             headline: tr(lang, "You're in the queue.", "Estás en la fila."),
             paragraphs: [
@@ -8206,16 +11285,31 @@ function registerFeatureRoutes(
           }),
         );
         await notifyStaff("client_signup", (l) => ({
-          subject: tr(l, `New homeowner application: ${first} ${last}`, `Nueva solicitud de propietario: ${first} ${last}`),
-          headline: tr(l, "New homeowner application", "Nueva solicitud de propietario"),
+          subject: tr(
+            l,
+            `New homeowner application: ${first} ${last}`,
+            `Nueva solicitud de propietario: ${first} ${last}`,
+          ),
+          headline: tr(
+            l,
+            "New homeowner application",
+            "Nueva solicitud de propietario",
+          ),
           paragraphs: [
-            tr(l, "Approve in Admin → Clients to send their portal invite.", "Aprueba en Admin → Clientes para enviar su invitación al portal."),
+            tr(
+              l,
+              "Approve in Admin → Clients to send their portal invite.",
+              "Aprueba en Admin → Clientes para enviar su invitación al portal.",
+            ),
           ],
           details: [
             [tr(l, "Name", "Nombre"), `${first} ${last}`],
             ["Email", email],
             [tr(l, "Phone", "Teléfono"), phone],
-            [tr(l, "Address", "Dirección"), [address, city, zip].filter(Boolean).join(", ") || "—"],
+            [
+              tr(l, "Address", "Dirección"),
+              [address, city, zip].filter(Boolean).join(", ") || "—",
+            ],
           ],
           cta: {
             url: `${APP_URL}/admin/clients/${clientId}`,
@@ -8249,15 +11343,22 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const email = normalizeEmail(b.email);
-      const phone = String(b.phone || "").trim().slice(0, 40);
+      const phone = String(b.phone || "")
+        .trim()
+        .slice(0, 40);
       const company = b.company ? String(b.company).trim().slice(0, 200) : null;
       const lang = asLang(b.preferred_language);
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (phone.replace(/\D/g, "").length < 10) {
         throw new HttpError(400, "validation.phoneMin");
       }
@@ -8281,7 +11382,11 @@ function registerFeatureRoutes(
             [cid],
           );
           const appStatus = appRows[0] ? String(appRows[0].status) : null;
-          if (!appStatus || appStatus === "draft" || appStatus === "needs_info") {
+          if (
+            !appStatus ||
+            appStatus === "draft" ||
+            appStatus === "needs_info"
+          ) {
             await sendContractorApplicationLink({
               contractorId: cid,
               variant: appStatus ? "resend" : "new",
@@ -8293,10 +11398,14 @@ function registerFeatureRoutes(
                 lang: existLang,
                 subject: tr(
                   existLang,
-                  "We still have your contractor application — Groundwork",
-                  "Aún tenemos tu solicitud de contratista — Groundwork",
+                  "We still have your contractor application · Groundwork",
+                  "Aún tenemos tu solicitud de contratista · Groundwork",
                 ),
-                headline: tr(existLang, "You're still in the queue.", "Sigues en la fila."),
+                headline: tr(
+                  existLang,
+                  "You're still in the queue.",
+                  "Sigues en la fila.",
+                ),
                 paragraphs: [
                   tr(
                     existLang,
@@ -8308,10 +11417,22 @@ function registerFeatureRoutes(
             );
           }
           await notifyStaff("contractor_signup_reminder", (l) => ({
-            subject: tr(l, `Contractor re-applied · ${existFirst}`, `Contratista reaplicó · ${existFirst}`),
-            headline: tr(l, "Pending contractor nudged signup again.", "Contratista pendiente volvió a solicitar."),
+            subject: tr(
+              l,
+              `Contractor re-applied · ${existFirst}`,
+              `Contratista reaplicó · ${existFirst}`,
+            ),
+            headline: tr(
+              l,
+              "Pending contractor nudged signup again.",
+              "Contratista pendiente volvió a solicitar.",
+            ),
             paragraphs: [
-              tr(l, "The prequalification link was re-sent. Review the application once it's submitted.", "Se reenvió el enlace de precalificación. Revisa la solicitud cuando la envíe."),
+              tr(
+                l,
+                "The prequalification link was re-sent. Review the application once it's submitted.",
+                "Se reenvió el enlace de precalificación. Revisa la solicitud cuando la envíe.",
+              ),
             ],
             details: [["Email", email]],
             cta: {
@@ -8355,10 +11476,22 @@ function registerFeatureRoutes(
         const contractorId = Number(ins.insertId);
         await sendContractorApplicationLink({ contractorId, variant: "new" });
         await notifyStaff("contractor_signup", (l) => ({
-          subject: tr(l, `New contractor application: ${first} ${last}`, `Nueva solicitud de contratista: ${first} ${last}`),
-          headline: tr(l, "New contractor application", "Nueva solicitud de contratista"),
+          subject: tr(
+            l,
+            `New contractor application: ${first} ${last}`,
+            `Nueva solicitud de contratista: ${first} ${last}`,
+          ),
+          headline: tr(
+            l,
+            "New contractor application",
+            "Nueva solicitud de contratista",
+          ),
           paragraphs: [
-            tr(l, "They were emailed the prequalification application. You'll be notified when it's submitted for review.", "Se le envió la solicitud de precalificación. Te avisaremos cuando la envíe para revisión."),
+            tr(
+              l,
+              "They were emailed the prequalification application. You'll be notified when it's submitted for review.",
+              "Se le envió la solicitud de precalificación. Te avisaremos cuando la envíe para revisión.",
+            ),
           ],
           details: [
             [tr(l, "Name", "Nombre"), `${first} ${last}`],
@@ -8381,7 +11514,8 @@ function registerFeatureRoutes(
         if (!again[0]) throw e;
         const st = String(again[0].status);
         if (st === "pending") return res.json({ ok: true, outcome: "resent" });
-        if (st === "invited") return res.json({ ok: true, outcome: "invite_resent" });
+        if (st === "invited")
+          return res.json({ ok: true, outcome: "invite_resent" });
         return res.json({ ok: true, outcome: "ready" });
       }
     }),
@@ -8391,19 +11525,13 @@ function registerFeatureRoutes(
     "/api/public/affiliates/by-code/:code",
     limiters.referral,
     route(async (req, res) => {
-      const raw = String(req.params.code || "").trim().slice(0, 64);
+      const raw = String(req.params.code || "")
+        .trim()
+        .slice(0, 64);
       if (!raw || !/^[A-Za-z0-9_-]+$/.test(raw)) {
         throw new HttpError(404, "errors.referralInactive");
       }
-      const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT id, first_name, last_name, company, avatar_url, bio,
-                referral_code, slug, status
-         FROM affiliates
-         WHERE referral_code = ? OR slug = ?
-         LIMIT 1`,
-        [raw.toUpperCase(), raw.toLowerCase()],
-      );
-      const a = rows[0];
+      const a = await findAffiliateRowByLinkCode(raw);
       if (!a || String(a.status) !== "active") {
         throw new HttpError(404, "errors.referralInactive");
       }
@@ -8418,7 +11546,8 @@ function registerFeatureRoutes(
         affiliate: {
           first_name: String(a.first_name || ""),
           last_name: String(a.last_name || ""),
-          company: a.company == null || a.company === "" ? null : String(a.company),
+          company:
+            a.company == null || a.company === "" ? null : String(a.company),
           avatar_url:
             a.avatar_url == null || a.avatar_url === ""
               ? null
@@ -8469,11 +11598,19 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const email = normalizeEmail(b.email);
-      const phone = String(b.phone || "").trim().slice(0, 40);
-      const address = String(b.property_address || "").trim().slice(0, 500);
+      const phone = String(b.phone || "")
+        .trim()
+        .slice(0, 40);
+      const address = String(b.property_address || "")
+        .trim()
+        .slice(0, 500);
       const city = b.property_city
         ? String(b.property_city).trim().slice(0, 100)
         : null;
@@ -8484,16 +11621,18 @@ function registerFeatureRoutes(
       const lang = asLang(b.preferred_language);
       const softPull = Boolean(
         b.soft_pull_consent === true ||
-          b.soft_pull_consent === 1 ||
-          b.soft_pull_consent === "1",
+        b.soft_pull_consent === 1 ||
+        b.soft_pull_consent === "1",
       );
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (phone.replace(/\D/g, "").length < 10) {
         throw new HttpError(400, "validation.phoneMin");
       }
-      if (address.length < 5) throw new HttpError(400, "validation.addressRequired");
+      if (address.length < 5)
+        throw new HttpError(400, "validation.addressRequired");
       if (!(b.homeowner_consent === true || b.homeowner_consent === 1)) {
         throw new HttpError(400, "validation.homeownerConsent");
       }
@@ -8526,9 +11665,19 @@ function registerFeatureRoutes(
             lang: asLang(dup[0].preferred_language),
             token,
           });
-          return res.json({ ok: true, outcome: "invite_resent", project_public_id: null, invite_sent: true });
+          return res.json({
+            ok: true,
+            outcome: "invite_resent",
+            project_public_id: null,
+            invite_sent: true,
+          });
         }
-        return res.json({ ok: true, outcome: "exists", project_public_id: null, invite_sent: false });
+        return res.json({
+          ok: true,
+          outcome: "exists",
+          project_public_id: null,
+          invite_sent: false,
+        });
       }
       // One role per person (e.g. an affiliate can't also enroll as a homeowner): staff alerted.
       if (
@@ -8540,7 +11689,12 @@ function registerFeatureRoutes(
           phone,
         })
       ) {
-        return res.json({ ok: true, outcome: "exists", project_public_id: null, invite_sent: false });
+        return res.json({
+          ok: true,
+          outcome: "exists",
+          project_public_id: null,
+          invite_sent: false,
+        });
       }
 
       const created = await withTx(async (conn) => {
@@ -8581,10 +11735,10 @@ function registerFeatureRoutes(
           byType: "system",
           byId: null,
         });
-        await conn.execute(`UPDATE leads SET client_id = ?, status = 'qualified' WHERE id = ?`, [
-          out.clientId,
-          leadId,
-        ]);
+        await conn.execute(
+          `UPDATE leads SET client_id = ?, status = 'qualified' WHERE id = ?`,
+          [out.clientId, leadId],
+        );
         const token = await issueClientPortalInvite(conn, {
           clientId: out.clientId,
           email,
@@ -8607,7 +11761,11 @@ function registerFeatureRoutes(
           `New enrollment · ${created.publicId}`,
           `Nueva inscripción · ${created.publicId}`,
         ),
-        headline: tr(l, "A homeowner enrolled.", "Un propietario se inscribió."),
+        headline: tr(
+          l,
+          "A homeowner enrolled.",
+          "Un propietario se inscribió.",
+        ),
         paragraphs: [
           tr(
             l,
@@ -8617,10 +11775,7 @@ function registerFeatureRoutes(
         ],
         details: [
           [tr(l, "Property", "Propiedad"), address],
-          [
-            tr(l, "Affiliate", "Afiliado"),
-            affiliateRef?.referral_code || "—",
-          ],
+          [tr(l, "Affiliate", "Afiliado"), affiliateRef?.referral_code || "—"],
           [
             tr(l, "Soft pull", "Soft pull"),
             softPull ? tr(l, "Yes", "Sí") : tr(l, "No", "No"),
@@ -8770,10 +11925,17 @@ function registerFeatureRoutes(
           `UPDATE contractor_applications SET sent_at = COALESCE(sent_at, NOW()) WHERE id = ?`,
           [app.id],
         );
-        await cpqLogEvent(conn, app.id, "invite_accepted", { type: "contractor" });
+        await cpqLogEvent(conn, app.id, "invite_accepted", {
+          type: "contractor",
+        });
         return `/contractor/apply/${await cpqMintToken(conn, app.id)}`;
       });
-      res.json({ ok: true, email: inv.email, next: "application", application_path: applicationPath });
+      res.json({
+        ok: true,
+        email: inv.email,
+        next: "application",
+        application_path: applicationPath,
+      });
     }),
   );
 
@@ -8836,7 +11998,8 @@ function registerFeatureRoutes(
           bio: a.bio == null || a.bio === "" ? null : String(a.bio),
           tracking_url: `${requestPublicOrigin(req)}/r/${trackingCode}`,
           parent_affiliate_id: parentAffiliateId,
-          can_manage_team: parentAffiliateId == null,
+          // Agreement §9: every affiliate may recruit.
+          can_manage_team: true,
         },
         stats: {
           clicks: Number(clicks.n),
@@ -8851,7 +12014,10 @@ function registerFeatureRoutes(
           commission_pending_cents: byComm.pending || 0,
           commission_approved_cents: byComm.approved || 0,
           commission_paid_cents: byComm.paid || 0,
-          payout_days: await getSettingInt("commission_payout_days_after_loan_close", 5),
+          payout_days: await getSettingInt(
+            "commission_payout_days_after_loan_close",
+            5,
+          ),
         },
       });
     }),
@@ -8866,11 +12032,14 @@ function registerFeatureRoutes(
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT p.public_id, p.milestone, p.milestone_changed_at, p.property_city,
                 p.sq_ft, p.created_at, pl.name AS plan_name,
-                c.first_name, c.last_name, c.email, c.phone,
+                c.id AS client_id, c.first_name, c.last_name, c.email, c.phone,
+                ds.label_en AS deal_status_en, ds.label_es AS deal_status_es, ds.tone AS deal_status_tone,
+                c.deal_status_changed_at,
                 ac.amount_cents AS commission_cents, ac.status AS commission_status,
                 ac.expected_pay_at
          FROM projects p
          JOIN clients c ON c.id = p.client_id
+         LEFT JOIN deal_statuses ds ON ds.id = c.deal_status_id
          LEFT JOIN adu_plans pl ON pl.id = p.adu_plan_id
          LEFT JOIN affiliate_commissions ac
            ON ac.project_id = p.id AND ac.affiliate_id = ?
@@ -8878,7 +12047,30 @@ function registerFeatureRoutes(
          ORDER BY p.created_at DESC LIMIT 500`,
         [user.id, user.id, user.id, user.id],
       );
-      res.json({ ok: true, clients: rows });
+      // Updates staff shared with affiliates (newest first, 5 per client).
+      const clientIds = [...new Set(rows.map((r) => Number(r.client_id)))];
+      const updatesBy = new Map<number, unknown[]>();
+      if (clientIds.length) {
+        const [ups] = await pool.query<RowDataPacket[]>(
+          `SELECT id, client_id, kind, body, deal_status_label_en, deal_status_label_es, created_at
+           FROM client_updates WHERE client_id IN (?) AND visibility = 'affiliate'
+           ORDER BY id DESC LIMIT 2000`,
+          [clientIds],
+        );
+        for (const u of ups) {
+          const list = updatesBy.get(Number(u.client_id)) || [];
+          if (list.length < 5)
+            list.push({ ...u, created_at: isoDate(u.created_at) });
+          updatesBy.set(Number(u.client_id), list);
+        }
+      }
+      res.json({
+        ok: true,
+        clients: rows.map((r) => ({
+          ...r,
+          updates: updatesBy.get(Number(r.client_id)) || [],
+        })),
+      });
     }),
   );
 
@@ -8888,20 +12080,35 @@ function registerFeatureRoutes(
     route(async (req, res) => {
       const user = portalUser(res);
       const b = req.body || {};
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const email = normalizeEmail(b.email);
-      const phone = String(b.phone || "").trim().slice(0, 40);
-      const address = String(b.property_address || "").trim().slice(0, 500);
-      const city = b.property_city ? String(b.property_city).trim().slice(0, 100) : null;
-      const zip = b.property_zip ? String(b.property_zip).trim().slice(0, 20) : null;
+      const phone = String(b.phone || "")
+        .trim()
+        .slice(0, 40);
+      const address = String(b.property_address || "")
+        .trim()
+        .slice(0, 500);
+      const city = b.property_city
+        ? String(b.property_city).trim().slice(0, 100)
+        : null;
+      const zip = b.property_zip
+        ? String(b.property_zip).trim().slice(0, 20)
+        : null;
       const planId = b.adu_plan_id ? parseId(b.adu_plan_id) : null;
       const lang = asLang(b.preferred_language);
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
-      if (phone.replace(/\D/g, "").length < 10) throw new HttpError(400, "validation.phoneMin");
-      if (address.length < 5) throw new HttpError(400, "validation.addressRequired");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
+      if (phone.replace(/\D/g, "").length < 10)
+        throw new HttpError(400, "validation.phoneMin");
+      if (address.length < 5)
+        throw new HttpError(400, "validation.addressRequired");
       if (!(b.homeowner_consent === true || b.homeowner_consent === 1)) {
         throw new HttpError(400, "validation.homeownerConsent");
       }
@@ -8945,10 +12152,22 @@ function registerFeatureRoutes(
         publicId: created.publicId,
       });
       await notifyStaff("affiliate_client_registered", (l) => ({
-        subject: tr(l, `Affiliate registered a client: ${first} ${last}`, `Un afiliado registró un cliente: ${first} ${last}`),
-        headline: tr(l, "New client from an affiliate", "Nuevo cliente de un afiliado"),
+        subject: tr(
+          l,
+          `Affiliate registered a client: ${first} ${last}`,
+          `Un afiliado registró un cliente: ${first} ${last}`,
+        ),
+        headline: tr(
+          l,
+          "New client from an affiliate",
+          "Nuevo cliente de un afiliado",
+        ),
         paragraphs: [
-          tr(l, `${user.first_name} ${user.last_name} registered a homeowner.`, `${user.first_name} ${user.last_name} registró a un propietario.`),
+          tr(
+            l,
+            `${user.first_name} ${user.last_name} registered a homeowner.`,
+            `${user.first_name} ${user.last_name} registró a un propietario.`,
+          ),
         ],
         details: [
           [tr(l, "Client", "Cliente"), `${first} ${last}`],
@@ -8957,7 +12176,10 @@ function registerFeatureRoutes(
           [tr(l, "Property", "Propiedad"), address],
           [tr(l, "Project", "Proyecto"), created.publicId],
         ],
-        cta: { url: `${APP_URL}/admin/projects/${created.publicId}`, label: tr(l, "Open project", "Abrir proyecto") },
+        cta: {
+          url: `${APP_URL}/admin/projects/${created.publicId}`,
+          label: tr(l, "Open project", "Abrir proyecto"),
+        },
       }));
       res.status(201).json({
         ok: true,
@@ -8965,6 +12187,657 @@ function registerFeatureRoutes(
         project_public_id: created.publicId,
         invite_sent: true,
       });
+    }),
+  );
+
+  // ── Affiliate onboarding (portal): agreement e-sign + online W-9 ─────────
+  const onboardingLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: process.env.VITEST === "true" ? 1000 : 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "errors.tooMany" },
+  });
+
+  // Portal session or the secure welcome link (pending affiliates can sign before approval).
+  const affOnboard = requireAffiliateOrOnboarding();
+
+  const loadOnboardingPayload = async (affiliateId: number, lang: Lang) => {
+    const [[a]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT id, email, first_name, last_name, phone, company, status, preferred_language
+       FROM affiliates WHERE id = ? LIMIT 1`,
+      [affiliateId],
+    )) as unknown as [RowDataPacket[]];
+    if (!a) throw new HttpError(404, "errors.notFound");
+    const state = await affiliateOnboardingState(affiliateId);
+    const tpl = await loadAffiliateAgreementTemplate();
+    const sponsors = await affiliateSponsorNames(affiliateId);
+    const [[ag]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT id, template_version, lang, legal_name, business_name, signed_at
+       FROM affiliate_agreements WHERE affiliate_id = ? AND status = 'signed' ORDER BY id DESC LIMIT 1`,
+      [affiliateId],
+    )) as unknown as [RowDataPacket[]];
+    const [[w9]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT id, status, legal_name, tin_type, tin_last4, review_note, signed_at
+       FROM affiliate_w9s WHERE affiliate_id = ? ORDER BY id DESC LIMIT 1`,
+      [affiliateId],
+    )) as unknown as [RowDataPacket[]];
+    return {
+      ok: true,
+      state,
+      affiliate: {
+        first_name: String(a.first_name),
+        last_name: String(a.last_name),
+        email: String(a.email),
+        phone: a.phone ? String(a.phone) : null,
+        company: a.company ? String(a.company) : null,
+        status: String(a.status),
+      },
+      template: {
+        version: tpl.version,
+        // Preview with today's date; the exact text is re-rendered at signing.
+        body: { en: tpl.body_en, es: tpl.body_es }[lang],
+        body_en: tpl.body_en,
+      },
+      sponsor_name: sponsors.sponsor_name,
+      senior_sponsor_name: sponsors.senior_sponsor_name,
+      agreement: ag
+        ? {
+            id: Number(ag.id),
+            version: Number(ag.template_version),
+            lang: String(ag.lang),
+            legal_name: String(ag.legal_name),
+            business_name: ag.business_name ? String(ag.business_name) : null,
+            signed_at: isoDate(ag.signed_at),
+          }
+        : null,
+      w9: w9
+        ? {
+            id: Number(w9.id),
+            status: String(w9.status),
+            legal_name: String(w9.legal_name),
+            tin_type: String(w9.tin_type),
+            tin_last4: String(w9.tin_last4),
+            review_note: w9.review_note ? String(w9.review_note) : null,
+            signed_at: isoDate(w9.signed_at),
+          }
+        : null,
+      blank_w9_url: `/forms/irs-w9-rev-2024-03.pdf`,
+      presentation_url:
+        (await getSystemSettingValue("affiliate_presentation_url")) || null,
+      billing: await loadAffiliateBilling(affiliateId),
+    };
+  };
+
+  app.get(
+    "/api/affiliate/onboarding",
+    affOnboard,
+    route(async (req, res) => {
+      const user = portalUser(res);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await loadOnboardingPayload(user.id, asLang(req.query.lang)));
+    }),
+  );
+
+  app.post(
+    "/api/affiliate/onboarding/agreement",
+    affOnboard,
+    onboardingLimiter,
+    route(async (req, res) => {
+      const user = portalUser(res);
+      const b = req.body || {};
+      const [[a]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT id, email, status, subscription_price_cents FROM affiliates WHERE id = ? LIMIT 1`,
+        [user.id],
+      )) as unknown as [RowDataPacket[]];
+      // Signing is allowed while pending (welcome link); payouts still need approval + W-9 + card.
+      if (!a || !["active", "pending"].includes(String(a.status)))
+        throw new HttpError(409, "errors.affiliateNotApproved");
+      if (a.subscription_price_cents == null)
+        throw new HttpError(409, "errors.agreementPricePending");
+      const state = await affiliateOnboardingState(user.id);
+      // Re-signing is allowed when a newer version was published.
+      if (state.agreement_signed && !state.agreement_outdated)
+        throw new HttpError(409, "errors.agreementAlreadySigned");
+      if (b.consent !== true)
+        throw new HttpError(400, "validation.esignConsentRequired");
+      const legalName = String(b.legal_name || "")
+        .trim()
+        .slice(0, 200);
+      const businessName =
+        String(b.business_name || "")
+          .trim()
+          .slice(0, 200) || null;
+      const title =
+        String(b.title || "")
+          .trim()
+          .slice(0, 120) || null;
+      const address = String(b.address || "")
+        .trim()
+        .slice(0, 400);
+      const phone =
+        String(b.phone || "")
+          .trim()
+          .slice(0, 40) || null;
+      if (legalName.length < 2)
+        throw new HttpError(400, "validation.signerNameRequired");
+      if (address.length < 8)
+        throw new HttpError(400, "validation.addressRequired");
+      const sigPng = parseSignaturePng(b.signature_image);
+      const lang = asLang(b.lang);
+      const tpl = await loadAffiliateAgreementTemplate();
+      if (Number(b.version) !== tpl.version)
+        throw new HttpError(409, "errors.agreementVersionChanged");
+      const signedAt = new Date();
+      const party: AffiliateAgreementParty = {
+        legal_name: legalName,
+        business_name: businessName,
+        address,
+        phone,
+        email: String(a.email),
+      };
+      const price = Number(a.subscription_price_cents);
+      const render = (l: Lang) =>
+        renderAffiliateAgreement(l === "es" ? tpl.body_es : tpl.body_en, {
+          effective_date: pacificLongDate(signedAt, l),
+          party,
+          subscription_price_cents: price,
+        });
+      // Signing in Spanish also signs the controlling English text (Section 15).
+      const bodies =
+        lang === "es"
+          ? [
+              { lang: "es" as Lang, text: render("es") },
+              { lang: "en" as Lang, text: render("en") },
+            ]
+          : [{ lang: "en" as Lang, text: render("en") }];
+      const sha = crypto
+        .createHash("sha256")
+        .update(bodies.map((x) => x.text).join("\n\f\n"))
+        .digest("hex");
+      const sponsors = await affiliateSponsorNames(user.id);
+      const ip = clientIp(req);
+      const ua = String(req.headers["user-agent"] || "").slice(0, 500) || null;
+      const pdf = await buildAffiliateAgreementPdf({
+        lang,
+        version: tpl.version,
+        bodies,
+        party: { ...party, title },
+        sponsor_name: sponsors.sponsor_name,
+        senior_sponsor_name: sponsors.senior_sponsor_name,
+        signature_png: sigPng,
+        signed_at: signedAt,
+        signed_ip: ip,
+        signed_user_agent: ua,
+        body_sha256: sha,
+      });
+      const pathname = await storePrivatePdf(
+        `affiliates/${user.id}/agreement-v${tpl.version}-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.pdf`,
+        pdf,
+      );
+      const [ins] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO affiliate_agreements
+           (affiliate_id, template_version, lang, legal_name, business_name, title, address, phone, email,
+            subscription_price_cents, sponsor_affiliate_id, sponsor_name, body_sha256, signature_image,
+            signed_at, signed_ip, signed_user_agent, pdf_blob_pathname)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          user.id,
+          tpl.version,
+          lang,
+          legalName,
+          businessName,
+          title,
+          address,
+          phone,
+          String(a.email),
+          price,
+          sponsors.sponsor_id,
+          sponsors.sponsor_name,
+          sha,
+          String(b.signature_image),
+          signedAt,
+          ip,
+          ua,
+          pathname,
+        ],
+      );
+      await notifyStaff("affiliate_onboarding", (l) => ({
+        subject: tr(
+          l,
+          `Affiliate agreement signed: ${legalName}`,
+          `Acuerdo de afiliado firmado: ${legalName}`,
+        ),
+        headline: tr(
+          l,
+          "Affiliate agreement signed",
+          "Acuerdo de afiliado firmado",
+        ),
+        paragraphs: [
+          tr(
+            l,
+            `${legalName} signed the Affiliate Agreement (v${tpl.version}).`,
+            `${legalName} firmó el Acuerdo de Afiliados (v${tpl.version}).`,
+          ),
+        ],
+        cta: {
+          url: `${APP_URL}/admin/affiliates/${user.id}`,
+          label: tr(l, "Open affiliate", "Abrir afiliado"),
+        },
+      }));
+      res
+        .status(201)
+        .json({
+          ...(await loadOnboardingPayload(user.id, lang)),
+          agreement_id: Number(ins.insertId),
+        });
+    }),
+  );
+
+  app.post(
+    "/api/affiliate/onboarding/w9",
+    affOnboard,
+    onboardingLimiter,
+    route(async (req, res) => {
+      const user = portalUser(res);
+      const b = req.body || {};
+      const state = await affiliateOnboardingState(user.id);
+      if (!state.agreement_signed)
+        throw new HttpError(409, "errors.agreementRequiredFirst");
+      if (state.w9_status === "submitted" || state.w9_status === "accepted") {
+        throw new HttpError(409, "errors.w9AlreadySubmitted");
+      }
+      if (b.certify !== true)
+        throw new HttpError(400, "validation.w9CertifyRequired");
+      const classes = [
+        "individual",
+        "c_corp",
+        "s_corp",
+        "partnership",
+        "trust_estate",
+        "llc",
+        "other",
+      ] as const;
+      const cls = classes.find((c) => c === b.tax_classification);
+      if (!cls) throw new HttpError(400, "validation.w9Classification");
+      const llc =
+        cls === "llc"
+          ? ["C", "S", "P"].includes(String(b.llc_tax_class))
+            ? (String(b.llc_tax_class) as "C" | "S" | "P")
+            : null
+          : null;
+      if (cls === "llc" && !llc)
+        throw new HttpError(400, "validation.w9LlcClass");
+      const other =
+        cls === "other"
+          ? String(b.other_classification || "")
+              .trim()
+              .slice(0, 120)
+          : null;
+      if (cls === "other" && !other)
+        throw new HttpError(400, "validation.w9Classification");
+      const tinType =
+        b.tin_type === "ein" ? "ein" : b.tin_type === "ssn" ? "ssn" : null;
+      if (!tinType) throw new HttpError(400, "validation.w9Tin");
+      const tin = validateTin(tinType, b.tin);
+      if (!tin) throw new HttpError(400, "validation.w9Tin");
+      const legalName = String(b.legal_name || "")
+        .trim()
+        .slice(0, 200);
+      const businessName =
+        String(b.business_name || "")
+          .trim()
+          .slice(0, 200) || null;
+      const address = String(b.address || "")
+        .trim()
+        .slice(0, 255);
+      const csz = String(b.city_state_zip || "")
+        .trim()
+        .slice(0, 255);
+      if (legalName.length < 2)
+        throw new HttpError(400, "validation.signerNameRequired");
+      if (address.length < 4 || csz.length < 5)
+        throw new HttpError(400, "validation.addressRequired");
+      const code = (v: unknown, max: number) =>
+        String(v || "")
+          .trim()
+          .toUpperCase()
+          .slice(0, max) || null;
+      const sigPng = parseSignaturePng(b.signature_image);
+      const signedAt = new Date();
+      const pdf = await buildW9Pdf({
+        legal_name: legalName,
+        business_name: businessName,
+        tax_classification: cls,
+        llc_tax_class: llc,
+        other_classification: other,
+        foreign_partners: b.foreign_partners === true,
+        exempt_payee_code: code(b.exempt_payee_code, 4),
+        fatca_code: code(b.fatca_code, 4),
+        address,
+        city_state_zip: csz,
+        tin_type: tinType,
+        tin,
+        signature_png: sigPng,
+        signed_at: signedAt,
+      });
+      const pathname = await storePrivatePdf(
+        `affiliates/${user.id}/w9-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.pdf`,
+        pdf,
+      );
+      // The full TIN exists only inside the private PDF; the row keeps the last 4.
+      await pool.execute(
+        `INSERT INTO affiliate_w9s
+           (affiliate_id, legal_name, business_name, tax_classification, llc_tax_class, other_classification,
+            tin_type, tin_last4, address, city_state_zip, pdf_blob_pathname, signed_at, signed_ip, signed_user_agent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          user.id,
+          legalName,
+          businessName,
+          cls,
+          llc,
+          other,
+          tinType,
+          tin.slice(-4),
+          address,
+          csz,
+          pathname,
+          signedAt,
+          clientIp(req),
+          String(req.headers["user-agent"] || "").slice(0, 500) || null,
+        ],
+      );
+      await notifyStaff("affiliate_onboarding", (l) => ({
+        subject: tr(
+          l,
+          `W-9 submitted: ${legalName}`,
+          `W-9 enviado: ${legalName}`,
+        ),
+        headline: tr(
+          l,
+          "Affiliate W-9 ready for review",
+          "W-9 de afiliado listo para revisión",
+        ),
+        paragraphs: [
+          tr(
+            l,
+            `${legalName} submitted a W-9 (${tinType.toUpperCase()} ending ${tin.slice(-4)}).`,
+            `${legalName} envió un W-9 (${tinType.toUpperCase()} terminación ${tin.slice(-4)}).`,
+          ),
+        ],
+        cta: {
+          url: `${APP_URL}/admin/affiliates/${user.id}`,
+          label: tr(l, "Review W-9", "Revisar W-9"),
+        },
+      }));
+      res
+        .status(201)
+        .json(await loadOnboardingPayload(user.id, asLang(b.lang)));
+    }),
+  );
+
+  app.get(
+    "/api/affiliate/onboarding/agreement/pdf",
+    affOnboard,
+    route(async (_req, res) => {
+      const user = portalUser(res);
+      const [[ag]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT pdf_blob_pathname FROM affiliate_agreements
+         WHERE affiliate_id = ? AND status = 'signed' AND pdf_blob_pathname IS NOT NULL ORDER BY id DESC LIMIT 1`,
+        [user.id],
+      )) as unknown as [RowDataPacket[]];
+      if (!ag) throw new HttpError(404, "errors.notFound");
+      await redirectToPrivateBlob(res, String(ag.pdf_blob_pathname));
+    }),
+  );
+
+  app.get(
+    "/api/affiliate/onboarding/w9/pdf",
+    affOnboard,
+    route(async (_req, res) => {
+      const user = portalUser(res);
+      const [[w]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT pdf_blob_pathname FROM affiliate_w9s WHERE affiliate_id = ? ORDER BY id DESC LIMIT 1`,
+        [user.id],
+      )) as unknown as [RowDataPacket[]];
+      if (!w) throw new HttpError(404, "errors.notFound");
+      await redirectToPrivateBlob(res, String(w.pdf_blob_pathname));
+    }),
+  );
+
+  // ── Affiliate onboarding (admin) ─────────────────────────────────────────
+  const requireAffiliateRow = async (raw: unknown) => {
+    const id = parseId(raw);
+    const [[a]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT id, email, first_name, last_name, preferred_language, status, subscription_price_cents
+       FROM affiliates WHERE id = ? LIMIT 1`,
+      [id],
+    )) as unknown as [RowDataPacket[]];
+    if (!a) throw new HttpError(404, "errors.notFound");
+    return a;
+  };
+
+  app.get(
+    "/api/admin/affiliates/:id/onboarding",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const a = await requireAffiliateRow(req.params.id);
+      const id = Number(a.id);
+      const [agreements] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, template_version, lang, status, legal_name, business_name, title, address, phone, email,
+                subscription_price_cents, sponsor_name, signed_at, signed_ip, voided_at, void_reason
+         FROM affiliate_agreements WHERE affiliate_id = ? ORDER BY id DESC`,
+        [id],
+      );
+      const [w9s] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, status, legal_name, business_name, tax_classification, llc_tax_class, tin_type, tin_last4,
+                address, city_state_zip, signed_at, reviewed_at, review_note
+         FROM affiliate_w9s WHERE affiliate_id = ? ORDER BY id DESC`,
+        [id],
+      );
+      const sponsors = await affiliateSponsorNames(id);
+      res.json({
+        ok: true,
+        state: await affiliateOnboardingState(id),
+        sponsor_name: sponsors.sponsor_name,
+        senior_sponsor_name: sponsors.senior_sponsor_name,
+        agreements: agreements.map((r) => ({
+          ...r,
+          signed_at: isoDate(r.signed_at),
+          voided_at: isoDate(r.voided_at),
+        })),
+        w9s: w9s.map((r) => ({
+          ...r,
+          signed_at: isoDate(r.signed_at),
+          reviewed_at: isoDate(r.reviewed_at),
+        })),
+      });
+    }),
+  );
+
+  app.patch(
+    "/api/admin/affiliates/:id/subscription-price",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const a = await requireAffiliateRow(req.params.id);
+      const raw = req.body?.subscription_price_cents;
+      const out = await setAffiliateSubscriptionPriceCore(
+        Number(a.id),
+        raw === null ? null : Number(raw),
+      );
+      res.json({
+        ok: true,
+        state: await affiliateOnboardingState(Number(a.id)),
+        ...out,
+      });
+    }),
+  );
+
+  app.get(
+    "/api/admin/affiliates/:id/agreements/:agreementId/pdf",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const a = await requireAffiliateRow(req.params.id);
+      const [[ag]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT pdf_blob_pathname FROM affiliate_agreements WHERE id = ? AND affiliate_id = ? LIMIT 1`,
+        [parseId(req.params.agreementId), a.id],
+      )) as unknown as [RowDataPacket[]];
+      if (!ag?.pdf_blob_pathname) throw new HttpError(404, "errors.notFound");
+      await redirectToPrivateBlob(res, String(ag.pdf_blob_pathname));
+    }),
+  );
+
+  app.post(
+    "/api/admin/affiliates/:id/agreements/:agreementId/void",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const me = portalUser(res);
+      const a = await requireAffiliateRow(req.params.id);
+      const reason = String(req.body?.reason || "")
+        .trim()
+        .slice(0, 500);
+      if (reason.length < 5)
+        throw new HttpError(400, "validation.reasonRequired");
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE affiliate_agreements SET status = 'void', voided_at = NOW(), voided_by_admin_id = ?, void_reason = ?
+         WHERE id = ? AND affiliate_id = ? AND status = 'signed'`,
+        [me.id, reason, parseId(req.params.agreementId), a.id],
+      );
+      if (!r.affectedRows) throw new HttpError(404, "errors.notFound");
+      res.json({
+        ok: true,
+        state: await affiliateOnboardingState(Number(a.id)),
+      });
+    }),
+  );
+
+  app.get(
+    "/api/admin/affiliates/:id/w9s/:w9Id/pdf",
+    requireAdmin("finance.read"),
+    route(async (req, res) => {
+      const a = await requireAffiliateRow(req.params.id);
+      const [[w]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT pdf_blob_pathname FROM affiliate_w9s WHERE id = ? AND affiliate_id = ? LIMIT 1`,
+        [parseId(req.params.w9Id), a.id],
+      )) as unknown as [RowDataPacket[]];
+      if (!w) throw new HttpError(404, "errors.notFound");
+      await redirectToPrivateBlob(res, String(w.pdf_blob_pathname));
+    }),
+  );
+
+  app.post(
+    "/api/admin/affiliates/:id/w9s/:w9Id/review",
+    requireAdmin("finance.write"),
+    route(async (req, res) => {
+      const me = portalUser(res);
+      const a = await requireAffiliateRow(req.params.id);
+      const status =
+        req.body?.status === "accepted"
+          ? "accepted"
+          : req.body?.status === "rejected"
+            ? "rejected"
+            : null;
+      if (!status) throw new HttpError(400, "validation.invalidField");
+      const note =
+        String(req.body?.note || "")
+          .trim()
+          .slice(0, 500) || null;
+      if (status === "rejected" && (!note || note.length < 5))
+        throw new HttpError(400, "validation.reasonRequired");
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE affiliate_w9s SET status = ?, review_note = ?, reviewed_by_admin_id = ?, reviewed_at = NOW()
+         WHERE id = ? AND affiliate_id = ?`,
+        [status, note, me.id, parseId(req.params.w9Id), a.id],
+      );
+      if (!r.affectedRows) throw new HttpError(404, "errors.notFound");
+      if (status === "rejected") {
+        const l = asLang(a.preferred_language);
+        await safeSend(
+          String(a.email),
+          tplPortalNotice({
+            lang: l,
+            subject: tr(
+              l,
+              "Please resubmit your W-9",
+              "Por favor envíe de nuevo su W-9",
+            ),
+            headline: tr(
+              l,
+              "Your W-9 needs a correction",
+              "Su W-9 necesita una corrección",
+            ),
+            paragraphs: [note!],
+            cta: {
+              url: `${APP_URL}/affiliate/agreement`,
+              label: tr(l, "Update my W-9", "Actualizar mi W-9"),
+            },
+          }),
+        );
+      }
+      res.json({
+        ok: true,
+        state: await affiliateOnboardingState(Number(a.id)),
+      });
+    }),
+  );
+
+  app.get(
+    "/api/admin/affiliate-agreement/template",
+    requireAdmin("people.read"),
+    route(async (_req, res) => {
+      const tpl = await loadAffiliateAgreementTemplate();
+      const [[cnt]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT COUNT(*) AS n FROM affiliate_agreements WHERE template_version = ? AND status = 'signed'`,
+        [tpl.version],
+      )) as unknown as [RowDataPacket[]];
+      res.json({ ok: true, template: tpl, signed_count: Number(cnt?.n || 0) });
+    }),
+  );
+
+  app.post(
+    "/api/admin/affiliate-agreement/template",
+    requireAdmin("settings"),
+    route(async (req, res) => {
+      const me = portalUser(res);
+      const en = String(req.body?.body_en || "").trim();
+      const es = String(req.body?.body_es || "").trim();
+      if (
+        en.length < 200 ||
+        es.length < 200 ||
+        en.length > 200_000 ||
+        es.length > 200_000
+      ) {
+        throw new HttpError(400, "validation.invalidField");
+      }
+      for (const body of [en, es]) {
+        for (const m of body.matchAll(/\{\{(\w+)\}\}/g)) {
+          if (
+            ![
+              "effective_date",
+              "affiliate_party",
+              "subscription_price",
+            ].includes(m[1])
+          ) {
+            throw new HttpError(400, "validation.unknownPlaceholder");
+          }
+        }
+      }
+      const current = await loadAffiliateAgreementTemplate();
+      await pool.execute(
+        `INSERT INTO affiliate_agreement_templates (version, body_en, body_es, notes, published_at, created_by_admin_id)
+         VALUES (?, ?, ?, ?, NOW(), ?)`,
+        [
+          current.version + 1,
+          `${en}\n`,
+          `${es}\n`,
+          String(req.body?.notes || "").slice(0, 500) || null,
+          me.id,
+        ],
+      );
+      res
+        .status(201)
+        .json({ ok: true, template: await loadAffiliateAgreementTemplate() });
     }),
   );
 
@@ -8985,7 +12858,8 @@ function registerFeatureRoutes(
         ok: true,
         profile: {
           ...toPortalUser("affiliate", a),
-          company: a.company == null || a.company === "" ? null : String(a.company),
+          company:
+            a.company == null || a.company === "" ? null : String(a.company),
           referral_code: String(a.referral_code),
           slug: a.slug == null || a.slug === "" ? null : String(a.slug),
           bio: a.bio == null || a.bio === "" ? null : String(a.bio),
@@ -9009,7 +12883,10 @@ function registerFeatureRoutes(
       });
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "slug")) {
         updates.slug = normalizeAffiliateSlugInput(req.body.slug);
-        await assertAffiliateSlugAvailable(updates.slug as string | null, me.id);
+        await assertAffiliateSlugAvailable(
+          updates.slug as string | null,
+          me.id,
+        );
       }
       if (Object.keys(updates).length === 0) {
         throw new HttpError(400, "validation.invalidField");
@@ -9019,16 +12896,27 @@ function registerFeatureRoutes(
           throw new HttpError(400, "validation.phoneMin");
         }
       }
-      if ("phone" in updates && (updates.phone === "" || updates.phone == null)) {
+      if (
+        "phone" in updates &&
+        (updates.phone === "" || updates.phone == null)
+      ) {
         updates.phone = null;
       }
-      if ("company" in updates && (updates.company === "" || updates.company == null)) {
+      if (
+        "company" in updates &&
+        (updates.company === "" || updates.company == null)
+      ) {
         updates.company = null;
       }
       if ("bio" in updates && (updates.bio === "" || updates.bio == null)) {
         updates.bio = null;
       }
-      await assertIdentityEditAllowed({ entity: "affiliate", id: me.id, updates, actor: "affiliate" });
+      await assertIdentityEditAllowed({
+        entity: "affiliate",
+        id: me.id,
+        updates,
+        actor: "affiliate",
+      });
       await applyUpdate(pool, "affiliates", me.id, updates);
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT id, email, first_name, last_name, phone, company, status,
@@ -9043,7 +12931,8 @@ function registerFeatureRoutes(
         user: toPortalUser("affiliate", a),
         profile: {
           ...toPortalUser("affiliate", a),
-          company: a.company == null || a.company === "" ? null : String(a.company),
+          company:
+            a.company == null || a.company === "" ? null : String(a.company),
           referral_code: String(a.referral_code),
           slug: a.slug == null || a.slug === "" ? null : String(a.slug),
           bio: a.bio == null || a.bio === "" ? null : String(a.bio),
@@ -9123,9 +13012,8 @@ function registerFeatureRoutes(
     if (!a || String(a.status) !== "active") {
       throw new HttpError(403, "errors.forbidden");
     }
-    if (a.parent_affiliate_id) {
-      throw new HttpError(403, "errors.subCannotInvite");
-    }
+    // Agreement §9: any Affiliate may recruit; pay still stops two levels above
+    // the referring affiliate (Senior Sponsor), so deeper chains earn nothing extra.
     return a;
   }
 
@@ -9136,46 +13024,6 @@ function registerFeatureRoutes(
     );
     if (!rows[0]) throw new HttpError(404, "errors.notFound");
     return rows[0];
-  }
-
-  async function sendSubAffiliateWelcome(opts: {
-    email: string;
-    firstName: string;
-    lang: Lang;
-    parentName: string;
-  }) {
-    await safeSend(
-      opts.email,
-      tplPortalNotice({
-        lang: opts.lang,
-        subject: tr(
-          opts.lang,
-          "You're a Groundwork sub-affiliate",
-          "Eres subafiliado de Groundwork",
-        ),
-        headline: tr(
-          opts.lang,
-          "Welcome to the team.",
-          "Bienvenido al equipo.",
-        ),
-        paragraphs: [
-          tr(
-            opts.lang,
-            `Hi ${opts.firstName}, ${opts.parentName} added you as a sub-affiliate.`,
-            `Hola ${opts.firstName}, ${opts.parentName} te agregó como subafiliado.`,
-          ),
-          tr(
-            opts.lang,
-            "Sign in with your email and a one-time code to get your tracking link and register clients.",
-            "Entra con tu correo y un código de un solo uso para obtener tu enlace y registrar clientes.",
-          ),
-        ],
-        cta: {
-          url: `${APP_URL}/affiliate/login`,
-          label: tr(opts.lang, "Open affiliate portal", "Abrir portal de afiliados"),
-        },
-      }),
-    );
   }
 
   app.get(
@@ -9226,15 +13074,20 @@ function registerFeatureRoutes(
       const user = portalUser(res);
       await assertTopLevelAffiliate(user.id);
       const b = req.body || {};
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const email = normalizeEmail(b.email);
       const phone = b.phone ? String(b.phone).trim().slice(0, 40) : null;
       const company = b.company ? String(b.company).trim().slice(0, 200) : null;
       const lang = asLang(b.preferred_language);
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (phone && phone.replace(/\D/g, "").length < 10) {
         throw new HttpError(400, "validation.phoneMin");
       }
@@ -9246,23 +13099,24 @@ function registerFeatureRoutes(
       // One role per person (no client / contractor / other affiliate with this email or phone).
       await assertPersonAvailable({ email, phone, actor: "affiliate" });
 
-      // 4B: sub-affiliates activate immediately (admin can suspend later).
-      const subId = await withNewAffiliateCodes(first, last, async ({ code, slug }) => {
-        const [ins] = await pool.execute<ResultSetHeader>(
-          `INSERT INTO affiliates
+      // Sub-affiliates start pending like every affiliate: Groundwork approves,
+      // and their free period starts on approval (card saved during setup).
+      const subId = await withNewAffiliateCodes(
+        first,
+        last,
+        async ({ code, slug }) => {
+          const [ins] = await pool.execute<ResultSetHeader>(
+            `INSERT INTO affiliates
              (email, first_name, last_name, phone, company, status, preferred_language,
-              referral_code, slug, parent_affiliate_id, approved_at)
-           VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NOW())`,
-          [email, first, last, phone, company, lang, code, slug, user.id],
-        );
-        return Number(ins.insertId);
-      });
-      await sendSubAffiliateWelcome({
-        email,
-        firstName: first,
-        lang,
-        parentName: `${user.first_name} ${user.last_name}`.trim(),
-      });
+              referral_code, slug, parent_affiliate_id)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+            [email, first, last, phone, company, lang, code, slug, user.id],
+          );
+          return Number(ins.insertId);
+        },
+      );
+      // Same welcome as every new affiliate: presentation + agreement, W-9, card.
+      await sendAffiliateWelcome(subId);
       await notifyStaff("affiliate_signup", (l) => ({
         subject: tr(
           l,
@@ -9273,8 +13127,8 @@ function registerFeatureRoutes(
         paragraphs: [
           tr(
             l,
-            `${user.first_name} ${user.last_name} added a sub-affiliate (active).`,
-            `${user.first_name} ${user.last_name} agregó un subafiliado (activo).`,
+            `${user.first_name} ${user.last_name} added a sub-affiliate. Review and approve in the admin portal.`,
+            `${user.first_name} ${user.last_name} agregó un subafiliado. Revísalo y apruébalo en el portal de administración.`,
           ),
         ],
         details: [
@@ -9298,12 +13152,12 @@ function registerFeatureRoutes(
       const user = portalUser(res);
       await assertTopLevelAffiliate(user.id);
       const sub = await assertOwnedSub(user.id, parseId(req.params.id));
-      await sendSubAffiliateWelcome({
-        email: String(sub.email),
-        firstName: String(sub.first_name || ""),
-        lang: asLang(sub.preferred_language),
-        parentName: `${user.first_name} ${user.last_name}`.trim(),
-      });
+      // Fresh welcome (presentation + new secure link); older links stop working.
+      await pool.execute(
+        `UPDATE affiliate_onboarding_links SET revoked_at = NOW() WHERE affiliate_id = ? AND revoked_at IS NULL`,
+        [Number(sub.id)],
+      );
+      await sendAffiliateWelcome(Number(sub.id));
       res.json({ ok: true });
     }),
   );
@@ -9322,7 +13176,17 @@ function registerFeatureRoutes(
       if (!Object.keys(updates).length) {
         throw new HttpError(400, "validation.invalidField");
       }
+      // Only Groundwork approves: a parent can pause/resume an approved sub, not approve a pending one.
+      const [[subRow]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT approved_at FROM affiliates WHERE id = ? LIMIT 1`,
+        [subId],
+      )) as unknown as [RowDataPacket[]];
+      if (updates.status === "active" && !subRow?.approved_at) {
+        throw new HttpError(409, "errors.affiliatePendingApproval");
+      }
       await applyUpdate(pool, "affiliates", subId, updates);
+      if (updates.status === "active")
+        await startBillingOnApproval("affiliate", subId);
       res.json({ ok: true });
     }),
   );
@@ -9396,7 +13260,10 @@ function registerFeatureRoutes(
     return rows[0] || null;
   }
 
-  async function contractorProjectInternalId(publicId: string, contractorId: number) {
+  async function contractorProjectInternalId(
+    publicId: string,
+    contractorId: number,
+  ) {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT id, milestone, contractor_cost_cents FROM projects
        WHERE public_id = ? AND contractor_id = ? LIMIT 1`,
@@ -9511,19 +13378,33 @@ function registerFeatureRoutes(
         throw new HttpError(400, "validation.photoFile");
       }
       const kind = detectImageType(body);
-      if (!kind || kind.mime !== String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase()) {
+      if (
+        !kind ||
+        kind.mime !==
+          String(req.headers["content-type"] || "")
+            .split(";")[0]
+            .trim()
+            .toLowerCase()
+      ) {
         throw new HttpError(400, "validation.photoFile");
       }
       const caption = req.query.caption
         ? String(req.query.caption).trim().slice(0, 300)
         : null;
-      const storageUrl = await storeProjectPhotoFile(publicId, body, kind.mime, kind.ext);
+      const storageUrl = await storeProjectPhotoFile(
+        publicId,
+        body,
+        kind.mime,
+        kind.ext,
+      );
       const [r] = await pool.execute<ResultSetHeader>(
         `INSERT INTO project_photos (project_id, uploaded_by_contractor_id, storage_url, caption, taken_at)
          VALUES (?, ?, ?, ?, NOW())`,
         [meta.id, user.id, storageUrl, caption],
       );
-      res.status(201).json({ ok: true, id: Number(r.insertId), storage_url: storageUrl });
+      res
+        .status(201)
+        .json({ ok: true, id: Number(r.insertId), storage_url: storageUrl });
     }),
   );
 
@@ -9570,7 +13451,9 @@ function registerFeatureRoutes(
       if (!Number.isInteger(amount) || amount <= 0 || amount > 1_000_000_000) {
         throw new HttpError(400, "validation.drawAmount");
       }
-      const note = req.body?.note ? String(req.body.note).trim().slice(0, 2000) : null;
+      const note = req.body?.note
+        ? String(req.body.note).trim().slice(0, 2000)
+        : null;
       const submit = req.body?.submit !== false;
       const drawId = await withTx(async (conn) => {
         const [rows] = await conn.execute<RowDataPacket[]>(
@@ -9618,16 +13501,27 @@ function registerFeatureRoutes(
     amount: number,
   ) {
     await notifyStaff("draw_submitted", (l) => ({
-      subject: tr(l, `Draw request ${money(amount)} · ${publicId}`, `Solicitud de desembolso ${money(amount)} · ${publicId}`),
+      subject: tr(
+        l,
+        `Draw request ${money(amount)} · ${publicId}`,
+        `Solicitud de desembolso ${money(amount)} · ${publicId}`,
+      ),
       headline: tr(l, "New draw request", "Nueva solicitud de desembolso"),
       paragraphs: [
-        tr(l, `${user.first_name} ${user.last_name} submitted a draw request for review.`, `${user.first_name} ${user.last_name} envió una solicitud de desembolso para revisión.`),
+        tr(
+          l,
+          `${user.first_name} ${user.last_name} submitted a draw request for review.`,
+          `${user.first_name} ${user.last_name} envió una solicitud de desembolso para revisión.`,
+        ),
       ],
       details: [
         [tr(l, "Project", "Proyecto"), publicId],
         [tr(l, "Amount", "Monto"), money(amount)],
       ],
-      cta: { url: `${APP_URL}/admin/draws`, label: tr(l, "Review draws", "Revisar desembolsos") },
+      cta: {
+        url: `${APP_URL}/admin/draws`,
+        label: tr(l, "Review draws", "Revisar desembolsos"),
+      },
     }));
   }
 
@@ -9645,9 +13539,17 @@ function registerFeatureRoutes(
       );
       const d = rows[0];
       if (!d) throw new HttpError(404, "errors.notFound");
-      if (d.status !== "draft") throw new HttpError(409, "errors.invalidTransition");
-      await pool.execute(`UPDATE draw_requests SET status = 'submitted' WHERE id = ?`, [id]);
-      await notifyDrawSubmitted(user, String(d.public_id), Number(d.amount_cents));
+      if (d.status !== "draft")
+        throw new HttpError(409, "errors.invalidTransition");
+      await pool.execute(
+        `UPDATE draw_requests SET status = 'submitted' WHERE id = ?`,
+        [id],
+      );
+      await notifyDrawSubmitted(
+        user,
+        String(d.public_id),
+        Number(d.amount_cents),
+      );
       res.json({ ok: true });
     }),
   );
@@ -9751,7 +13653,11 @@ function registerFeatureRoutes(
 }
 
 /** Stream a contract PDF rendered on demand from its stored payload snapshot. */
-function sendContractPdf(res: Response, row: RowDataPacket | undefined, lang: unknown) {
+function sendContractPdf(
+  res: Response,
+  row: RowDataPacket | undefined,
+  lang: unknown,
+) {
   if (!row) throw new HttpError(404, "errors.notFound");
   let payload: ContractPayload | null = null;
   try {
@@ -9762,7 +13668,8 @@ function sendContractPdf(res: Response, row: RowDataPacket | undefined, lang: un
   } catch {
     payload = null;
   }
-  if (!payload || typeof payload !== "object") throw new HttpError(404, "errors.notFound");
+  if (!payload || typeof payload !== "object")
+    throw new HttpError(404, "errors.notFound");
   const pdf = buildContractPdf({
     payload,
     kind: String(row.kind),
@@ -9779,11 +13686,12 @@ function sendContractPdf(res: Response, row: RowDataPacket | undefined, lang: un
   res.status(200).send(pdf);
 }
 
-
 // ─── Portal feature layer: admin routes ──────────────────────────────────────
 
 function likeParam(q: unknown): string | null {
-  const s = String(q || "").trim().slice(0, 80);
+  const s = String(q || "")
+    .trim()
+    .slice(0, 80);
   return s ? `%${s.replace(/[%_\\]/g, "\\$&")}%` : null;
 }
 
@@ -9829,436 +13737,525 @@ async function runAdminLeadConvert(opts: {
   leadId: number;
   body: Record<string, unknown>;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
-  const rawTarget = String(opts.body?.target || "client").trim().toLowerCase();
+  const rawTarget = String(opts.body?.target || "client")
+    .trim()
+    .toLowerCase();
   const target: PersonEntity =
-    rawTarget === "affiliate" || rawTarget === "contractor" ? rawTarget : "client";
+    rawTarget === "affiliate" || rawTarget === "contractor"
+      ? rawTarget
+      : "client";
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT email, phone FROM leads WHERE id = ? LIMIT 1`,
     [opts.leadId],
   );
   let phoneOverride: { reason: string; matches: PersonMatch[] } | null = null;
   if (rows[0]) {
-    const otherRole = (await findPersonMatches({ email: rows[0].email, phone: rows[0].phone })).filter(
-      (m) => m.entity !== target,
-    );
+    const otherRole = (
+      await findPersonMatches({ email: rows[0].email, phone: rows[0].phone })
+    ).filter((m) => m.entity !== target);
     const byEmail = otherRole.find((m) => m.by === "email");
     if (byEmail) {
-      throw new HttpError(409, emailExistsErrorKey(byEmail.entity), { match: byEmail });
+      throw new HttpError(409, emailExistsErrorKey(byEmail.entity), {
+        match: byEmail,
+      });
     }
     if (otherRole.length) {
-      const reason = String(opts.body?.shared_phone_reason ?? "").trim().slice(0, 500);
+      const reason = String(opts.body?.shared_phone_reason ?? "")
+        .trim()
+        .slice(0, 500);
       if (reason.length < SHARED_PHONE_REASON_MIN) {
-        throw new HttpError(409, "errors.personPhoneMatch", { match: otherRole[0], can_override: true });
+        throw new HttpError(409, "errors.personPhoneMatch", {
+          match: otherRole[0],
+          can_override: true,
+        });
       }
       phoneOverride = { reason, matches: otherRole };
     }
   }
   const out = await runAdminLeadConvertInner(opts);
   if (phoneOverride && out.status < 300) {
-    const id = Number(out.body.client_id ?? out.body.affiliate_id ?? out.body.contractor_id);
+    const id = Number(
+      out.body.client_id ?? out.body.affiliate_id ?? out.body.contractor_id,
+    );
     if (id) {
-      await recordSharedPhoneOverride({ entity: target, id, override: phoneOverride, adminId: opts.user.id });
+      await recordSharedPhoneOverride({
+        entity: target,
+        id,
+        override: phoneOverride,
+        adminId: opts.user.id,
+      });
     }
   }
   return out;
 }
 
-async function runAdminLeadConvertInner(
-  opts: {
-    user: PortalAuthUser;
-    leadId: number;
-    body: Record<string, unknown>;
-  },
-): Promise<{ status: number; body: Record<string, unknown> }> {
-      const user = opts.user;
-      const id = opts.leadId;
-      const rawTarget = String(opts.body?.target || "client").trim().toLowerCase();
-      const target = (
-        rawTarget === "affiliate" || rawTarget === "contractor" ? rawTarget : "client"
-      ) as LeadConvertTarget;
-      const confirmPhoneLink = opts.body?.confirm_phone_link === true;
-      const statusRaw = String(opts.body?.status || "").trim().toLowerCase();
-      const chosenStatus: LeadConvertStatus =
-        statusRaw === "pending" || statusRaw === "active"
-          ? statusRaw
-          : target === "contractor"
-            ? "pending"
-            : "active";
+async function runAdminLeadConvertInner(opts: {
+  user: PortalAuthUser;
+  leadId: number;
+  body: Record<string, unknown>;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const user = opts.user;
+  const id = opts.leadId;
+  const rawTarget = String(opts.body?.target || "client")
+    .trim()
+    .toLowerCase();
+  const target = (
+    rawTarget === "affiliate" || rawTarget === "contractor"
+      ? rawTarget
+      : "client"
+  ) as LeadConvertTarget;
+  const confirmPhoneLink = opts.body?.confirm_phone_link === true;
+  const statusRaw = String(opts.body?.status || "")
+    .trim()
+    .toLowerCase();
+  const chosenStatus: LeadConvertStatus =
+    statusRaw === "pending" || statusRaw === "active"
+      ? statusRaw
+      : target === "contractor"
+        ? "pending"
+        : "active";
 
-      if (target === "client" && !adminCan(user.role, "projects.write")) {
-        throw new HttpError(403, "errors.forbidden");
-      }
-      if (
-        (target === "affiliate" || target === "contractor") &&
-        !adminCan(user.role, "approvals")
-      ) {
-        throw new HttpError(403, "errors.forbidden");
-      }
+  if (target === "client" && !adminCan(user.role, "projects.write")) {
+    throw new HttpError(403, "errors.forbidden");
+  }
+  if (
+    (target === "affiliate" || target === "contractor") &&
+    !adminCan(user.role, "approvals")
+  ) {
+    throw new HttpError(403, "errors.forbidden");
+  }
 
-      const [rows] = await pool.execute<RowDataPacket[]>(
-        `SELECT * FROM leads WHERE id = ? LIMIT 1`,
-        [id],
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT * FROM leads WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  const lead = rows[0];
+  if (!lead) throw new HttpError(404, "errors.notFound");
+  if (leadAlreadyConvertedRow(lead)) {
+    throw new HttpError(409, "errors.leadAlreadyConverted");
+  }
+
+  const email = normalizeEmail(lead.email);
+  const first = String(lead.first_name || lead.full_name || "").slice(0, 100);
+  const last = String(lead.last_name || "").slice(0, 100);
+  const phone = lead.phone ? String(lead.phone).trim().slice(0, 40) : null;
+  const lang = asLang(lead.preferred_language);
+
+  // ── Client / homeowner (3a — existing behavior) ───────────────────────
+  if (target === "client") {
+    const planId = opts.body?.adu_plan_id
+      ? parseId(opts.body.adu_plan_id)
+      : null;
+    const identity = await findIdentityByEmail(email);
+    const phoneMatch = await findPhoneMatchDifferentEmail(
+      "client",
+      phone,
+      email,
+    );
+    if (phoneMatch && !confirmPhoneLink) {
+      return {
+        status: 409,
+        body: {
+          error: "errors.phoneLinkConfirmRequired",
+          phone_match: phoneMatch,
+        },
+      };
+    }
+    // Cross-table email block (6a). Phone-link to an existing client is the only override.
+    if (
+      identity &&
+      identity.entity !== "client" &&
+      !(confirmPhoneLink && phoneMatch)
+    ) {
+      throw new HttpError(409, emailExistsErrorKey(identity.entity));
+    }
+    let existingClientId: number | null = null;
+    let inviteEmail = email;
+    let inviteFirst = first;
+    if (confirmPhoneLink && phoneMatch) {
+      existingClientId = phoneMatch.id;
+      inviteEmail = phoneMatch.email;
+      inviteFirst = phoneMatch.name.split(/\s+/)[0] || first;
+    } else if (identity?.entity === "client") {
+      existingClientId = identity.id;
+    }
+    const created = await withTx(async (conn) => {
+      const out = await createClientWithProject(conn, {
+        email,
+        first_name: first,
+        last_name: last,
+        phone,
+        lang,
+        property_address: lead.property_address,
+        property_city: null,
+        property_zip: null,
+        affiliate_id: lead.affiliate_id ?? null,
+        lead_id: Number(lead.id),
+        adu_plan_id: planId,
+        assigned_admin_id: user.id,
+        byType: "admin",
+        byId: user.id,
+        existingClientId,
+      });
+      await conn.execute(
+        `UPDATE leads SET client_id = ?, status = 'qualified' WHERE id = ?`,
+        [out.clientId, id],
       );
-      const lead = rows[0];
-      if (!lead) throw new HttpError(404, "errors.notFound");
-      if (leadAlreadyConvertedRow(lead)) {
-        throw new HttpError(409, "errors.leadAlreadyConverted");
-      }
+      const token = await issueClientPortalInvite(conn, {
+        clientId: out.clientId,
+        email: inviteEmail,
+        byType: "admin",
+        byId: user.id,
+      });
+      return { ...out, token };
+    });
+    await sendClientPortalInviteEmail({
+      email: inviteEmail,
+      firstName: inviteFirst,
+      lang,
+      token: created.token,
+      publicId: created.publicId,
+    });
+    await notifyStaff("lead_converted", (l) => ({
+      subject: tr(
+        l,
+        `Lead converted · ${created.publicId}`,
+        `Lead convertido · ${created.publicId}`,
+      ),
+      headline: tr(
+        l,
+        "Lead became a project.",
+        "El lead se convirtió en proyecto.",
+      ),
+      paragraphs: [
+        tr(
+          l,
+          `${first} (${lead.email}) → ${created.publicId}.`,
+          `${first} (${lead.email}) → ${created.publicId}.`,
+        ),
+      ],
+      cta: {
+        url: `${APP_URL}/admin/projects/${created.publicId}`,
+        label: tr(l, "Open project", "Abrir proyecto"),
+      },
+    }));
+    return {
+      status: 201,
+      body: {
+        ok: true,
+        target: "client",
+        client_id: created.clientId,
+        project_public_id: created.publicId,
+        invite_sent: true,
+      },
+    };
+  }
 
-      const email = normalizeEmail(lead.email);
-      const first = String(lead.first_name || lead.full_name || "").slice(0, 100);
-      const last = String(lead.last_name || "").slice(0, 100);
-      const phone = lead.phone ? String(lead.phone).trim().slice(0, 40) : null;
-      const lang = asLang(lead.preferred_language);
-
-      // ── Client / homeowner (3a — existing behavior) ───────────────────────
-      if (target === "client") {
-        const planId = opts.body?.adu_plan_id ? parseId(opts.body.adu_plan_id) : null;
-        const identity = await findIdentityByEmail(email);
-        const phoneMatch = await findPhoneMatchDifferentEmail("client", phone, email);
-        if (phoneMatch && !confirmPhoneLink) {
-          return { status: 409, body: {
-            error: "errors.phoneLinkConfirmRequired",
-            phone_match: phoneMatch,
-          } };
-        }
-        // Cross-table email block (6a). Phone-link to an existing client is the only override.
-        if (
-          identity &&
-          identity.entity !== "client" &&
-          !(confirmPhoneLink && phoneMatch)
-        ) {
-          throw new HttpError(409, emailExistsErrorKey(identity.entity));
-        }
-        let existingClientId: number | null = null;
-        let inviteEmail = email;
-        let inviteFirst = first;
-        if (confirmPhoneLink && phoneMatch) {
-          existingClientId = phoneMatch.id;
-          inviteEmail = phoneMatch.email;
-          inviteFirst = phoneMatch.name.split(/\s+/)[0] || first;
-        } else if (identity?.entity === "client") {
-          existingClientId = identity.id;
-        }
-        const created = await withTx(async (conn) => {
-          const out = await createClientWithProject(conn, {
-            email,
-            first_name: first,
-            last_name: last,
-            phone,
-            lang,
-            property_address: lead.property_address,
-            property_city: null,
-            property_zip: null,
-            affiliate_id: lead.affiliate_id ?? null,
-            lead_id: Number(lead.id),
-            adu_plan_id: planId,
-            assigned_admin_id: user.id,
-            byType: "admin",
-            byId: user.id,
-            existingClientId,
-          });
-          await conn.execute(
-            `UPDATE leads SET client_id = ?, status = 'qualified' WHERE id = ?`,
-            [out.clientId, id],
-          );
-          const token = await issueClientPortalInvite(conn, {
-            clientId: out.clientId,
-            email: inviteEmail,
-            byType: "admin",
-            byId: user.id,
-          });
-          return { ...out, token };
-        });
-        await sendClientPortalInviteEmail({
-          email: inviteEmail,
-          firstName: inviteFirst,
-          lang,
-          token: created.token,
-          publicId: created.publicId,
-        });
-        await notifyStaff("lead_converted", (l) => ({
-          subject: tr(l, `Lead converted · ${created.publicId}`, `Lead convertido · ${created.publicId}`),
-          headline: tr(l, "Lead became a project.", "El lead se convirtió en proyecto."),
-          paragraphs: [
-            tr(
-              l,
-              `${first} (${lead.email}) → ${created.publicId}.`,
-              `${first} (${lead.email}) → ${created.publicId}.`,
-            ),
-          ],
-          cta: {
-            url: `${APP_URL}/admin/projects/${created.publicId}`,
-            label: tr(l, "Open project", "Abrir proyecto"),
-          },
-        }));
-        return { status: 201, body: {
-          ok: true,
-          target: "client",
-          client_id: created.clientId,
-          project_public_id: created.publicId,
-          invite_sent: true,
-        } };
-      }
-
-      // ── Affiliate (4b) ───────────────────────────────────────────────────
-      if (target === "affiliate") {
-        const identity = await findIdentityByEmail(email);
-        const phoneMatch = await findPhoneMatchDifferentEmail("affiliate", phone, email);
-        if (phoneMatch && !confirmPhoneLink) {
-          return { status: 409, body: {
-            error: "errors.phoneLinkConfirmRequired",
-            phone_match: phoneMatch,
-          } };
-        }
-        if (identity && !(confirmPhoneLink && phoneMatch)) {
-          throw new HttpError(409, emailExistsErrorKey(identity.entity));
-        }
-        let affiliateId: number;
-        if (phoneMatch && confirmPhoneLink) {
-          affiliateId = phoneMatch.id;
-          await pool.execute(
-            `UPDATE affiliates SET status = ?, approved_at = CASE
+  // ── Affiliate (4b) ───────────────────────────────────────────────────
+  if (target === "affiliate") {
+    const identity = await findIdentityByEmail(email);
+    const phoneMatch = await findPhoneMatchDifferentEmail(
+      "affiliate",
+      phone,
+      email,
+    );
+    if (phoneMatch && !confirmPhoneLink) {
+      return {
+        status: 409,
+        body: {
+          error: "errors.phoneLinkConfirmRequired",
+          phone_match: phoneMatch,
+        },
+      };
+    }
+    if (identity && !(confirmPhoneLink && phoneMatch)) {
+      throw new HttpError(409, emailExistsErrorKey(identity.entity));
+    }
+    let affiliateId: number;
+    if (phoneMatch && confirmPhoneLink) {
+      affiliateId = phoneMatch.id;
+      await pool.execute(
+        `UPDATE affiliates SET status = ?, approved_at = CASE
                WHEN ? = 'active' THEN COALESCE(approved_at, NOW()) ELSE approved_at END
              WHERE id = ?`,
-            [chosenStatus, chosenStatus, affiliateId],
-          );
-        } else {
-          let parentId: number | null =
-            lead.affiliate_id != null ? Number(lead.affiliate_id) : null;
-          if (parentId == null && lead.referral_code) {
-            const parent = await findActiveAffiliateByCode(lead.referral_code);
-            parentId = parent?.id ?? null;
-          }
-          const companyVal = companyFromLeadNotes(lead.notes);
-          affiliateId = await withNewAffiliateCodes(
-            first,
-            last || first,
-            async ({ code, slug }) => {
-              const [ins] = await pool.execute<ResultSetHeader>(
-                `INSERT INTO affiliates
+        [chosenStatus, chosenStatus, affiliateId],
+      );
+    } else {
+      let parentId: number | null =
+        lead.affiliate_id != null ? Number(lead.affiliate_id) : null;
+      if (parentId == null && lead.referral_code) {
+        const parent = await findActiveAffiliateByCode(lead.referral_code);
+        parentId = parent?.id ?? null;
+      }
+      const companyVal = companyFromLeadNotes(lead.notes);
+      affiliateId = await withNewAffiliateCodes(
+        first,
+        last || first,
+        async ({ code, slug }) => {
+          const [ins] = await pool.execute<ResultSetHeader>(
+            `INSERT INTO affiliates
                    (email, first_name, last_name, phone, company, status, preferred_language,
                     referral_code, slug, parent_affiliate_id, approved_at, notes)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${chosenStatus === "active" ? "NOW()" : "NULL"}, ?)`,
-                [
-                  email,
-                  first,
-                  last || first,
-                  phone,
-                  companyVal,
-                  chosenStatus,
-                  lang,
-                  code,
-                  slug,
-                  parentId,
-                  lead.notes ? String(lead.notes).slice(0, 5000) : null,
-                ],
-              );
-              return Number(ins.insertId);
-            },
+            [
+              email,
+              first,
+              last || first,
+              phone,
+              companyVal,
+              chosenStatus,
+              lang,
+              code,
+              slug,
+              parentId,
+              lead.notes ? String(lead.notes).slice(0, 5000) : null,
+            ],
           );
-        }
-        await pool.execute(
-          `UPDATE leads SET converted_affiliate_id = ?, status = 'qualified' WHERE id = ?`,
-          [affiliateId, id],
-        );
-        await notifyStaff("lead_converted", (l) => ({
-          subject: tr(l, `Lead → affiliate · ${first} ${last}`, `Lead → afiliado · ${first} ${last}`),
-          headline: tr(l, "Lead converted to affiliate.", "Lead convertido en afiliado."),
-          paragraphs: [
-            tr(
-              l,
-              `${first} (${email}) → affiliate #${affiliateId} (${chosenStatus}).`,
-              `${first} (${email}) → afiliado #${affiliateId} (${chosenStatus}).`,
-            ),
-          ],
-          cta: {
-            url: `${APP_URL}/admin/affiliates/${affiliateId}`,
-            label: tr(l, "Open affiliate", "Abrir afiliado"),
-          },
-        }));
-        return { status: 201, body: {
-          ok: true,
-          target: "affiliate",
-          affiliate_id: affiliateId,
-        } };
-      }
+          return Number(ins.insertId);
+        },
+      );
+    }
+    await pool.execute(
+      `UPDATE leads SET converted_affiliate_id = ?, status = 'qualified' WHERE id = ?`,
+      [affiliateId, id],
+    );
+    if (chosenStatus === "active")
+      await startBillingOnApproval("affiliate", affiliateId);
+    await notifyStaff("lead_converted", (l) => ({
+      subject: tr(
+        l,
+        `Lead → affiliate · ${first} ${last}`,
+        `Lead → afiliado · ${first} ${last}`,
+      ),
+      headline: tr(
+        l,
+        "Lead converted to affiliate.",
+        "Lead convertido en afiliado.",
+      ),
+      paragraphs: [
+        tr(
+          l,
+          `${first} (${email}) → affiliate #${affiliateId} (${chosenStatus}).`,
+          `${first} (${email}) → afiliado #${affiliateId} (${chosenStatus}).`,
+        ),
+      ],
+      cta: {
+        url: `${APP_URL}/admin/affiliates/${affiliateId}`,
+        label: tr(l, "Open affiliate", "Abrir afiliado"),
+      },
+    }));
+    return {
+      status: 201,
+      body: {
+        ok: true,
+        target: "affiliate",
+        affiliate_id: affiliateId,
+      },
+    };
+  }
 
-      // ── Contractor (5b — invite-first + pending|active) ───────────────────
-      {
-        const identity = await findIdentityByEmail(email);
-        const phoneMatch = await findPhoneMatchDifferentEmail("contractor", phone, email);
-        if (phoneMatch && !confirmPhoneLink) {
-          return { status: 409, body: {
-            error: "errors.phoneLinkConfirmRequired",
-            phone_match: phoneMatch,
-          } };
-        }
-        if (identity && !(confirmPhoneLink && phoneMatch)) {
-          throw new HttpError(409, emailExistsErrorKey(identity.entity));
-        }
-        // Converting straight to active skips prequalification → super_admin override only.
-        let activationOverride: string | null = null;
-        if (chosenStatus === "active") {
-          ({ override: activationOverride } = await assertContractorActivationAllowed(
-            phoneMatch && confirmPhoneLink ? phoneMatch.id : null,
-            user,
-            opts.body?.override_reason,
-          ));
-        }
-        const token = crypto.randomBytes(32).toString("hex");
-        let contractorId: number;
-        if (phoneMatch && confirmPhoneLink) {
-          contractorId = phoneMatch.id;
-          await withTx(async (conn) => {
-            await conn.execute(
-              `UPDATE contractors SET first_name = ?, last_name = ?, phone = COALESCE(?, phone),
+  // ── Contractor (5b — invite-first + pending|active) ───────────────────
+  {
+    const identity = await findIdentityByEmail(email);
+    const phoneMatch = await findPhoneMatchDifferentEmail(
+      "contractor",
+      phone,
+      email,
+    );
+    if (phoneMatch && !confirmPhoneLink) {
+      return {
+        status: 409,
+        body: {
+          error: "errors.phoneLinkConfirmRequired",
+          phone_match: phoneMatch,
+        },
+      };
+    }
+    if (identity && !(confirmPhoneLink && phoneMatch)) {
+      throw new HttpError(409, emailExistsErrorKey(identity.entity));
+    }
+    // Converting straight to active skips prequalification → super_admin override only.
+    let activationOverride: string | null = null;
+    if (chosenStatus === "active") {
+      ({ override: activationOverride } =
+        await assertContractorActivationAllowed(
+          phoneMatch && confirmPhoneLink ? phoneMatch.id : null,
+          user,
+          opts.body?.override_reason,
+        ));
+    }
+    const token = crypto.randomBytes(32).toString("hex");
+    let contractorId: number;
+    if (phoneMatch && confirmPhoneLink) {
+      contractorId = phoneMatch.id;
+      await withTx(async (conn) => {
+        await conn.execute(
+          `UPDATE contractors SET first_name = ?, last_name = ?, phone = COALESCE(?, phone),
                  preferred_language = ?, invited_by_admin_id = ?,
                  status = ?, activated_at = CASE WHEN ? = 'active' THEN COALESCE(activated_at, NOW()) ELSE activated_at END
                WHERE id = ?`,
-              [
-                first,
-                last || first,
-                phone,
-                lang,
-                user.id,
-                chosenStatus === "active" ? "active" : "pending",
-                chosenStatus,
-                contractorId,
-              ],
-            );
-            await conn.execute(
-              `UPDATE contractor_invites SET expires_at = NOW()
+          [
+            first,
+            last || first,
+            phone,
+            lang,
+            user.id,
+            chosenStatus === "active" ? "active" : "pending",
+            chosenStatus,
+            contractorId,
+          ],
+        );
+        await conn.execute(
+          `UPDATE contractor_invites SET expires_at = NOW()
                WHERE contractor_id = ? AND accepted_at IS NULL`,
-              [contractorId],
-            );
-            await conn.execute(
-              `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
+          [contractorId],
+        );
+        await conn.execute(
+          `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
                VALUES (?, ?, ?, ?, ?)`,
-              [
-                token,
-                String(phoneMatch.email),
-                contractorId,
-                user.id,
-                new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-              ],
-            );
-            if (chosenStatus === "active") {
-              await conn.execute(
-                `UPDATE contractor_invites SET accepted_at = NOW()
+          [
+            token,
+            String(phoneMatch.email),
+            contractorId,
+            user.id,
+            new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          ],
+        );
+        if (chosenStatus === "active") {
+          await conn.execute(
+            `UPDATE contractor_invites SET accepted_at = NOW()
                  WHERE contractor_id = ? AND token = ?`,
-                [contractorId, token],
-              );
-            }
-          });
-        } else {
-          const companyVal = companyFromLeadNotes(lead.notes);
-          contractorId = await withTx(async (conn) => {
-            const [ins] = await conn.execute<ResultSetHeader>(
-              `INSERT INTO contractors
+            [contractorId, token],
+          );
+        }
+      });
+    } else {
+      const companyVal = companyFromLeadNotes(lead.notes);
+      contractorId = await withTx(async (conn) => {
+        const [ins] = await conn.execute<ResultSetHeader>(
+          `INSERT INTO contractors
                  (email, first_name, last_name, phone, company, status,
                   preferred_language, invited_by_admin_id, activated_at)
                VALUES (?, ?, ?, ?, ?, 'invited', ?, ?, NULL)`,
-              [email, first, last || first, phone, companyVal, lang, user.id],
-            );
-            const cid = Number(ins.insertId);
-            await conn.execute(
-              `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
-               VALUES (?, ?, ?, ?, ?)`,
-              [
-                token,
-                email,
-                cid,
-                user.id,
-                new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-              ],
-            );
-            if (chosenStatus === "active") {
-              await conn.execute(
-                `UPDATE contractors SET status = 'active', activated_at = NOW() WHERE id = ?`,
-                [cid],
-              );
-              await conn.execute(
-                `UPDATE contractor_invites SET accepted_at = NOW() WHERE contractor_id = ? AND token = ?`,
-                [cid, token],
-              );
-            } else {
-              await conn.execute(
-                `UPDATE contractors SET status = 'pending' WHERE id = ?`,
-                [cid],
-              );
-            }
-            return cid;
-          });
-        }
-        await pool.execute(
-          `UPDATE leads SET converted_contractor_id = ?, status = 'qualified' WHERE id = ?`,
-          [contractorId, id],
+          [email, first, last || first, phone, companyVal, lang, user.id],
         );
-        if (activationOverride) {
-          await recordContractorActivationOverride(contractorId, user.id, activationOverride);
-        }
+        const cid = Number(ins.insertId);
+        await conn.execute(
+          `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
+               VALUES (?, ?, ?, ?, ?)`,
+          [
+            token,
+            email,
+            cid,
+            user.id,
+            new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          ],
+        );
         if (chosenStatus === "active") {
-          const inviteEmail =
-            phoneMatch && confirmPhoneLink ? String(phoneMatch.email) : email;
-          await safeSend(
-            inviteEmail,
-            tplPortalNotice({
-              lang,
-              subject: tr(
-                lang,
-                "You're invited to the Groundwork contractor portal",
-                "Te invitamos al portal de contratistas de Groundwork",
-              ),
-              headline: tr(lang, "Build with Groundwork.", "Construye con Groundwork."),
-              paragraphs: [
-                tr(
-                  lang,
-                  `Hi ${first}, you've been invited to manage ADU projects, upload progress photos and request draws.`,
-                  `Hola ${first}, te invitamos a gestionar proyectos ADU, subir fotos de avance y solicitar desembolsos.`,
-                ),
-                tr(
-                  lang,
-                  "Your account is active — sign in with a one-time code anytime.",
-                  "Tu cuenta está activa — inicia sesión con un código de un solo uso cuando quieras.",
-                ),
-              ],
-              cta: {
-                url: `${APP_URL}/contractor/login`,
-                label: tr(lang, "Sign in", "Iniciar sesión"),
-              },
-            }),
+          await conn.execute(
+            `UPDATE contractors SET status = 'active', activated_at = NOW() WHERE id = ?`,
+            [cid],
+          );
+          await conn.execute(
+            `UPDATE contractor_invites SET accepted_at = NOW() WHERE contractor_id = ? AND token = ?`,
+            [cid, token],
           );
         } else {
-          // Pending converts get the prequalification application as their invite.
-          await sendContractorApplicationLink({ contractorId, adminId: user.id, variant: "new" });
+          await conn.execute(
+            `UPDATE contractors SET status = 'pending' WHERE id = ?`,
+            [cid],
+          );
         }
-        await notifyStaff("lead_converted", (l) => ({
+        return cid;
+      });
+    }
+    await pool.execute(
+      `UPDATE leads SET converted_contractor_id = ?, status = 'qualified' WHERE id = ?`,
+      [contractorId, id],
+    );
+    if (activationOverride) {
+      await recordContractorActivationOverride(
+        contractorId,
+        user.id,
+        activationOverride,
+      );
+    }
+    if (chosenStatus === "active") {
+      const inviteEmail =
+        phoneMatch && confirmPhoneLink ? String(phoneMatch.email) : email;
+      await safeSend(
+        inviteEmail,
+        tplPortalNotice({
+          lang,
           subject: tr(
-            l,
-            `Lead → contractor · ${first} ${last}`,
-            `Lead → contratista · ${first} ${last}`,
+            lang,
+            "You're invited to the Groundwork contractor portal",
+            "Te invitamos al portal de contratistas de Groundwork",
           ),
-          headline: tr(l, "Lead converted to contractor.", "Lead convertido en contratista."),
+          headline: tr(
+            lang,
+            "Build with Groundwork.",
+            "Construye con Groundwork.",
+          ),
           paragraphs: [
             tr(
-              l,
-              `${first} (${email}) → contractor #${contractorId} (${chosenStatus}).`,
-              `${first} (${email}) → contratista #${contractorId} (${chosenStatus}).`,
+              lang,
+              `Hi ${first}, you've been invited to manage ADU projects, upload progress photos and request draws.`,
+              `Hola ${first}, te invitamos a gestionar proyectos ADU, subir fotos de avance y solicitar desembolsos.`,
+            ),
+            tr(
+              lang,
+              "Your account is active. Sign in with a one-time code anytime.",
+              "Tu cuenta está activa. Inicia sesión con un código de un solo uso cuando quieras.",
             ),
           ],
           cta: {
-            url: `${APP_URL}/admin/contractors/${contractorId}`,
-            label: tr(l, "Open contractor", "Abrir contratista"),
+            url: `${APP_URL}/contractor/login`,
+            label: tr(lang, "Sign in", "Iniciar sesión"),
           },
-        }));
-        return { status: 201, body: {
-          ok: true,
-          target: "contractor",
-          contractor_id: contractorId,
-          invite_sent: true,
-        } };
-      }
+        }),
+      );
+    } else {
+      // Pending converts get the prequalification application as their invite.
+      await sendContractorApplicationLink({
+        contractorId,
+        adminId: user.id,
+        variant: "new",
+      });
+    }
+    await notifyStaff("lead_converted", (l) => ({
+      subject: tr(
+        l,
+        `Lead → contractor · ${first} ${last}`,
+        `Lead → contratista · ${first} ${last}`,
+      ),
+      headline: tr(
+        l,
+        "Lead converted to contractor.",
+        "Lead convertido en contratista.",
+      ),
+      paragraphs: [
+        tr(
+          l,
+          `${first} (${email}) → contractor #${contractorId} (${chosenStatus}).`,
+          `${first} (${email}) → contratista #${contractorId} (${chosenStatus}).`,
+        ),
+      ],
+      cta: {
+        url: `${APP_URL}/admin/contractors/${contractorId}`,
+        label: tr(l, "Open contractor", "Abrir contratista"),
+      },
+    }));
+    return {
+      status: 201,
+      body: {
+        ok: true,
+        target: "contractor",
+        contractor_id: contractorId,
+        invite_sent: true,
+      },
+    };
+  }
 }
 
 function registerAdminRoutes(app: Express) {
@@ -10282,7 +14279,10 @@ function registerAdminRoutes(app: Express) {
           throw new HttpError(400, "validation.phoneMin");
         }
       }
-      if ("phone" in updates && (updates.phone === "" || updates.phone == null)) {
+      if (
+        "phone" in updates &&
+        (updates.phone === "" || updates.phone == null)
+      ) {
         updates.phone = null;
       }
       await applyUpdate(pool, "admins", me.id, updates);
@@ -10465,7 +14465,12 @@ function registerAdminRoutes(app: Express) {
       ) {
         throw new HttpError(400, "validation.photoFile");
       }
-      const avatarUrl = await storeAdminAvatarFile(me.id, body, kind.mime, kind.ext);
+      const avatarUrl = await storeAdminAvatarFile(
+        me.id,
+        body,
+        kind.mime,
+        kind.ext,
+      );
       await pool.execute(`UPDATE admins SET avatar_url = ? WHERE id = ?`, [
         avatarUrl,
         me.id,
@@ -10522,7 +14527,9 @@ function registerAdminRoutes(app: Express) {
       );
       const out: Record<string, any> = {
         ok: true,
-        leads_new: await count(`SELECT COUNT(*) AS n FROM leads WHERE status = 'new'`),
+        leads_new: await count(
+          `SELECT COUNT(*) AS n FROM leads WHERE status = 'new'`,
+        ),
         affiliates_pending: await count(
           `SELECT COUNT(*) AS n FROM affiliates WHERE status = 'pending'`,
         ),
@@ -10561,7 +14568,9 @@ function registerAdminRoutes(app: Express) {
           projects_closed: Number(profit[0]?.n || 0),
           net_profit_closed_cents: Number(profit[0]?.net || 0),
           avg_net_profit_per_sqft_cents:
-            profit[0]?.per_sqft == null ? null : Math.round(Number(profit[0].per_sqft)),
+            profit[0]?.per_sqft == null
+              ? null
+              : Math.round(Number(profit[0].per_sqft)),
         };
       }
       res.json(out);
@@ -10609,13 +14618,15 @@ function registerAdminRoutes(app: Express) {
 
   // ── Marketing events ──────────────────────────────────────────────────────
   const EVENT_STATUSES = ["draft", "published", "archived"] as const;
-  const fDateTime = (nullable: boolean): FieldParser => (v) => {
-    if (v === null || v === undefined || v === "") {
-      return nullable ? { ok: true, value: null } : { ok: false };
-    }
-    const d = asDate(v);
-    return d ? { ok: true, value: d } : { ok: false };
-  };
+  const fDateTime =
+    (nullable: boolean): FieldParser =>
+    (v) => {
+      if (v === null || v === undefined || v === "") {
+        return nullable ? { ok: true, value: null } : { ok: false };
+      }
+      const d = asDate(v);
+      return d ? { ok: true, value: d } : { ok: false };
+    };
   const eventFieldSpec = (): Record<string, FieldParser> => ({
     status: fEnum(EVENT_STATUSES),
     is_featured: fBool,
@@ -10643,13 +14654,18 @@ function registerAdminRoutes(app: Express) {
   });
 
   const eventWithCounts = async (r: RowDataPacket) => {
-    const [confirmed, waitlisted] = await Promise.all([
+    const [confirmed, waitlisted, qrRows] = await Promise.all([
       countEventRegistrations(Number(r.id), "confirmed"),
       countEventRegistrations(Number(r.id), "waitlisted"),
+      pool.execute<RowDataPacket[]>(
+        `SELECT COUNT(*) AS n FROM leads WHERE event_id = ? AND mode = 'event' AND source = 'qr'`,
+        [Number(r.id)],
+      ),
     ]);
     return mapMarketingEventRow(r, {
       confirmed_count: confirmed,
       waitlisted_count: waitlisted,
+      qr_rsvp_count: Number(qrRows[0][0]?.n || 0),
     });
   };
 
@@ -10667,7 +14683,9 @@ function registerAdminRoutes(app: Express) {
         params.push(status);
       }
       if (like) {
-        where.push("(slug LIKE ? OR title_en LIKE ? OR title_es LIKE ? OR city LIKE ?)");
+        where.push(
+          "(slug LIKE ? OR title_en LIKE ? OR title_es LIKE ? OR city LIKE ?)",
+        );
         params.push(like, like, like, like);
       }
       const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -10698,7 +14716,9 @@ function registerAdminRoutes(app: Express) {
     route(async (req, res) => {
       const user = portalUser(res);
       const { updates } = parsePatch(req.body, eventFieldSpec());
-      const slugParser = fStr(80, { min: 1 })(req.body?.slug ?? req.body?.title_en);
+      const slugParser = fStr(80, { min: 1 })(
+        req.body?.slug ?? req.body?.title_en,
+      );
       if (!slugParser.ok) throw new HttpError(400, "validation.invalidField");
       const slug = slugifyEvent(slugParser.value);
       if (!slug) throw new HttpError(400, "validation.invalidField");
@@ -10725,7 +14745,9 @@ function registerAdminRoutes(app: Express) {
         return newId;
       });
       const row = await loadMarketingEventById(id);
-      res.status(201).json({ ok: true, id, event: await eventWithCounts(row!) });
+      res
+        .status(201)
+        .json({ ok: true, id, event: await eventWithCounts(row!) });
     }),
   );
 
@@ -10783,8 +14805,297 @@ function registerAdminRoutes(app: Express) {
       if (Number(leadRows[0]?.n || 0) > 0 || existing.status === "published") {
         throw new HttpError(409, "errors.invalidTransition");
       }
+      const [blobRows] = await pool.execute<RowDataPacket[]>(
+        `SELECT url FROM event_media WHERE event_id = ? AND blob_pathname IS NOT NULL`,
+        [id],
+      );
       await pool.execute(`DELETE FROM marketing_events WHERE id = ?`, [id]);
+      const blobToken = String(process.env.BLOB_READ_WRITE_TOKEN || "").trim();
+      if (blobRows.length && blobToken) {
+        await delBlob(
+          blobRows.map((r) => String(r.url)),
+          { token: blobToken },
+        ).catch((e) =>
+          console.warn("[events] media blob cleanup failed:", e?.message ?? e),
+        );
+      }
       res.json({ ok: true });
+    }),
+  );
+
+  // ── Event media (past-event highlights) — admins only (approvals) ─────────
+  const eventMediaList = async (eventId: number) =>
+    (await loadEventMediaRows(eventId)).map(mapAdminEventMedia);
+  const requireEventForMedia = async (raw: unknown) => {
+    const id = parseId(raw);
+    if (!(await loadMarketingEventById(id)))
+      throw new HttpError(404, "errors.eventNotFound");
+    return id;
+  };
+  const assertMediaRoom = async (eventId: number) => {
+    const [[c]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT COUNT(*) AS n FROM event_media WHERE event_id = ?`,
+      [eventId],
+    )) as unknown as [RowDataPacket[]];
+    if (Number(c?.n || 0) >= EVENT_MEDIA_MAX_PER_EVENT)
+      throw new HttpError(409, "errors.documentLimit");
+  };
+  const nextMediaSort = async (eventId: number) => {
+    const [[r]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM event_media WHERE event_id = ?`,
+      [eventId],
+    )) as unknown as [RowDataPacket[]];
+    return Number(r?.n || 1);
+  };
+  const publicBlobToken = () => {
+    const token = String(process.env.BLOB_READ_WRITE_TOKEN || "").trim();
+    if (!token) throw new HttpError(503, "errors.storageNotConfigured");
+    return token;
+  };
+  const mediaCaption = (v: unknown) => {
+    const t = v == null ? "" : String(v).trim();
+    return t ? t.slice(0, 300) : null;
+  };
+
+  app.get(
+    "/api/admin/events/:id/media",
+    requireAdminAny("events", "leads"),
+    route(async (req, res) => {
+      const id = await requireEventForMedia(req.params.id);
+      res.json({ ok: true, media: await eventMediaList(id) });
+    }),
+  );
+
+  app.post(
+    "/api/admin/events/:id/media/upload-token",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = await requireEventForMedia(req.params.id);
+      await assertMediaRoom(id);
+      const contentType = String(req.body?.content_type || "")
+        .toLowerCase()
+        .trim();
+      const spec = EVENT_MEDIA_MIME_EXT[contentType];
+      if (!spec) throw new HttpError(400, "validation.eventMediaFile");
+      const max =
+        spec.kind === "video"
+          ? EVENT_MEDIA_VIDEO_MAX_BYTES
+          : EVENT_MEDIA_PHOTO_MAX_BYTES;
+      const size = Number(req.body?.size_bytes);
+      if (!Number.isInteger(size) || size <= 0 || size > max) {
+        throw new HttpError(400, "validation.documentTooLarge");
+      }
+      const pathname = `events/${id}/${Date.now()}-${crypto.randomBytes(8).toString("hex")}.${spec.ext}`;
+      const clientToken = await generateClientTokenFromReadWriteToken({
+        token: publicBlobToken(),
+        pathname,
+        allowedContentTypes: [contentType],
+        maximumSizeInBytes: max,
+        validUntil: Date.now() + 30 * 60 * 1000,
+        addRandomSuffix: false,
+        allowOverwrite: false,
+      });
+      res.json({ ok: true, client_token: clientToken, pathname });
+    }),
+  );
+
+  app.post(
+    "/api/admin/events/:id/media",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = await requireEventForMedia(req.params.id);
+      await assertMediaRoom(id);
+      const user = portalUser(res);
+      const caption_en = mediaCaption(req.body?.caption_en);
+      const caption_es = mediaCaption(req.body?.caption_es);
+      const sort = await nextMediaSort(id);
+      if (req.body?.embed_url != null) {
+        const embed = parseEventEmbedUrl(req.body.embed_url);
+        if (!embed) throw new HttpError(400, "validation.embedUrl");
+        await pool.execute(
+          `INSERT INTO event_media
+             (event_id, kind, url, source_url, embed_provider, caption_en, caption_es, sort_order, created_by_admin_id)
+           VALUES (?, 'embed', ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            embed.embed_url,
+            embed.source_url,
+            embed.provider,
+            caption_en,
+            caption_es,
+            sort,
+            user.id,
+          ],
+        );
+        return res
+          .status(201)
+          .json({ ok: true, media: await eventMediaList(id) });
+      }
+      const pathname = String(req.body?.pathname || "");
+      if (
+        !pathname.startsWith(`events/${id}/`) ||
+        pathname.length > 500 ||
+        !/^[A-Za-z0-9/_.-]+$/.test(pathname) ||
+        pathname.includes("..")
+      ) {
+        throw new HttpError(400, "validation.documentFile");
+      }
+      const token = publicBlobToken();
+      let meta: Awaited<ReturnType<typeof headBlob>>;
+      try {
+        meta = await headBlob(pathname, { token });
+      } catch {
+        throw new HttpError(400, "validation.documentFile");
+      }
+      let sniff: Buffer | null = null;
+      try {
+        const r = await globalThis.fetch(meta.url, {
+          headers: { Range: "bytes=0-31" },
+        });
+        sniff = r.ok
+          ? Buffer.from(await r.arrayBuffer()).subarray(0, 32)
+          : null;
+      } catch {
+        sniff = null;
+      }
+      const ext = pathname.split(".").pop() || "";
+      const photo = sniff ? detectImageType(sniff) : null;
+      const video = sniff && !photo ? detectVideoType(sniff) : null;
+      const kind = photo ? "photo" : video ? "video" : null;
+      const type = photo || video;
+      const max =
+        kind === "video"
+          ? EVENT_MEDIA_VIDEO_MAX_BYTES
+          : EVENT_MEDIA_PHOTO_MAX_BYTES;
+      // mp4 and mov share the ISO BMFF signature; accept either extension for either brand.
+      const extOk =
+        !!type &&
+        (type.ext === ext ||
+          (kind === "video" &&
+            ["mp4", "mov"].includes(ext) &&
+            ["mp4", "mov"].includes(type.ext)));
+      if (!kind || !extOk || meta.size <= 0 || meta.size > max) {
+        await delBlob(meta.url, { token }).catch(() => undefined);
+        throw new HttpError(400, "validation.eventMediaFile");
+      }
+      await pool.execute(
+        `INSERT INTO event_media
+           (event_id, kind, url, blob_pathname, mime_type, size_bytes, caption_en, caption_es, sort_order, created_by_admin_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          kind,
+          meta.url,
+          pathname,
+          meta.contentType || type!.mime,
+          meta.size,
+          caption_en,
+          caption_es,
+          sort,
+          user.id,
+        ],
+      );
+      res.status(201).json({ ok: true, media: await eventMediaList(id) });
+    }),
+  );
+
+  app.patch(
+    "/api/admin/events/:id/media/:mediaId",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = await requireEventForMedia(req.params.id);
+      const mediaId = parseId(req.params.mediaId);
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT * FROM event_media WHERE id = ? AND event_id = ? LIMIT 1`,
+        [mediaId, id],
+      );
+      const m = rows[0];
+      if (!m) throw new HttpError(404, "errors.notFound");
+      const b = req.body || {};
+      const has = (k: string) => Object.prototype.hasOwnProperty.call(b, k);
+      await withTx(async (conn) => {
+        const sets: string[] = [];
+        const vals: (string | number | null)[] = [];
+        if (has("caption_en"))
+          (sets.push("caption_en = ?"), vals.push(mediaCaption(b.caption_en)));
+        if (has("caption_es"))
+          (sets.push("caption_es = ?"), vals.push(mediaCaption(b.caption_es)));
+        if (has("is_cover")) {
+          if (b.is_cover && m.kind !== "photo")
+            throw new HttpError(400, "validation.invalidField");
+          if (b.is_cover)
+            await conn.execute(
+              `UPDATE event_media SET is_cover = 0 WHERE event_id = ?`,
+              [id],
+            );
+          sets.push("is_cover = ?");
+          vals.push(b.is_cover ? 1 : 0);
+        }
+        if (has("is_highlight")) {
+          if (b.is_highlight && m.kind === "photo")
+            throw new HttpError(400, "validation.invalidField");
+          if (b.is_highlight)
+            await conn.execute(
+              `UPDATE event_media SET is_highlight = 0 WHERE event_id = ?`,
+              [id],
+            );
+          sets.push("is_highlight = ?");
+          vals.push(b.is_highlight ? 1 : 0);
+        }
+        if (sets.length) {
+          await conn.execute(
+            `UPDATE event_media SET ${sets.join(", ")} WHERE id = ?`,
+            [...vals, mediaId],
+          );
+        }
+      });
+      res.json({ ok: true, media: await eventMediaList(id) });
+    }),
+  );
+
+  app.post(
+    "/api/admin/events/:id/media/reorder",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = await requireEventForMedia(req.params.id);
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
+      if (
+        !ids.length ||
+        ids.some((n: number) => !Number.isInteger(n) || n <= 0)
+      ) {
+        throw new HttpError(400, "validation.invalidField");
+      }
+      await withTx(async (conn) => {
+        for (let i = 0; i < ids.length; i++) {
+          await conn.execute(
+            `UPDATE event_media SET sort_order = ? WHERE id = ? AND event_id = ?`,
+            [i + 1, ids[i], id],
+          );
+        }
+      });
+      res.json({ ok: true, media: await eventMediaList(id) });
+    }),
+  );
+
+  app.delete(
+    "/api/admin/events/:id/media/:mediaId",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = await requireEventForMedia(req.params.id);
+      const mediaId = parseId(req.params.mediaId);
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT url, blob_pathname FROM event_media WHERE id = ? AND event_id = ? LIMIT 1`,
+        [mediaId, id],
+      );
+      if (!rows[0]) throw new HttpError(404, "errors.notFound");
+      await pool.execute(`DELETE FROM event_media WHERE id = ?`, [mediaId]);
+      if (rows[0].blob_pathname) {
+        await delBlob(String(rows[0].url), { token: publicBlobToken() }).catch(
+          (e) =>
+            console.warn("[events] media blob delete failed:", e?.message ?? e),
+        );
+      }
+      res.json({ ok: true, media: await eventMediaList(id) });
     }),
   );
 
@@ -10820,22 +15131,38 @@ function registerAdminRoutes(app: Express) {
           params,
         );
         const head = [
-          "id", "full_name", "email", "phone", "property_address",
-          "registration_status", "soft_pull_consent", "language", "created_at",
+          "id",
+          "full_name",
+          "email",
+          "phone",
+          "property_address",
+          "registration_status",
+          "soft_pull_consent",
+          "language",
+          "created_at",
         ];
         // Prefix formula triggers so spreadsheets never execute attendee input.
         const cell = (v: unknown) => {
-          let t = v == null ? "" : v instanceof Date ? v.toISOString() : String(v);
+          let t =
+            v == null ? "" : v instanceof Date ? v.toISOString() : String(v);
           if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;
           return `"${t.replace(/"/g, '""')}"`;
         };
         const lines = [head.join(",")].concat(
           all.map((r) =>
             [
-              r.id, r.full_name, r.email, r.phone, r.property_address,
-              r.event_registration_status, Number(r.soft_pull_consent) ? "yes" : "no",
-              r.preferred_language, r.created_at,
-            ].map(cell).join(","),
+              r.id,
+              r.full_name,
+              r.email,
+              r.phone,
+              r.property_address,
+              r.event_registration_status,
+              Number(r.soft_pull_consent) ? "yes" : "no",
+              r.preferred_language,
+              r.created_at,
+            ]
+              .map(cell)
+              .join(","),
           ),
         );
         res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -10886,8 +15213,16 @@ function registerAdminRoutes(app: Express) {
         "waitlisted",
       ]);
       const eventIdFilter = parseIdQuery(req.query.event_id);
+      // Omitted → "all" (MCP / older callers unchanged); the Leads page sends "active".
+      const view =
+        enumQuery(req.query.view, ["active", "converted", "all"]) || "all";
       const where: string[] = [];
       const params: any[] = [];
+      const linkedSql =
+        "(l.client_id IS NOT NULL OR l.converted_affiliate_id IS NOT NULL OR l.converted_contractor_id IS NOT NULL)";
+      if (view === "active")
+        where.push(`NOT ${linkedSql}`, "l.status <> 'spam'");
+      else if (view === "converted") where.push(linkedSql);
       if (status) {
         where.push("l.status = ?");
         params.push(status);
@@ -10928,7 +15263,14 @@ function registerAdminRoutes(app: Express) {
          LIMIT ${limit} OFFSET ${offset}`,
         params,
       );
-      res.json({ ok: true, leads: rows, total, limit, offset });
+      const touches = await loadLeadTouches(
+        rows.map((r) => String(r.phone || "")),
+      );
+      const leads = rows.map((r) => {
+        const t = touches.get(normalizePhoneLast10(r.phone) || "");
+        return { ...r, last_sms: t?.sms ?? null, last_call: t?.call ?? null };
+      });
+      res.json({ ok: true, leads, total, limit, offset, view });
     }),
   );
 
@@ -10938,7 +15280,13 @@ function registerAdminRoutes(app: Express) {
     route(async (req, res) => {
       const id = parseId(req.params.id);
       const { updates } = parsePatch(req.body, {
-        status: fEnum(["new", "contacted", "qualified", "closed", "spam"] as const),
+        status: fEnum([
+          "new",
+          "contacted",
+          "qualified",
+          "closed",
+          "spam",
+        ] as const),
         notes: fStr(5000),
       });
       const [exists] = await pool.execute<RowDataPacket[]>(
@@ -11011,7 +15359,7 @@ function registerAdminRoutes(app: Express) {
          LIMIT ${limit} OFFSET ${offset}`,
         params,
       );
-      res.json({ ok: true, affiliates: rows, total, limit, offset });
+      res.json({ ok: true, affiliates: await withLastTouches(rows), total, limit, offset });
     }),
   );
 
@@ -11046,11 +15394,17 @@ function registerAdminRoutes(app: Express) {
       const user = portalUser(res);
       const id = parseId(req.params.id);
       const { updates } = parsePatch(req.body, {
+        first_name: fStr(100, { min: 1 }),
+        last_name: fStr(100, { min: 1 }),
+        email: fEmail,
+        preferred_language: fLang,
         status: fEnum(["pending", "active", "inactive", "suspended"] as const),
         notes: fStr(5000),
         company: fStr(200),
         phone: fStr(40),
       });
+      if ("email" in updates && updates.email)
+        updates.email = normalizeEmail(updates.email);
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT * FROM affiliates WHERE id = ? LIMIT 1`,
         [id],
@@ -11060,6 +15414,24 @@ function registerAdminRoutes(app: Express) {
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "slug")) {
         updates.slug = normalizeAffiliateSlugInput(req.body.slug);
         await assertAffiliateSlugAvailable(updates.slug as string | null, id);
+        await retireAffiliateSlug(
+          id,
+          a.slug ? String(a.slug) : null,
+          (updates.slug as string | null) ?? null,
+        );
+      }
+      // Sponsor (Agreement §4: changes need Groundwork's approval = this admin action).
+      // Only future projects pick it up; existing projects keep their snapshot.
+      if (
+        Object.prototype.hasOwnProperty.call(
+          req.body || {},
+          "parent_affiliate_id",
+        )
+      ) {
+        const raw = req.body.parent_affiliate_id;
+        const parentId = raw == null || raw === "" ? null : parseId(raw);
+        await assertSponsorAllowed(id, parentId);
+        updates.parent_affiliate_id = parentId;
       }
       if (Object.keys(updates).length === 0) {
         throw new HttpError(400, "validation.invalidField");
@@ -11080,22 +15452,55 @@ function registerAdminRoutes(app: Express) {
         adminId: portalUser(res).id,
       });
       await applyUpdate(pool, "affiliates", id, updates);
+      if ("email" in updates) {
+        await afterIdentityEmailChange({
+          entity: "affiliate",
+          id,
+          oldEmail: a.email ? String(a.email) : null,
+          newEmail: updates.email ? String(updates.email) : null,
+          firstName: String(updates.first_name ?? a.first_name ?? ""),
+          lang: asLang(updates.preferred_language ?? a.preferred_language),
+          adminId: user.id,
+        });
+      }
       if (approving) {
         const lang = asLang(a.preferred_language);
         await safeSend(
           String(a.email),
           tplPortalNotice({
             lang,
-            subject: tr(lang, "You're approved — Groundwork affiliate program", "Estás aprobado — programa de afiliados Groundwork"),
+            subject: tr(
+              lang,
+              "You're approved · Groundwork affiliate program",
+              "Estás aprobado. Programa de afiliados Groundwork",
+            ),
             headline: tr(lang, "Welcome to the team.", "Bienvenido al equipo."),
             paragraphs: [
-              tr(lang, `Hi ${a.first_name}, your affiliate account is active.`, `Hola ${a.first_name}, tu cuenta de afiliado está activa.`),
-              tr(lang, "Sign in with a one-time code to grab your tracking link and register homeowners.", "Entra con un código de un solo uso para obtener tu enlace de seguimiento y registrar propietarios."),
+              tr(
+                lang,
+                `Hi ${a.first_name}, your affiliate account is active.`,
+                `Hola ${a.first_name}, tu cuenta de afiliado está activa.`,
+              ),
+              tr(
+                lang,
+                "Sign in with a one-time code to grab your tracking link and register homeowners.",
+                "Entra con un código de un solo uso para obtener tu enlace de seguimiento y registrar propietarios.",
+              ),
             ],
-            cta: { url: `${APP_URL}/affiliate/login`, label: tr(lang, "Open affiliate portal", "Abrir portal de afiliados") },
+            cta: {
+              url: `${APP_URL}/affiliate/login`,
+              label: tr(
+                lang,
+                "Open affiliate portal",
+                "Abrir portal de afiliados",
+              ),
+            },
           }),
         );
       }
+      // The free period starts on approval (card saved during onboarding).
+      if (statusChanged && updates.status === "active")
+        await startBillingOnApproval("affiliate", id);
       // 11B: parent active↔inactive must immediately void/restore unpaid parent shares.
       if (statusChanged) {
         await withTx(async (conn) => {
@@ -11167,7 +15572,7 @@ function registerAdminRoutes(app: Express) {
          LIMIT ${limit} OFFSET ${offset}`,
         params,
       );
-      res.json({ ok: true, contractors: rows, total, limit, offset });
+      res.json({ ok: true, contractors: await withLastTouches(rows), total, limit, offset });
     }),
   );
 
@@ -11199,13 +15604,20 @@ function registerAdminRoutes(app: Express) {
       const user = portalUser(res);
       const b = req.body || {};
       const email = normalizeEmail(b.email);
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const company = b.company ? String(b.company).trim().slice(0, 200) : null;
-      const license = b.license_number ? String(b.license_number).trim().slice(0, 100) : null;
+      const license = b.license_number
+        ? String(b.license_number).trim().slice(0, 100)
+        : null;
       const phone = b.phone ? String(b.phone).trim().slice(0, 40) : null;
       const lang = asLang(b.preferred_language);
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
 
@@ -11253,15 +15665,30 @@ function registerAdminRoutes(app: Express) {
         await conn.execute(
           `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
            VALUES (?, ?, ?, ?, ?)`,
-          [token, email, cid, user.id, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)],
+          [
+            token,
+            email,
+            cid,
+            user.id,
+            new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          ],
         );
         return cid;
       });
       if (phoneOverride) {
-        await recordSharedPhoneOverride({ entity: "contractor", id: contractorId, override: phoneOverride, adminId: user.id });
+        await recordSharedPhoneOverride({
+          entity: "contractor",
+          id: contractorId,
+          override: phoneOverride,
+          adminId: user.id,
+        });
       }
       // The invite email *is* the prequalification link (opening it accepts the invite).
-      await sendContractorApplicationLink({ contractorId, adminId: user.id, variant: "new" });
+      await sendContractorApplicationLink({
+        contractorId,
+        adminId: user.id,
+        variant: "new",
+      });
       res.status(201).json({ ok: true, contractor_id: contractorId });
     }),
   );
@@ -11308,13 +15735,19 @@ function registerAdminRoutes(app: Express) {
       });
       await applyUpdate(pool, "contractors", id, updates);
       if (override) {
-        await recordContractorActivationOverride(id, portalUser(res).id, override);
+        await recordContractorActivationOverride(
+          id,
+          portalUser(res).id,
+          override,
+        );
       }
       if (approving) {
         const c = rows[0];
+        await startBillingOnApproval("contractor", id);
         await sendContractorApprovedEmail({
           email: String(c.email),
           first_name: String(c.first_name),
+          id,
           preferred_language: c.preferred_language,
         });
       }
@@ -11357,16 +15790,132 @@ function registerAdminRoutes(app: Express) {
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT c.id, c.email, c.first_name, c.last_name, c.phone, c.status, c.address_line1,
                 c.city, c.zip, c.affiliate_id, c.assigned_admin_id, c.admin_notes, c.last_login_at,
-                c.created_at, c.preferred_language,
+                c.created_at, c.preferred_language, c.deal_status_id,
+                ds.label_en AS deal_status_en, ds.label_es AS deal_status_es, ds.tone AS deal_status_tone,
                 CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name,
                 (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id) AS project_count
          FROM clients c LEFT JOIN affiliates a ON a.id = c.affiliate_id
+         LEFT JOIN deal_statuses ds ON ds.id = c.deal_status_id
          ${whereSql}
          ORDER BY FIELD(c.status, 'pending', 'prospect', 'active', 'inactive', 'suspended'), c.id DESC
          LIMIT ${limit} OFFSET ${offset}`,
         params,
       );
-      res.json({ ok: true, clients: rows, total, limit, offset });
+      res.json({ ok: true, clients: await withLastTouches(rows), total, limit, offset });
+    }),
+  );
+
+  // ── Deal statuses (editable list) ────────────────────────────────────────
+
+  app.get(
+    "/api/admin/deal-statuses",
+    requireAdmin("people.read"),
+    route(async (_req, res) => {
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT * FROM deal_statuses ORDER BY sort_order ASC, id ASC`,
+      );
+      res.json({ ok: true, statuses: rows.map(mapDealStatus) });
+    }),
+  );
+
+  const dealStatusSpec = () => ({
+    label_en: fStr(80, { min: 1 }),
+    label_es: fStr(80, { min: 1 }),
+    tone: fEnum(["neutral", "warn", "bad", "good"] as const),
+    sort_order: fInt(0, 100000, false),
+    is_active: fBool,
+  });
+
+  app.post(
+    "/api/admin/deal-statuses",
+    requireAdmin("settings"),
+    route(async (req, res) => {
+      const { updates } = parsePatch(req.body, dealStatusSpec());
+      if (!updates.label_en)
+        throw new HttpError(400, "validation.invalidField");
+      if (!updates.label_es) updates.label_es = updates.label_en;
+      const cols = Object.keys(updates);
+      await pool.execute(
+        `INSERT INTO deal_statuses (${cols.map((c) => `\`${c}\``).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+        Object.values(updates) as any[],
+      );
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT * FROM deal_statuses ORDER BY sort_order ASC, id ASC`,
+      );
+      res.status(201).json({ ok: true, statuses: rows.map(mapDealStatus) });
+    }),
+  );
+
+  app.patch(
+    "/api/admin/deal-statuses/:id",
+    requireAdmin("settings"),
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      const { updates } = parsePatch(req.body, dealStatusSpec());
+      if (!Object.keys(updates).length)
+        throw new HttpError(400, "validation.invalidField");
+      const [[exists]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT id FROM deal_statuses WHERE id = ?`,
+        [id],
+      )) as unknown as [RowDataPacket[]];
+      if (!exists) throw new HttpError(404, "errors.notFound");
+      // Deactivate instead of delete: clients keep their status label history.
+      await applyUpdate(pool, "deal_statuses", id, updates);
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT * FROM deal_statuses ORDER BY sort_order ASC, id ASC`,
+      );
+      res.json({ ok: true, statuses: rows.map(mapDealStatus) });
+    }),
+  );
+
+  // ── Client updates feed (internal / shared with the referring affiliate) ─
+  /** Referring affiliate for a client: the client's affiliate, else the latest project's closer. */
+
+  /** Text (short) + email (full) + portal feed for a shared update. Best-effort. */
+
+  app.get(
+    "/api/admin/clients/:id/updates",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const c = await requireClientRow(req.params.id);
+      const aff = await clientAffiliate(Number(c.id));
+      res.json({
+        ok: true,
+        updates: await loadClientUpdates(Number(c.id)),
+        affiliate: aff
+          ? { id: Number(aff.id), first_name: String(aff.first_name) }
+          : null,
+      });
+    }),
+  );
+
+  app.post(
+    "/api/admin/clients/:id/updates",
+    requireAdmin("people.write"),
+    route(async (req, res) => {
+      const out = await addClientUpdateCore({
+        adminId: portalUser(res).id,
+        clientId: parseId(req.params.id),
+        body: String(req.body?.body || ""),
+        shareWithAffiliate: req.body?.share_with_affiliate === true,
+      });
+      res.status(201).json({ ok: true, ...out });
+    }),
+  );
+
+  app.patch(
+    "/api/admin/clients/:id/deal-status",
+    requireAdmin("people.write"),
+    route(async (req, res) => {
+      const raw = req.body?.deal_status_id;
+      const out = await setClientDealStatusCore({
+        adminId: portalUser(res).id,
+        clientId: parseId(req.params.id),
+        dealStatusId: raw == null || raw === "" ? null : parseId(raw),
+        note: req.body?.note,
+        notifyAffiliate: req.body?.notify_affiliate !== false,
+      });
+      res.json({ ok: true, ...out });
     }),
   );
 
@@ -11378,10 +15927,12 @@ function registerAdminRoutes(app: Express) {
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT c.id, c.email, c.first_name, c.last_name, c.phone, c.status, c.address_line1,
                 c.city, c.zip, c.affiliate_id, c.assigned_admin_id, c.admin_notes, c.last_login_at,
-                c.created_at, c.preferred_language,
+                c.created_at, c.preferred_language, c.deal_status_id, c.deal_status_changed_at,
+                ds.label_en AS deal_status_en, ds.label_es AS deal_status_es, ds.tone AS deal_status_tone,
                 CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name,
                 (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id) AS project_count
          FROM clients c LEFT JOIN affiliates a ON a.id = c.affiliate_id
+         LEFT JOIN deal_statuses ds ON ds.id = c.deal_status_id
          WHERE c.id = ? LIMIT 1`,
         [id],
       );
@@ -11397,9 +15948,14 @@ function registerAdminRoutes(app: Express) {
       const user = portalUser(res);
       const b = req.body || {};
       const email = normalizeEmail(b.email);
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
       const affiliateId = b.affiliate_id ? parseId(b.affiliate_id) : null;
@@ -11409,7 +15965,8 @@ function registerAdminRoutes(app: Express) {
           [affiliateId],
         );
         if (!a[0]) throw new HttpError(400, "errors.invalidReference");
-        if (a[0].status !== "active") throw new HttpError(400, "errors.affiliateInactive");
+        if (a[0].status !== "active")
+          throw new HttpError(400, "errors.affiliateInactive");
       }
       // One role per person; staff may confirm a shared (household) phone with a reason.
       const { phoneOverride } = await assertPersonAvailable({
@@ -11438,13 +15995,26 @@ function registerAdminRoutes(app: Express) {
       );
       const clientId = Number(r.insertId);
       if (phoneOverride) {
-        await recordSharedPhoneOverride({ entity: "client", id: clientId, override: phoneOverride, adminId: user.id });
+        await recordSharedPhoneOverride({
+          entity: "client",
+          id: clientId,
+          override: phoneOverride,
+          adminId: user.id,
+        });
       }
       await notifyStaff("client_created", (l) => ({
-        subject: tr(l, `Client added · ${first} ${last}`, `Cliente agregado · ${first} ${last}`),
+        subject: tr(
+          l,
+          `Client added · ${first} ${last}`,
+          `Cliente agregado · ${first} ${last}`,
+        ),
         headline: tr(l, "New client on file.", "Nuevo cliente registrado."),
         paragraphs: [
-          tr(l, `${first} ${last} (${email}) was added as a prospect.`, `${first} ${last} (${email}) se agregó como prospecto.`),
+          tr(
+            l,
+            `${first} ${last} (${email}) was added as a prospect.`,
+            `${first} ${last} (${email}) se agregó como prospecto.`,
+          ),
         ],
         cta: {
           url: `${APP_URL}/admin/clients/${clientId}`,
@@ -11505,7 +16075,8 @@ function registerAdminRoutes(app: Express) {
           [updates.affiliate_id],
         );
         if (!a[0]) throw new HttpError(400, "errors.invalidReference");
-        if (a[0].status !== "active") throw new HttpError(400, "errors.affiliateInactive");
+        if (a[0].status !== "active")
+          throw new HttpError(400, "errors.affiliateInactive");
       }
       const approving =
         updates.status === "prospect" && String(prev.status) === "pending";
@@ -11513,7 +16084,11 @@ function registerAdminRoutes(app: Express) {
         throw new HttpError(403, "errors.forbidden");
       }
       const emailAfter =
-        "email" in updates ? updates.email : prev.email ? String(prev.email) : null;
+        "email" in updates
+          ? updates.email
+          : prev.email
+            ? String(prev.email)
+            : null;
       if (approving && !emailAfter) {
         throw new HttpError(400, "validation.emailRequired");
       }
@@ -11526,6 +16101,17 @@ function registerAdminRoutes(app: Express) {
         adminId: portalUser(res).id,
       });
       await applyUpdate(pool, "clients", id, updates);
+      if ("email" in updates) {
+        await afterIdentityEmailChange({
+          entity: "client",
+          id,
+          oldEmail: prev.email ? String(prev.email) : null,
+          newEmail: updates.email ? String(updates.email) : null,
+          firstName: String(updates.first_name ?? prev.first_name ?? ""),
+          lang: asLang(updates.preferred_language ?? prev.preferred_language),
+          adminId: user.id,
+        });
+      }
       if (approving) {
         const token = await issueClientPortalInvite(pool, {
           clientId: id,
@@ -11536,7 +16122,8 @@ function registerAdminRoutes(app: Express) {
         await sendClientPortalInviteEmail({
           email: String(emailAfter),
           firstName: String(
-            ("first_name" in updates ? updates.first_name : prev.first_name) || "",
+            ("first_name" in updates ? updates.first_name : prev.first_name) ||
+              "",
           ),
           lang: asLang(
             "preferred_language" in updates
@@ -11657,18 +16244,22 @@ function registerAdminRoutes(app: Express) {
     route(async (req, res) => {
       const canFinance = adminCan(portalUser(res).role, "finance.read");
       const like = likeParam(req.query.q);
-      const qStr = String(req.query.q || "").trim().slice(0, 80);
+      const qStr = String(req.query.q || "")
+        .trim()
+        .slice(0, 80);
       const limitRaw = Number(req.query.limit);
       const limit = Math.min(
         50,
         Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 20),
       );
       const affiliateId =
-        req.query.affiliate_id != null && String(req.query.affiliate_id).trim() !== ""
+        req.query.affiliate_id != null &&
+        String(req.query.affiliate_id).trim() !== ""
           ? parseId(req.query.affiliate_id)
           : null;
       const contractorId =
-        req.query.contractor_id != null && String(req.query.contractor_id).trim() !== ""
+        req.query.contractor_id != null &&
+        String(req.query.contractor_id).trim() !== ""
           ? parseId(req.query.contractor_id)
           : null;
       const assignedAdminId =
@@ -11711,7 +16302,9 @@ function registerAdminRoutes(app: Express) {
         filterSql.push("p.loan_status = ?");
         filterParams.push(loanStatus);
       }
-      const andFilters = filterSql.length ? ` AND ${filterSql.join(" AND ")}` : "";
+      const andFilters = filterSql.length
+        ? ` AND ${filterSql.join(" AND ")}`
+        : "";
 
       async function fetchColumn(milestone: Milestone, offset: number) {
         const safeLimit = limit;
@@ -11755,7 +16348,10 @@ function registerAdminRoutes(app: Express) {
         });
       }
 
-      const columns: Record<string, Awaited<ReturnType<typeof fetchColumn>>> = {};
+      const columns: Record<
+        string,
+        Awaited<ReturnType<typeof fetchColumn>>
+      > = {};
       for (const m of MILESTONE_VALUES) {
         columns[m] = await fetchColumn(m, 0);
       }
@@ -11800,9 +16396,14 @@ function registerAdminRoutes(app: Express) {
           property_address: b.property_address
             ? String(b.property_address).trim().slice(0, 500)
             : c.address_line1,
-          property_city: b.property_city ? String(b.property_city).trim().slice(0, 100) : c.city,
-          property_zip: b.property_zip ? String(b.property_zip).trim().slice(0, 20) : c.zip,
-          affiliate_id: affiliateId ?? (c.affiliate_id ? Number(c.affiliate_id) : null),
+          property_city: b.property_city
+            ? String(b.property_city).trim().slice(0, 100)
+            : c.city,
+          property_zip: b.property_zip
+            ? String(b.property_zip).trim().slice(0, 20)
+            : c.zip,
+          affiliate_id:
+            affiliateId ?? (c.affiliate_id ? Number(c.affiliate_id) : null),
           lead_id: null,
           adu_plan_id: planId,
           assigned_admin_id: user.id,
@@ -11821,7 +16422,10 @@ function registerAdminRoutes(app: Express) {
     requireAdmin("projects.read"),
     route(async (req, res) => {
       const canFinance = adminCan(portalUser(res).role, "finance.read");
-      const detail = await loadAdminProjectDetail(parsePublicId(req.params.publicId), canFinance);
+      const detail = await loadAdminProjectDetail(
+        parsePublicId(req.params.publicId),
+        canFinance,
+      );
       if (!detail) throw new HttpError(404, "errors.notFound");
       res.json({ ok: true, ...detail });
     }),
@@ -11850,6 +16454,23 @@ function registerAdminRoutes(app: Express) {
         anchor_external_id: fStr(120),
         notes: fStr(5000),
       });
+      // Lenders directory: picking one keeps loan_lender_name in sync (null clears the link).
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "lender_id")) {
+        const raw = req.body.lender_id;
+        if (raw == null || raw === "") {
+          updates.lender_id = null;
+        } else {
+          const [[ld]] = (await pool.query<RowDataPacket[]>(
+            `SELECT id, company FROM lenders WHERE id = ? LIMIT 1`,
+            [parseId(raw)],
+          )) as unknown as [RowDataPacket[]];
+          if (!ld) throw new HttpError(400, "validation.invalidReference");
+          updates.lender_id = Number(ld.id);
+          updates.loan_lender_name = String(ld.company);
+          if (!("loan_lender_type" in updates))
+            updates.loan_lender_type = "external";
+        }
+      }
       const fin = parsePatch(req.body, {
         sale_price_cents: fInt(0, 10_000_000_000),
         contractor_cost_cents: fInt(0, 10_000_000_000),
@@ -11869,7 +16490,11 @@ function registerAdminRoutes(app: Express) {
 
       const paidLocked = await projectHasPaidCommission(pool, Number(old.id));
       if (paidLocked) {
-        const lockedKeys = ["sq_ft", "adu_plan_id", "commission_override_cents"] as const;
+        const lockedKeys = [
+          "sq_ft",
+          "adu_plan_id",
+          "commission_override_cents",
+        ] as const;
         for (const k of lockedKeys) {
           if (k in updates || k in fin) {
             throw new HttpError(409, "errors.commissionPaidLocked");
@@ -11878,19 +16503,26 @@ function registerAdminRoutes(app: Express) {
       }
 
       if ("contractor_cost_cents" in fin && fin.contractor_cost_cents != null) {
-        if (Number(fin.contractor_cost_cents) < Number(old.draw_committed_cents || 0)) {
+        if (
+          Number(fin.contractor_cost_cents) <
+          Number(old.draw_committed_cents || 0)
+        ) {
           throw new HttpError(400, "errors.drawExceedsBudget");
         }
       }
 
       let newContractorId: number | null = null;
-      if (updates.contractor_id && updates.contractor_id !== old.contractor_id) {
+      if (
+        updates.contractor_id &&
+        updates.contractor_id !== old.contractor_id
+      ) {
         const [k] = await pool.execute<RowDataPacket[]>(
           `SELECT id, status FROM contractors WHERE id = ? LIMIT 1`,
           [updates.contractor_id],
         );
         if (!k[0]) throw new HttpError(400, "errors.invalidReference");
-        if (k[0].status !== "active") throw new HttpError(400, "errors.contractorInactive");
+        if (k[0].status !== "active")
+          throw new HttpError(400, "errors.contractorInactive");
         newContractorId = Number(updates.contractor_id);
       }
       if (
@@ -11902,15 +16534,21 @@ function registerAdminRoutes(app: Express) {
       }
       if ("affiliate_id" in updates) {
         if (updates.affiliate_id) {
-          const attr = await resolveCloserParent(pool, Number(updates.affiliate_id));
-          if (!attr.closer_id) throw new HttpError(400, "errors.affiliateInactive");
+          const attr = await resolveCloserParent(
+            pool,
+            Number(updates.affiliate_id),
+          );
+          if (!attr.closer_id)
+            throw new HttpError(400, "errors.affiliateInactive");
           updates.affiliate_id = attr.closer_id;
           updates.closer_affiliate_id = attr.closer_id;
           updates.parent_affiliate_id = attr.parent_id;
+          updates.grandparent_affiliate_id = attr.grandparent_id;
         } else {
           updates.affiliate_id = null;
           updates.closer_affiliate_id = null;
           updates.parent_affiliate_id = null;
+          updates.grandparent_affiliate_id = null;
         }
       }
       if (updates.adu_plan_id) {
@@ -11919,7 +16557,8 @@ function registerAdminRoutes(app: Express) {
           [updates.adu_plan_id],
         );
         if (!pl[0]) throw new HttpError(400, "errors.invalidReference");
-        if (!("sq_ft" in updates) && old.sq_ft == null) updates.sq_ft = Number(pl[0].sq_ft);
+        if (!("sq_ft" in updates) && old.sq_ft == null)
+          updates.sq_ft = Number(pl[0].sq_ft);
       }
       const nextMilestone = String(updates.milestone ?? old.milestone);
       const nextContractor =
@@ -11927,15 +16566,19 @@ function registerAdminRoutes(app: Express) {
       if (nextMilestone === "in_build" && !nextContractor) {
         throw new HttpError(400, "errors.contractorRequired");
       }
-      const milestoneChanged = "milestone" in updates && updates.milestone !== old.milestone;
+      const milestoneChanged =
+        "milestone" in updates && updates.milestone !== old.milestone;
       if (milestoneChanged) {
         assertMilestoneTransition(old.milestone, updates.milestone);
         updates.milestone_changed_at = new Date();
       }
 
-      const loanNow = "loan_status" in updates ? updates.loan_status : old.loan_status;
-      const becameFinalized = loanNow === "finalized" && old.loan_status !== "finalized";
-      const leftFinalized = old.loan_status === "finalized" && loanNow !== "finalized";
+      const loanNow =
+        "loan_status" in updates ? updates.loan_status : old.loan_status;
+      const becameFinalized =
+        loanNow === "finalized" && old.loan_status !== "finalized";
+      const leftFinalized =
+        old.loan_status === "finalized" && loanNow !== "finalized";
       if (becameFinalized) updates.loan_finalized_at = new Date();
       if (leftFinalized) updates.loan_finalized_at = null;
 
@@ -11951,13 +16594,25 @@ function registerAdminRoutes(app: Express) {
             throw new HttpError(409, "errors.invalidTransition");
           }
         }
-        await applyUpdate(conn, "projects", Number(old.id), { ...updates, ...fin });
+        await applyUpdate(conn, "projects", Number(old.id), {
+          ...updates,
+          ...fin,
+        });
         if (milestoneChanged) {
-          await recordMilestone(conn, Number(old.id), String(old.milestone), nextMilestone, "admin", user.id);
+          await recordMilestone(
+            conn,
+            Number(old.id),
+            String(old.milestone),
+            nextMilestone,
+            "admin",
+            user.id,
+          );
         }
         await recalcProject(conn, Number(old.id));
-        if (becameFinalized) await syncCommissionForLoan(conn, Number(old.id), true, user.id);
-        if (leftFinalized) await syncCommissionForLoan(conn, Number(old.id), false, user.id);
+        if (becameFinalized)
+          await syncCommissionForLoan(conn, Number(old.id), true, user.id);
+        if (leftFinalized)
+          await syncCommissionForLoan(conn, Number(old.id), false, user.id);
       });
 
       if (newContractorId) {
@@ -11971,12 +16626,27 @@ function registerAdminRoutes(app: Express) {
             String(k[0].email),
             tplPortalNotice({
               lang,
-              subject: tr(lang, `New project assigned · ${publicId}`, `Nuevo proyecto asignado · ${publicId}`),
-              headline: tr(lang, "You have a new project.", "Tienes un nuevo proyecto."),
+              subject: tr(
+                lang,
+                `New project assigned · ${publicId}`,
+                `Nuevo proyecto asignado · ${publicId}`,
+              ),
+              headline: tr(
+                lang,
+                "You have a new project.",
+                "Tienes un nuevo proyecto.",
+              ),
               paragraphs: [
-                tr(lang, `Hi ${k[0].first_name}, project ${publicId} was assigned to you.`, `Hola ${k[0].first_name}, se te asignó el proyecto ${publicId}.`),
+                tr(
+                  lang,
+                  `Hi ${k[0].first_name}, project ${publicId} was assigned to you.`,
+                  `Hola ${k[0].first_name}, se te asignó el proyecto ${publicId}.`,
+                ),
               ],
-              cta: { url: `${APP_URL}/contractor/projects/${publicId}`, label: tr(lang, "Open project", "Abrir proyecto") },
+              cta: {
+                url: `${APP_URL}/contractor/projects/${publicId}`,
+                label: tr(lang, "Open project", "Abrir proyecto"),
+              },
             }),
           );
         }
@@ -11984,8 +16654,16 @@ function registerAdminRoutes(app: Express) {
 
       if (milestoneChanged) {
         await notifyStaff("milestone_changed", (l) => ({
-          subject: tr(l, `Milestone · ${publicId} → ${nextMilestone}`, `Hito · ${publicId} → ${nextMilestone}`),
-          headline: tr(l, "Project milestone updated.", "Hito del proyecto actualizado."),
+          subject: tr(
+            l,
+            `Milestone · ${publicId} → ${nextMilestone}`,
+            `Hito · ${publicId} → ${nextMilestone}`,
+          ),
+          headline: tr(
+            l,
+            "Project milestone updated.",
+            "Hito del proyecto actualizado.",
+          ),
           paragraphs: [
             tr(
               l,
@@ -12010,8 +16688,16 @@ function registerAdminRoutes(app: Express) {
             String(clientRows[0].email),
             tplPortalNotice({
               lang,
-              subject: tr(lang, `Project update · ${publicId}`, `Actualización del proyecto · ${publicId}`),
-              headline: tr(lang, "Your project moved forward.", "Tu proyecto avanzó."),
+              subject: tr(
+                lang,
+                `Project update · ${publicId}`,
+                `Actualización del proyecto · ${publicId}`,
+              ),
+              headline: tr(
+                lang,
+                "Your project moved forward.",
+                "Tu proyecto avanzó.",
+              ),
               paragraphs: [
                 tr(
                   lang,
@@ -12046,8 +16732,16 @@ function registerAdminRoutes(app: Express) {
             String(aff.email),
             tplPortalNotice({
               lang,
-              subject: tr(lang, `Commission pending · ${publicId}`, `Comisión pendiente · ${publicId}`),
-              headline: tr(lang, "A commission was accrued.", "Se acumuló una comisión."),
+              subject: tr(
+                lang,
+                `Commission pending · ${publicId}`,
+                `Comisión pendiente · ${publicId}`,
+              ),
+              headline: tr(
+                lang,
+                "A commission was accrued.",
+                "Se acumuló una comisión.",
+              ),
               paragraphs: [
                 tr(
                   lang,
@@ -12064,8 +16758,16 @@ function registerAdminRoutes(app: Express) {
         }
         if (staffTotal > 0) {
           await notifyStaff("commission_accrued", (l) => ({
-            subject: tr(l, `Commission accrued · ${publicId}`, `Comisión acumulada · ${publicId}`),
-            headline: tr(l, "Affiliate commission pending.", "Comisión de afiliado pendiente."),
+            subject: tr(
+              l,
+              `Commission accrued · ${publicId}`,
+              `Comisión acumulada · ${publicId}`,
+            ),
+            headline: tr(
+              l,
+              "Affiliate commission pending.",
+              "Comisión de afiliado pendiente.",
+            ),
             paragraphs: [
               tr(
                 l,
@@ -12081,7 +16783,10 @@ function registerAdminRoutes(app: Express) {
         }
       }
 
-      const detail = await loadAdminProjectDetail(publicId, adminCan(user.role, "finance.read"));
+      const detail = await loadAdminProjectDetail(
+        publicId,
+        adminCan(user.role, "finance.read"),
+      );
       res.json({ ok: true, ...detail });
     }),
   );
@@ -12112,7 +16817,9 @@ function registerAdminRoutes(app: Express) {
     requireAdmin("projects.write"),
     route(async (req, res) => {
       const publicId = parsePublicId(req.params.publicId);
-      const kind = ["contractor_client", "affiliate_terms", "other"].includes(String(req.body?.kind))
+      const kind = ["contractor_client", "affiliate_terms", "other"].includes(
+        String(req.body?.kind),
+      )
         ? String(req.body.kind)
         : "contractor_client";
       const [rows] = await pool.execute<RowDataPacket[]>(
@@ -12144,9 +16851,18 @@ function registerAdminRoutes(app: Express) {
           zip: p.property_zip,
         },
         plan: p.plan_name
-          ? { name: p.plan_name, sq_ft: p.sq_ft, bedrooms: p.bedrooms, bathrooms: p.bathrooms }
+          ? {
+              name: p.plan_name,
+              sq_ft: p.sq_ft,
+              bedrooms: p.bedrooms,
+              bathrooms: p.bathrooms,
+            }
           : null,
-        client: { name: `${p.c_first} ${p.c_last}`, email: p.c_email, phone: p.c_phone },
+        client: {
+          name: `${p.c_first} ${p.c_last}`,
+          email: p.c_email,
+          phone: p.c_phone,
+        },
         contractor: p.contractor_id
           ? {
               name: `${p.k_first} ${p.k_last}`,
@@ -12197,8 +16913,11 @@ function registerAdminRoutes(app: Express) {
       await applyUpdate(pool, "project_contracts", id, updates);
       if (updates.status === "sent" && rows[0].status !== "sent") {
         const pub = String(rows[0].public_id);
-        const recipients: Array<{ email: string; first: string; lang: ReturnType<typeof asLang> }> =
-          [];
+        const recipients: Array<{
+          email: string;
+          first: string;
+          lang: ReturnType<typeof asLang>;
+        }> = [];
         if (rows[0].client_email) {
           recipients.push({
             email: String(rows[0].client_email),
@@ -12218,8 +16937,16 @@ function registerAdminRoutes(app: Express) {
             r.email,
             tplPortalNotice({
               lang: r.lang,
-              subject: tr(r.lang, `Contract ready · ${pub}`, `Contrato listo · ${pub}`),
-              headline: tr(r.lang, "A contract was sent.", "Se envió un contrato."),
+              subject: tr(
+                r.lang,
+                `Contract ready · ${pub}`,
+                `Contrato listo · ${pub}`,
+              ),
+              headline: tr(
+                r.lang,
+                "A contract was sent.",
+                "Se envió un contrato.",
+              ),
               paragraphs: [
                 tr(
                   r.lang,
@@ -12229,7 +16956,8 @@ function registerAdminRoutes(app: Express) {
               ],
               cta: {
                 url:
-                  rows[0].kind === "contractor_client" && r.email === rows[0].contractor_email
+                  rows[0].kind === "contractor_client" &&
+                  r.email === rows[0].contractor_email
                     ? `${APP_URL}/contractor/projects/${pub}`
                     : `${APP_URL}/client/documents`,
                 label: tr(r.lang, "Open portal", "Abrir portal"),
@@ -12239,8 +16967,18 @@ function registerAdminRoutes(app: Express) {
         }
         await notifyStaff("contract_sent", (l) => ({
           subject: tr(l, `Contract sent · ${pub}`, `Contrato enviado · ${pub}`),
-          headline: tr(l, "Contract marked sent.", "Contrato marcado como enviado."),
-          paragraphs: [tr(l, `Project ${pub} contract was marked sent.`, `El contrato del proyecto ${pub} se marcó como enviado.`)],
+          headline: tr(
+            l,
+            "Contract marked sent.",
+            "Contrato marcado como enviado.",
+          ),
+          paragraphs: [
+            tr(
+              l,
+              `Project ${pub} contract was marked sent.`,
+              `El contrato del proyecto ${pub} se marcó como enviado.`,
+            ),
+          ],
           cta: {
             url: `${APP_URL}/admin/projects/${pub}`,
             label: tr(l, "Open project", "Abrir proyecto"),
@@ -12272,9 +17010,13 @@ function registerAdminRoutes(app: Express) {
     "/api/admin/draws",
     requireAdmin("projects.read"),
     route(async (req, res) => {
-      const status = ["draft", "submitted", "approved", "rejected", "paid"].includes(
-        String(req.query.status),
-      )
+      const status = [
+        "draft",
+        "submitted",
+        "approved",
+        "rejected",
+        "paid",
+      ].includes(String(req.query.status))
         ? String(req.query.status)
         : null;
       const [rows] = await pool.execute<RowDataPacket[]>(
@@ -12342,20 +17084,43 @@ function registerAdminRoutes(app: Express) {
         const lang = asLang(d.preferred_language);
         const label = tr(
           lang,
-          next === "approved" ? "approved" : next === "paid" ? "paid" : "rejected",
-          next === "approved" ? "aprobada" : next === "paid" ? "pagada" : "rechazada",
+          next === "approved"
+            ? "approved"
+            : next === "paid"
+              ? "paid"
+              : "rejected",
+          next === "approved"
+            ? "aprobada"
+            : next === "paid"
+              ? "pagada"
+              : "rechazada",
         );
         await safeSend(
           String(d.email),
           tplPortalNotice({
             lang,
-            subject: tr(lang, `Draw request ${label} · ${d.public_id}`, `Solicitud de desembolso ${label} · ${d.public_id}`),
-            headline: tr(lang, `Your draw request was ${label}.`, `Tu solicitud de desembolso fue ${label}.`),
+            subject: tr(
+              lang,
+              `Draw request ${label} · ${d.public_id}`,
+              `Solicitud de desembolso ${label} · ${d.public_id}`,
+            ),
+            headline: tr(
+              lang,
+              `Your draw request was ${label}.`,
+              `Tu solicitud de desembolso fue ${label}.`,
+            ),
             paragraphs: [
-              tr(lang, `Hi ${d.first_name}, your request for ${money(d.amount_cents)} on ${d.public_id} is now ${label}.`, `Hola ${d.first_name}, tu solicitud de ${money(d.amount_cents)} en ${d.public_id} ahora está ${label}.`),
+              tr(
+                lang,
+                `Hi ${d.first_name}, your request for ${money(d.amount_cents)} on ${d.public_id} is now ${label}.`,
+                `Hola ${d.first_name}, tu solicitud de ${money(d.amount_cents)} en ${d.public_id} ahora está ${label}.`,
+              ),
               ...(updates.note ? [String(updates.note)] : []),
             ],
-            cta: { url: `${APP_URL}/contractor/draws`, label: tr(lang, "View draws", "Ver desembolsos") },
+            cta: {
+              url: `${APP_URL}/contractor/draws`,
+              label: tr(lang, "View draws", "Ver desembolsos"),
+            },
           }),
         );
       }
@@ -12368,10 +17133,14 @@ function registerAdminRoutes(app: Express) {
     "/api/admin/commissions",
     requireAdmin("finance.read"),
     route(async (req, res) => {
-      const status = ["pending", "approved", "paid", "void"].includes(String(req.query.status))
+      const status = ["pending", "approved", "paid", "void"].includes(
+        String(req.query.status),
+      )
         ? String(req.query.status)
         : null;
-      const role = ["direct", "closer", "parent"].includes(String(req.query.role))
+      const role = ["direct", "closer", "parent", "grandparent"].includes(
+        String(req.query.role),
+      )
         ? String(req.query.role)
         : null;
       const affiliateId = req.query.affiliate_id
@@ -12428,7 +17197,8 @@ function registerAdminRoutes(app: Express) {
       );
       const c = rows[0];
       if (!c) throw new HttpError(404, "errors.notFound");
-      if (c.status === "paid") throw new HttpError(409, "errors.invalidTransition");
+      if (c.status === "paid")
+        throw new HttpError(409, "errors.invalidTransition");
       const projectId = Number(c.project_id);
       const next = updates.status as string | undefined;
       if (next) {
@@ -12440,10 +17210,20 @@ function registerAdminRoutes(app: Express) {
         if (!allowed[String(c.status)]?.includes(next)) {
           throw new HttpError(409, "errors.invalidTransition");
         }
+        // Agreement Section 2: no payout before a signed agreement + W-9 on file.
+        if (
+          next === "paid" &&
+          !(await affiliateOnboardingState(Number(c.affiliate_id))).payout_ready
+        ) {
+          throw new HttpError(409, "errors.affiliateOnboardingIncomplete");
+        }
         if (next === "paid") updates.paid_at = new Date();
       }
       // After any share is paid, amounts are frozen (sibling can still be approved/paid).
-      if ("amount_cents" in updates && (await projectHasPaidCommission(pool, projectId))) {
+      if (
+        "amount_cents" in updates &&
+        (await projectHasPaidCommission(pool, projectId))
+      ) {
         throw new HttpError(409, "errors.commissionPaidLocked");
       }
       await withTx(async (conn) => {
@@ -12472,7 +17252,12 @@ function registerAdminRoutes(app: Express) {
             await conn.execute(
               `UPDATE projects SET affiliate_commission_cents = ?, net_profit_cents = ?,
                  net_profit_per_sqft_cents = ? WHERE id = ?`,
-              [affComm, econ.net_profit_cents, econ.net_profit_per_sqft_cents, projectId],
+              [
+                affComm,
+                econ.net_profit_cents,
+                econ.net_profit_per_sqft_cents,
+                projectId,
+              ],
             );
           }
           // Project commission_paid_at only when every non-void share is paid.
@@ -12499,7 +17284,8 @@ function registerAdminRoutes(app: Express) {
             [projectId],
           )) as unknown as [RowDataPacket[]];
           const isSplit =
-            Boolean(projRows[0]?.parent_affiliate_id) || Number(sib?.n || 0) > 1;
+            Boolean(projRows[0]?.parent_affiliate_id) ||
+            Number(sib?.n || 0) > 1;
           if (isSplit) {
             // Per-share edit must not become the project-total override (would re-split 70/30).
             await refreshProjectEconomicsFromCommissionRows(conn, projectId);
@@ -12520,13 +17306,29 @@ function registerAdminRoutes(app: Express) {
           String(c.email),
           tplPortalNotice({
             lang,
-            subject: tr(lang, "Your commission was paid — Groundwork Capital", "Tu comisión fue pagada — Groundwork Capital"),
+            subject: tr(
+              lang,
+              "Your commission was paid · Groundwork Capital",
+              "Tu comisión fue pagada · Groundwork Capital",
+            ),
             headline: tr(lang, "Commission paid.", "Comisión pagada."),
             paragraphs: [
-              tr(lang, `Hi ${c.first_name}, your commission for project ${c.public_id} has been paid.`, `Hola ${c.first_name}, tu comisión del proyecto ${c.public_id} fue pagada.`),
+              tr(
+                lang,
+                `Hi ${c.first_name}, your commission for project ${c.public_id} has been paid.`,
+                `Hola ${c.first_name}, tu comisión del proyecto ${c.public_id} fue pagada.`,
+              ),
             ],
-            details: [[tr(lang, "Amount", "Monto"), money(updates.amount_cents ?? c.amount_cents)]],
-            cta: { url: `${APP_URL}/affiliate/commissions`, label: tr(lang, "View commissions", "Ver comisiones") },
+            details: [
+              [
+                tr(lang, "Amount", "Monto"),
+                money(updates.amount_cents ?? c.amount_cents),
+              ],
+            ],
+            cta: {
+              url: `${APP_URL}/affiliate/commissions`,
+              label: tr(lang, "View commissions", "Ver comisiones"),
+            },
           }),
         );
       }
@@ -12553,31 +17355,60 @@ function registerAdminRoutes(app: Express) {
     route(async (req, res) => {
       const b = req.body || {};
       const email = normalizeEmail(b.email);
-      const first = String(b.first_name || "").trim().slice(0, 100);
-      const last = String(b.last_name || "").trim().slice(0, 100);
+      const first = String(b.first_name || "")
+        .trim()
+        .slice(0, 100);
+      const last = String(b.last_name || "")
+        .trim()
+        .slice(0, 100);
       const role = String(b.role || "");
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!["super_admin", "admin", "agent", "finance", "content"].includes(role)) {
+      if (
+        !["super_admin", "admin", "agent", "finance", "content"].includes(role)
+      ) {
         throw new HttpError(400, "validation.invalidField");
       }
       const lang = asLang(b.preferred_language);
       const [r] = await pool.execute<ResultSetHeader>(
         `INSERT INTO admins (email, first_name, last_name, phone, role, status, preferred_language)
          VALUES (?, ?, ?, ?, ?, 'active', ?)`,
-        [email, first, last, b.phone ? String(b.phone).trim().slice(0, 20) : null, role, lang],
+        [
+          email,
+          first,
+          last,
+          b.phone ? String(b.phone).trim().slice(0, 20) : null,
+          role,
+          lang,
+        ],
       );
       await safeSend(
         email,
         tplPortalNotice({
           lang,
-          subject: tr(lang, "You've been added to Groundwork Admin", "Te agregaron a Groundwork Admin"),
+          subject: tr(
+            lang,
+            "You've been added to Groundwork Admin",
+            "Te agregaron a Groundwork Admin",
+          ),
           headline: tr(lang, "Welcome to the team.", "Bienvenido al equipo."),
           paragraphs: [
-            tr(lang, `Hi ${first}, you now have ${role.replace("_", " ")} access to the Groundwork admin portal.`, `Hola ${first}, ahora tienes acceso de ${role.replace("_", " ")} al portal de administración de Groundwork.`),
+            tr(
+              lang,
+              `Hi ${first}, you now have ${role.replace("_", " ")} access to the Groundwork admin portal.`,
+              `Hola ${first}, ahora tienes acceso de ${role.replace("_", " ")} al portal de administración de Groundwork.`,
+            ),
           ],
-          cta: { url: `${APP_URL}/admin/login`, label: tr(lang, "Open admin portal", "Abrir portal de administración") },
+          cta: {
+            url: `${APP_URL}/admin/login`,
+            label: tr(
+              lang,
+              "Open admin portal",
+              "Abrir portal de administración",
+            ),
+          },
         }),
       );
       res.status(201).json({ ok: true, id: Number(r.insertId) });
@@ -12591,7 +17422,13 @@ function registerAdminRoutes(app: Express) {
       const me = portalUser(res);
       const id = parseId(req.params.id);
       const { updates } = parsePatch(req.body, {
-        role: fEnum(["super_admin", "admin", "agent", "finance", "content"] as const),
+        role: fEnum([
+          "super_admin",
+          "admin",
+          "agent",
+          "finance",
+          "content",
+        ] as const),
         status: fEnum(["active", "inactive", "suspended"] as const),
         first_name: fStr(100, { min: 1 }),
         last_name: fStr(100, { min: 1 }),
@@ -12619,7 +17456,55 @@ function registerAdminRoutes(app: Express) {
         throw new HttpError(409, "errors.cannotDemoteSelf");
       }
       await applyUpdate(pool, "admins", id, updates);
-      res.json({ ok: true });
+      // Deactivated owner: their lines fall back to the main team; tell admins to reassign.
+      let linesNeedingOwner: { id: number; e164: string }[] = [];
+      if (
+        "status" in updates &&
+        updates.status !== "active" &&
+        target.status === "active"
+      ) {
+        const [owned] = await pool.query<RowDataPacket[]>(
+          `SELECT id, e164, line_mode FROM admin_phone_numbers WHERE assigned_admin_id = ? AND is_active = 1`,
+          [id],
+        );
+        linesNeedingOwner = owned.map((l) => ({
+          id: Number(l.id),
+          e164: String(l.e164),
+        }));
+        if (linesNeedingOwner.length) {
+          const [[who]] = (await pool.query<RowDataPacket[]>(
+            `SELECT first_name, last_name FROM admins WHERE id = ? LIMIT 1`,
+            [id],
+          )) as unknown as [RowDataPacket[]];
+          const name =
+            `${who?.first_name || ""} ${who?.last_name || ""}`.trim();
+          const nums = linesNeedingOwner.map((l) => l.e164).join(", ");
+          await notifyStaff("line_needs_owner", (l) => ({
+            subject: tr(
+              l,
+              `Phone line needs a new owner: ${nums}`,
+              `Línea telefónica sin dueño: ${nums}`,
+            ),
+            headline: tr(
+              l,
+              "Reassign a phone line",
+              "Reasigne una línea telefónica",
+            ),
+            paragraphs: [
+              tr(
+                l,
+                `${name} was deactivated and owned ${nums}. Calls and texts now go to the main line's team until you pick a new owner.`,
+                `${name} fue desactivado y era dueño de ${nums}. Las llamadas y textos van al equipo de la línea principal hasta que elija un nuevo dueño.`,
+              ),
+            ],
+            cta: {
+              url: `${APP_URL}/admin/settings`,
+              label: tr(l, "Open phone lines", "Abrir líneas telefónicas"),
+            },
+          }));
+        }
+      }
+      res.json({ ok: true, lines_needing_owner: linesNeedingOwner });
     }),
   );
 
@@ -12646,6 +17531,10 @@ function registerAdminRoutes(app: Express) {
           commission_direct_cents_per_sqft: rates.direct_cents_per_sqft,
           commission_closer_cents_per_sqft: rates.closer_cents_per_sqft,
           commission_parent_cents_per_sqft: rates.parent_cents_per_sqft,
+          commission_parent_shared_cents_per_sqft:
+            rates.parent_shared_cents_per_sqft,
+          commission_grandparent_cents_per_sqft:
+            rates.grandparent_cents_per_sqft,
         },
         notify_extra_emails: extras.map(mapNotifyExtraEmailRow),
         notify_event_keys: ADMIN_NOTIFY_EVENT_KEYS,
@@ -12663,18 +17552,22 @@ function registerAdminRoutes(app: Express) {
         commission_direct_cents_per_sqft: fInt(0, 100000, false),
         commission_closer_cents_per_sqft: fInt(0, 100000, false),
         commission_parent_cents_per_sqft: fInt(0, 100000, false),
+        commission_parent_shared_cents_per_sqft: fInt(0, 100000, false),
+        commission_grandparent_cents_per_sqft: fInt(0, 100000, false),
       });
       // Keep legacy key in sync when direct is written (or vice versa).
       if (
         "commission_direct_cents_per_sqft" in updates &&
         !("commission_cents_per_sqft" in updates)
       ) {
-        updates.commission_cents_per_sqft = updates.commission_direct_cents_per_sqft;
+        updates.commission_cents_per_sqft =
+          updates.commission_direct_cents_per_sqft;
       } else if (
         "commission_cents_per_sqft" in updates &&
         !("commission_direct_cents_per_sqft" in updates)
       ) {
-        updates.commission_direct_cents_per_sqft = updates.commission_cents_per_sqft;
+        updates.commission_direct_cents_per_sqft =
+          updates.commission_cents_per_sqft;
       }
       for (const [key, value] of Object.entries(updates)) {
         await pool.execute(
@@ -12693,15 +17586,19 @@ function registerAdminRoutes(app: Express) {
     route(async (req, res) => {
       const user = portalUser(res);
       const email = normalizeEmail(req.body?.email);
-      const label = req.body?.label ? String(req.body.label).trim().slice(0, 100) : null;
-      if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+      const label = req.body?.label
+        ? String(req.body.label).trim().slice(0, 100)
+        : null;
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
       // Default: all team alert types except inbound_sms (line-owner traffic is noisy for ops copies).
       let eventsJson: string | null = JSON.stringify(
         ADMIN_NOTIFY_EVENT_KEYS.filter((k) => k !== "inbound_sms"),
       );
       if ("events" in (req.body || {})) {
         const normalized = normalizeNotifyExtraEventsInput(req.body.events);
-        if (normalized === undefined) throw new HttpError(400, "validation.invalidField");
+        if (normalized === undefined)
+          throw new HttpError(400, "validation.invalidField");
         eventsJson = normalized == null ? null : JSON.stringify(normalized);
       }
       try {
@@ -12713,7 +17610,8 @@ function registerAdminRoutes(app: Express) {
         );
         res.status(201).json({ ok: true, id: Number(r.insertId) });
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") throw new HttpError(409, "errors.duplicate");
+        if (e?.code === "ER_DUP_ENTRY")
+          throw new HttpError(409, "errors.duplicate");
         throw e;
       }
     }),
@@ -12731,12 +17629,14 @@ function registerAdminRoutes(app: Express) {
       });
       if ("email" in updates && updates.email) {
         const email = normalizeEmail(updates.email);
-        if (!isValidEmail(email)) throw new HttpError(400, "validation.emailInvalid");
+        if (!isValidEmail(email))
+          throw new HttpError(400, "validation.emailInvalid");
         updates.email = email;
       }
       if (req.body && "events" in req.body) {
         const normalized = normalizeNotifyExtraEventsInput(req.body.events);
-        if (normalized === undefined) throw new HttpError(400, "validation.invalidField");
+        if (normalized === undefined)
+          throw new HttpError(400, "validation.invalidField");
         updates.events_json =
           normalized == null ? null : JSON.stringify(normalized);
       }
@@ -12857,7 +17757,6 @@ function registerAdminRoutes(app: Express) {
   registerConversationsRoutes(app);
 }
 
-
 // ─── Campaigns (Resend transactional email + consent-gated Twilio SMS) ────────
 
 type CampaignRecipientRow = {
@@ -12888,7 +17787,8 @@ function parseCampaignAudienceFilter(raw: unknown): CampaignAudienceFilter {
   if (!raw || typeof raw !== "object") return {};
   const o = raw as Record<string, unknown>;
   const out: CampaignAudienceFilter = {};
-  if (typeof o.status === "string" && o.status.trim()) out.status = o.status.trim();
+  if (typeof o.status === "string" && o.status.trim())
+    out.status = o.status.trim();
   if (typeof o.created_from === "string" && o.created_from.trim()) {
     out.created_from = o.created_from.trim().slice(0, 10);
   }
@@ -12902,7 +17802,8 @@ function parseCampaignAudienceFilter(raw: unknown): CampaignAudienceFilter {
 }
 
 function parseCampaignChannels(raw: unknown): CampaignChannels {
-  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const o =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   return {
     email: o.email !== false,
     sms: o.sms !== false,
@@ -12932,8 +17833,7 @@ function wrapCampaignEmailHtml(opts: {
   unsubscribeUrl?: string;
 }): string {
   const unsubHref = opts.unsubscribeUrl || "{{{RESEND_UNSUBSCRIBE_URL}}}";
-  const unsubLabel =
-    opts.lang === "es" ? "darse de baja" : "unsubscribe";
+  const unsubLabel = opts.lang === "es" ? "darse de baja" : "unsubscribe";
   const unsubNote =
     opts.lang === "es"
       ? `Puede darse de baja aquí: <a href="${unsubHref}" style="color:#6b7280;">${unsubLabel}</a>`
@@ -13195,19 +18095,45 @@ function previewCampaignAudience(
   };
 }
 
-function defaultFontanaLeadTemplates(): Omit<CampaignTemplate, "id">[] {
+type CampaignEventNames = { title_en: string; title_es: string };
+
+/** Fallback names when a leads campaign has no event (historic Fontana copy). */
+const DEFAULT_CAMPAIGN_EVENT_NAMES: CampaignEventNames = {
+  title_en: "ADU Discovery Night in Fontana",
+  title_es: "Noche de ADU en Fontana",
+};
+
+/** Event title (+ city when the title doesn't already name it) for follow-up copy. */
+function campaignEventNames(ev: RowDataPacket | null): CampaignEventNames {
+  if (!ev) return DEFAULT_CAMPAIGN_EVENT_NAMES;
+  const city = String(ev.city || "").trim();
+  const withCity = (title: string, joiner: string) =>
+    city && !title.toLowerCase().includes(city.toLowerCase())
+      ? `${title} ${joiner} ${city}`
+      : title;
+  const en = String(ev.title_en || "").trim();
+  const es = String(ev.title_es || "").trim() || en;
+  return { title_en: withCity(en, "in"), title_es: withCity(es, "en") };
+}
+
+/** Bilingual opener (path CTAs) + reply_1..4 for any event's lead follow-up. */
+function defaultEventLeadTemplates(
+  names: CampaignEventNames = DEFAULT_CAMPAIGN_EVENT_NAMES,
+): Omit<CampaignTemplate, "id">[] {
+  const enH = escapeHtml(names.title_en);
+  const esH = escapeHtml(names.title_es);
   const gcr = `${APP_URL}/get-credit-report`;
   const aff = `${APP_URL}/affiliate/signup`;
   const ctr = `${APP_URL}/contractor/signup`;
   const info = `${APP_URL}/`;
   const openerCtasEn = [
-    campaignPathButton(gcr, "I'm a homeowner — free credit report"),
+    campaignPathButton(gcr, "I'm a homeowner. Free credit report"),
     campaignPathButton(info, "I want more ADU information first"),
     campaignPathButton(aff, "I'm a realtor or loan officer"),
     campaignPathButton(ctr, "I'm a contractor"),
   ].join("");
   const openerCtasEs = [
-    campaignPathButton(gcr, "Soy propietario — reporte de crédito gratis"),
+    campaignPathButton(gcr, "Soy propietario. Reporte de crédito gratis"),
     campaignPathButton(info, "Primero quiero más información sobre ADU"),
     campaignPathButton(aff, "Soy realtor o loan officer"),
     campaignPathButton(ctr, "Soy contratista"),
@@ -13215,28 +18141,27 @@ function defaultFontanaLeadTemplates(): Omit<CampaignTemplate, "id">[] {
   return [
     {
       role: "opener",
-      subject_en:
-        "Thanks for joining ADU Discovery Night — pick your next step",
-      subject_es:
-        "Gracias por la Noche de ADU — elija su siguiente paso",
-      email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>This is Cesar with Groundwork Capital. Thank you for your interest in our ADU Discovery Night in Fontana! It was the first of many events.</p><p>Tap the path that fits you — we'll take you straight to the right next step:</p>${openerCtasEn}<p>Thank you!<br/>Cesar Gomez and Daniel Carrillo</p>`,
-      email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Soy César de Groundwork Capital. ¡Gracias por su interés en nuestra Noche de ADU en Fontana! Fue el primero de muchos eventos.</p><p>Toque el camino que le corresponde — lo llevamos al siguiente paso:</p>${openerCtasEs}<p>¡Gracias!<br/>César Gomez y Daniel Carrillo</p>`,
-      sms_body_en: `Hi {first_name}, Cesar with Groundwork Capital. Thanks for ADU Discovery Night in Fontana!\n\nPick your next step:\nHomeowner credit report: ${gcr}\nMore ADU info: ${info}\nRealtor/LO affiliate: ${aff}\nContractor: ${ctr}\n\nThank you!`,
-      sms_body_es: `Hola {first_name}, soy César de Groundwork Capital. ¡Gracias por la Noche de ADU en Fontana!\n\nElija su siguiente paso:\nReporte de crédito (propietario): ${gcr}\nMás info de ADU: ${info}\nAfiliado (realtor/LO): ${aff}\nContratista: ${ctr}\n\n¡Gracias!`,
+      subject_en: `Thanks for joining ${names.title_en}. Pick your next step`,
+      subject_es: `Gracias por acompañarnos en ${names.title_es}. Elija su siguiente paso`,
+      email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>This is Cesar with Groundwork Capital. Thank you for your interest in our ${enH}! It was one of many events to come.</p><p>Tap the path that fits you. We'll take you straight to the right next step:</p>${openerCtasEn}<p>Thank you!<br/>Cesar Gomez and Daniel Carrillo</p>`,
+      email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Soy César de Groundwork Capital. ¡Gracias por su interés en ${esH}! Es uno de muchos eventos por venir.</p><p>Toque el camino que le corresponde. Lo llevamos al siguiente paso:</p>${openerCtasEs}<p>¡Gracias!<br/>César Gomez y Daniel Carrillo</p>`,
+      sms_body_en: `Hi {first_name}, Cesar with Groundwork Capital. Thanks for joining ${names.title_en}!\n\nPick your next step:\nHomeowner credit report: ${gcr}\nMore ADU info: ${info}\nRealtor/LO affiliate: ${aff}\nContractor: ${ctr}\n\nThank you!`,
+      sms_body_es: `Hola {first_name}, soy César de Groundwork Capital. ¡Gracias por acompañarnos en ${names.title_es}!\n\nElija su siguiente paso:\nReporte de crédito (propietario): ${gcr}\nMás info de ADU: ${info}\nAfiliado (realtor/LO): ${aff}\nContratista: ${ctr}\n\n¡Gracias!`,
     },
     {
       role: "reply_1",
-      subject_en: "Your next step — free credit report",
-      subject_es: "Su siguiente paso — reporte de crédito gratis",
-      email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>Thanks — as a homeowner, your next step is our free credit report so Daniel can review financing options.</p><p><a href="${gcr}">Get your free credit report</a></p>`,
-      email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Gracias — como propietario, su siguiente paso es el reporte de crédito gratis para que Daniel revise las opciones de financiamiento.</p><p><a href="${gcr}">Obtener reporte de crédito gratis</a></p>`,
+      subject_en: "Your next step. Free credit report",
+      subject_es: "Su siguiente paso. Reporte de crédito gratis",
+      email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>Thanks. As a homeowner, your next step is our free credit report so Daniel can review financing options.</p><p><a href="${gcr}">Get your free credit report</a></p>`,
+      email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Gracias. Como propietario, su siguiente paso es el reporte de crédito gratis para que Daniel revise las opciones de financiamiento.</p><p><a href="${gcr}">Obtener reporte de crédito gratis</a></p>`,
       sms_body_en: `Thanks {first_name}! As a homeowner, next step is our free credit report so Daniel can review financing: ${gcr}`,
       sms_body_es: `¡Gracias {first_name}! Como propietario, el siguiente paso es el reporte de crédito gratis para que Daniel revise el financiamiento: ${gcr}`,
     },
     {
       role: "reply_2",
-      subject_en: "ADU information — we'll invite you to the next homeowner event",
-      subject_es: "Información de ADU — le invitaremos al próximo evento",
+      subject_en:
+        "ADU information. We'll invite you to the next homeowner event",
+      subject_es: "Información de ADU. Le invitaremos al próximo evento",
       email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>We'll send ADU information and invite you to the next homeowner event (English or Spanish) as soon as dates are set.</p>`,
       email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Le enviaremos información sobre ADU y la invitación al próximo evento para propietarios (inglés o español) cuando tengamos fechas.</p>`,
       sms_body_en: `Thanks {first_name}! We'll send ADU info and invite you to the next homeowner event once dates are set.`,
@@ -13246,8 +18171,8 @@ function defaultFontanaLeadTemplates(): Omit<CampaignTemplate, "id">[] {
       role: "reply_3",
       subject_en: "Apply as a Groundwork affiliate",
       subject_es: "Aplique como afiliado de Groundwork",
-      email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>Great — apply as an affiliate here: <a href="${aff}">${aff}</a></p>`,
-      email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Perfecto — aplique como afiliado aquí: <a href="${aff}">${aff}</a></p>`,
+      email_html_en: `<p>Hi {{{FIRST_NAME|there}}},</p><p>Great. Apply as an affiliate here: <a href="${aff}">${aff}</a></p>`,
+      email_html_es: `<p>Hola {{{FIRST_NAME|there}}},</p><p>Perfecto. Aplique como afiliado aquí: <a href="${aff}">${aff}</a></p>`,
       sms_body_en: `Thanks {first_name}! Apply as a Groundwork affiliate: ${aff}`,
       sms_body_es: `¡Gracias {first_name}! Aplique como afiliado de Groundwork: ${aff}`,
     },
@@ -13298,7 +18223,7 @@ async function resolveCampaignSmsFrom(): Promise<string | null> {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT e164 FROM admin_phone_numbers
      WHERE is_active = 1
-     ORDER BY id ASC LIMIT 1`,
+     ORDER BY is_primary DESC, id ASC LIMIT 1`,
   );
   return rows[0]?.e164 ? String(rows[0].e164) : null;
 }
@@ -13567,10 +18492,10 @@ async function tryHandleCampaignKeywordReply(opts: {
   const leadId = Number(leads[0].id);
   const lang = leads[0].preferred_language === "es" ? "es" : "en";
   const name = String(leads[0].full_name || "");
-  await pool.query(`UPDATE leads SET audience_tag = ?, status = 'contacted' WHERE id = ?`, [
-    tag,
-    leadId,
-  ]);
+  await pool.query(
+    `UPDATE leads SET audience_tag = ?, status = 'contacted' WHERE id = ?`,
+    [tag, leadId],
+  );
 
   const [stateRows] = await pool.query<RowDataPacket[]>(
     `SELECT campaign_id FROM campaign_recipient_state
@@ -13666,7 +18591,9 @@ function registerCampaignRoutes(app: Express) {
       );
       const items: Campaign[] = [];
       for (const r of rows) {
-        items.push(mapCampaignRow(r, await loadCampaignTemplates(Number(r.id))));
+        items.push(
+          mapCampaignRow(r, await loadCampaignTemplates(Number(r.id))),
+        );
       }
       res.json({ ok: true, campaigns: items });
     }),
@@ -13677,9 +18604,13 @@ function registerCampaignRoutes(app: Express) {
     requireAdmin("campaigns"),
     route(async (req, res) => {
       const me = portalUser(res);
-      const name = String(req.body?.name || "").trim().slice(0, 200);
+      const name = String(req.body?.name || "")
+        .trim()
+        .slice(0, 200);
       if (!name) throw new HttpError(400, "validation.invalidField");
-      const kind = String(req.body?.audience_kind || "leads") as CampaignAudienceKind;
+      const kind = String(
+        req.body?.audience_kind || "leads",
+      ) as CampaignAudienceKind;
       if (!["leads", "affiliates", "contractors"].includes(kind)) {
         throw new HttpError(400, "validation.invalidField");
       }
@@ -13687,36 +18618,50 @@ function registerCampaignRoutes(app: Express) {
       const channels = parseCampaignChannels(req.body?.channels);
       const preset = String(req.body?.preset || "");
 
-      if (preset === "fontana_followup" && kind === "leads") {
-        if (filter.event_id == null) {
-          const ev = await loadMarketingEventBySlug(FONTANA_CAMPAIGN_EVENT_SLUG);
-          if (!ev) throw new HttpError(400, "validation.invalidField");
-          filter = { ...filter, event_id: Number(ev.id) };
+      // event_followup: any event (audience_filter.event_id). fontana_followup kept for
+      // older clients — resolves the Fontana slug when event_id is omitted.
+      const eventPreset =
+        (preset === "event_followup" || preset === "fontana_followup") &&
+        kind === "leads";
+      let presetEvent: RowDataPacket | null = null;
+      if (eventPreset) {
+        if (filter.event_id == null && preset === "fontana_followup") {
+          presetEvent = await loadMarketingEventBySlug(
+            FONTANA_CAMPAIGN_EVENT_SLUG,
+          );
+        } else if (filter.event_id != null) {
+          presetEvent = await loadMarketingEventById(Number(filter.event_id));
         }
+        if (!presetEvent) throw new HttpError(400, "validation.invalidField");
+        filter = { ...filter, event_id: Number(presetEvent.id) };
       }
 
       const [ins] = await pool.query<ResultSetHeader>(
         `INSERT INTO campaigns
            (name, audience_kind, audience_filter_json, channels_json, status, created_by_admin_id)
          VALUES (?, ?, ?, ?, 'draft', ?)`,
-        [
-          name,
-          kind,
-          JSON.stringify(filter),
-          JSON.stringify(channels),
-          me.id,
-        ],
+        [name, kind, JSON.stringify(filter), JSON.stringify(channels), me.id],
       );
       const id = Number(ins.insertId);
-      if (preset === "fontana_followup" && kind === "leads") {
-        await upsertCampaignTemplates(id, defaultFontanaLeadTemplates());
+      if (eventPreset) {
+        await upsertCampaignTemplates(
+          id,
+          defaultEventLeadTemplates(campaignEventNames(presetEvent)),
+        );
       } else if (Array.isArray(req.body?.templates)) {
         const templates = (req.body.templates as unknown[])
           .map((t) => t as CampaignTemplate)
           .filter((t) => CAMPAIGN_TEMPLATE_ROLES.includes(t.role));
         if (templates.length) await upsertCampaignTemplates(id, templates);
       } else if (kind === "leads") {
-        await upsertCampaignTemplates(id, defaultFontanaLeadTemplates());
+        const ev =
+          filter.event_id != null
+            ? await loadMarketingEventById(Number(filter.event_id))
+            : null;
+        await upsertCampaignTemplates(
+          id,
+          defaultEventLeadTemplates(campaignEventNames(ev)),
+        );
       }
       const campaign = await loadCampaign(id);
       res.status(201).json({ ok: true, campaign });
@@ -13783,7 +18728,8 @@ function registerCampaignRoutes(app: Express) {
       const id = parseId(req.params.id);
       const existing = await loadCampaign(id);
       if (!existing) throw new HttpError(404, "errors.notFound");
-      if (existing.status === "sending") throw new HttpError(409, "errors.conflict");
+      if (existing.status === "sending")
+        throw new HttpError(409, "errors.conflict");
       await pool.query(`DELETE FROM campaigns WHERE id = ?`, [id]);
       res.json({ ok: true });
     }),
@@ -13823,10 +18769,10 @@ function registerCampaignRoutes(app: Express) {
         throw new HttpError(400, "validation.invalidField");
       }
 
-      await pool.query(
-        `UPDATE campaigns SET status = ? WHERE id = ?`,
-        [dryRun ? "draft" : "sending", id],
-      );
+      await pool.query(`UPDATE campaigns SET status = ? WHERE id = ?`, [
+        dryRun ? "draft" : "sending",
+        id,
+      ]);
       try {
         const stats = await executeCampaignSend({ campaign, dryRun });
         if (!dryRun) {
@@ -13835,10 +18781,10 @@ function registerCampaignRoutes(app: Express) {
             [JSON.stringify(stats), id],
           );
         } else {
-          await pool.query(
-            `UPDATE campaigns SET stats_json = ? WHERE id = ?`,
-            [JSON.stringify({ ...stats, dry_run: true }), id],
-          );
+          await pool.query(`UPDATE campaigns SET stats_json = ? WHERE id = ?`, [
+            JSON.stringify({ ...stats, dry_run: true }),
+            id,
+          ]);
         }
         res.json({
           ok: true,
@@ -13848,16 +18794,16 @@ function registerCampaignRoutes(app: Express) {
         });
       } catch (e: any) {
         if (!dryRun) {
-          await pool.query(`UPDATE campaigns SET status = 'failed' WHERE id = ?`, [
-            id,
-          ]);
+          await pool.query(
+            `UPDATE campaigns SET status = 'failed' WHERE id = ?`,
+            [id],
+          );
         }
         throw e;
       }
     }),
   );
 }
-
 
 // ─── Conversations Contact Hub (Twilio SMS + CRM contacts + Ably) ─────────────
 // Ported from Optimum (Groundwork brand strings). Runtime stays inline in index.ts.
@@ -13867,6 +18813,49 @@ const IS_PROD =
   process.env.VERCEL_ENV === "production";
 
 let twilioClient: ReturnType<typeof twilio> | null = null;
+type TwilioNumberInfo = {
+  sid: string;
+  phoneNumber: string;
+  friendlyName?: string | null;
+  smsUrl?: string | null;
+  voiceUrl?: string | null;
+  capabilities?: { sms?: boolean; mms?: boolean; voice?: boolean } | null;
+};
+
+/** Twilio IncomingPhoneNumbers (list / update webhooks) — swappable in tests. */
+let twilioNumbersApi: {
+  list: () => Promise<TwilioNumberInfo[]>;
+  update: (sid: string, fields: Record<string, string>) => Promise<void>;
+} = {
+  list: async () => {
+    const client = getTwilioClient();
+    if (!client) throw new HttpError(503, "errors.server");
+    const rows = await client.incomingPhoneNumbers.list({ limit: 200 });
+    return rows.map((n) => ({
+      sid: n.sid,
+      phoneNumber: String(n.phoneNumber),
+      friendlyName: n.friendlyName,
+      smsUrl: n.smsUrl,
+      voiceUrl: n.voiceUrl,
+      capabilities: n.capabilities as any,
+    }));
+  },
+  update: async (sid, fields) => {
+    const client = getTwilioClient();
+    if (!client) throw new HttpError(503, "errors.server");
+    await client.incomingPhoneNumbers(sid).update(fields as any);
+  },
+};
+
+/** Test hook: the bell-row writer (sandbox must refuse real staff). */
+export const __testInsertAdminInAppNotification = (
+  opts: Parameters<typeof insertAdminInAppNotification>[0],
+) => insertAdminInAppNotification(opts);
+
+export function __testSetTwilioNumbersApi(api: typeof twilioNumbersApi): void {
+  twilioNumbersApi = api;
+}
+
 function getTwilioClient(): ReturnType<typeof twilio> | null {
   if (twilioClient) return twilioClient;
   const sid = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
@@ -14043,6 +19032,16 @@ function mapPhoneNumberRow(r: RowDataPacket) {
     e164: String(r.e164),
     friendly_name: (r.friendly_name as string) || null,
     twilio_sid: (r.twilio_sid as string) || null,
+    is_primary: Number(r.is_primary) === 1,
+    line_mode: String(r.line_mode || "personal") as "shared" | "personal",
+    member_count: r.member_count != null ? Number(r.member_count) : undefined,
+    // Active line with no owner, or an owner who was deactivated.
+    needs_owner:
+      r.assigned_admin_status !== undefined || r.assigned_admin_id == null
+        ? Number(r.is_active) === 1 &&
+          (r.assigned_admin_id == null ||
+            String(r.assigned_admin_status || "") !== "active")
+        : undefined,
     assigned_admin_id:
       r.assigned_admin_id != null ? Number(r.assigned_admin_id) : null,
     assigned_admin_name: r.assigned_admin_name
@@ -14053,27 +19052,352 @@ function mapPhoneNumberRow(r: RowDataPacket) {
   };
 }
 
+/** True when a Twilio number's SMS or voice webhook targets this app's host. */
+function twilioNumberPointsHere(
+  smsUrl: unknown,
+  voiceUrl: unknown,
+  appUrl: string = APP_URL,
+): boolean {
+  const bare = (h: string) => h.toLowerCase().replace(/^www\./, "");
+  let appHost = "";
+  try {
+    appHost = bare(new URL(appUrl).hostname);
+  } catch {
+    return false;
+  }
+  return [smsUrl, voiceUrl].some((u) => {
+    try {
+      return !!u && bare(new URL(String(u)).hostname) === appHost;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Staff roles that may manage SMS templates and be phone-line members. */
+const SHARED_LINE_ROLES: string[] = ["super_admin", "admin", "agent"];
+
+/** Lines an admin can use / see: lines they own plus lines they are a member of. */
+const LINE_COLS = `n.id, n.e164, n.friendly_name, n.twilio_sid, n.assigned_admin_id, n.is_active,
+  n.capabilities_json, n.is_primary, n.line_mode`;
+
+/** Roles that can see every personal line (oversight / coverage). */
+const PERSONAL_LINE_VIEWER_ROLES: string[] = ["super_admin", "admin"];
+
+/**
+ * Lines an admin SENDS / CALLS from by default (new conversations, picker):
+ * their own personal lines first, then lines they own or are a member of.
+ * Replies follow the thread's line (see resolveThreadLine), not this order.
+ */
 async function listAssignedPhoneNumbers(
   adminId: number,
 ): Promise<RowDataPacket[]> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, e164, friendly_name, twilio_sid, assigned_admin_id, is_active, capabilities_json
-     FROM admin_phone_numbers
-     WHERE assigned_admin_id = ? AND is_active = 1
-     ORDER BY id ASC`,
-    [adminId],
+    `SELECT ${LINE_COLS}
+     FROM admin_phone_numbers n
+     WHERE n.is_active = 1
+       AND (n.assigned_admin_id = ?
+            OR (n.line_mode = 'shared' AND EXISTS (
+                  SELECT 1 FROM phone_line_members m WHERE m.line_id = n.id AND m.admin_id = ?)))
+     ORDER BY (n.line_mode = 'personal' AND n.assigned_admin_id = ?) DESC, n.is_primary DESC, n.id ASC`,
+    [adminId, adminId, adminId],
   );
   return rows;
 }
 
-async function adminHasConversationsAccess(adminId: number): Promise<boolean> {
-  return (await listAssignedPhoneNumbers(adminId)).length > 0;
+/** The main shared line (primary) — where orphaned personal lines fall back. */
+async function fallbackSharedLine(): Promise<RowDataPacket | null> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ${LINE_COLS} FROM admin_phone_numbers n
+     WHERE n.is_active = 1 AND n.line_mode = 'shared'
+     ORDER BY n.is_primary DESC, n.id ASC LIMIT 1`,
+  );
+  return rows[0] || null;
 }
 
+/** Personal line whose owner is missing or not active (needs a new owner). */
+async function lineIsOrphaned(line: Record<string, any>): Promise<boolean> {
+  if (String(line.line_mode || "personal") !== "personal") return false;
+  if (line.assigned_admin_id == null) return true;
+  const [r] = await pool.query<RowDataPacket[]>(
+    `SELECT status FROM admins WHERE id = ? LIMIT 1`,
+    [Number(line.assigned_admin_id)],
+  );
+  return String(r[0]?.status || "") !== "active";
+}
+
+/** Line whose team actually handles traffic (orphaned personal → main shared line). */
+async function effectiveLine(
+  line: Record<string, any>,
+): Promise<Record<string, any>> {
+  if (!(await lineIsOrphaned(line))) return line;
+  const fb = await fallbackSharedLine();
+  return fb && Number(fb.id) !== Number(line.id) ? fb : line;
+}
+
+/** Owner to assign new conversations / alerts to (falls back for orphaned lines). */
+async function lineDefaultAssignee(
+  line: Record<string, any>,
+): Promise<number | null> {
+  const eff = await effectiveLine(line);
+  return eff.assigned_admin_id != null ? Number(eff.assigned_admin_id) : null;
+}
+
+/**
+ * Lines an admin can SEE (inbox scope, call history): sendable lines, plus every
+ * personal line for super_admin/admin, plus orphaned personal lines for the main
+ * shared line's members.
+ */
+async function listVisibleLineIds(adminId: number): Promise<number[]> {
+  const ids = new Set(
+    (await listAssignedPhoneNumbers(adminId)).map((r) => Number(r.id)),
+  );
+  const [[me]] = (await pool.query<RowDataPacket[]>(
+    `SELECT role, status FROM admins WHERE id = ? LIMIT 1`,
+    [adminId],
+  )) as unknown as [RowDataPacket[]];
+  if (!me || String(me.status) !== "active") return [...ids];
+  const [personal] = await pool.query<RowDataPacket[]>(
+    `SELECT ${LINE_COLS} FROM admin_phone_numbers n WHERE n.is_active = 1 AND n.line_mode = 'personal'`,
+  );
+  const isViewer = PERSONAL_LINE_VIEWER_ROLES.includes(String(me.role));
+  let fbMembers: number[] | null = null;
+  for (const line of personal) {
+    if (isViewer) {
+      ids.add(Number(line.id));
+      continue;
+    }
+    if (await lineIsOrphaned(line)) {
+      if (fbMembers == null) {
+        const fb = await fallbackSharedLine();
+        fbMembers = fb ? await lineAudienceAdminIds(fb) : [];
+      }
+      if (fbMembers.includes(adminId)) ids.add(Number(line.id));
+    }
+  }
+  return [...ids];
+}
+
+/** Active staff who see a line's traffic live (realtime, ring decisions). */
+async function lineAudienceAdminIds(
+  line: Record<string, any> | null,
+): Promise<number[]> {
+  if (!line?.id) return [];
+  if (String(line.line_mode || "personal") === "personal") {
+    const eff = await effectiveLine(line);
+    if (Number(eff.id) !== Number(line.id)) return lineAudienceAdminIds(eff);
+    const owner =
+      line.assigned_admin_id != null ? Number(line.assigned_admin_id) : null;
+    return owner ? [owner] : [];
+  }
+  const owner =
+    line.assigned_admin_id != null ? Number(line.assigned_admin_id) : null;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT a.id FROM phone_line_members m JOIN admins a ON a.id = m.admin_id
+     WHERE m.line_id = ? AND a.status = 'active' ORDER BY a.id ASC`,
+    [Number(line.id)],
+  );
+  const ids = rows.map((r) => Number(r.id));
+  return owner ? [owner, ...ids.filter((i) => i !== owner)] : ids;
+}
+
+/**
+ * Line to use for a reply / call to a contact: the most recent conversation with
+ * that contact (or phone) on a line this admin can see — so customers always hear
+ * from the number they know. Falls back to the admin's default sending line.
+ */
+async function resolveThreadLine(
+  adminId: number,
+  target: {
+    clientId?: number | null;
+    contactId?: number | null;
+    unknownContactId?: number | null;
+    phone?: string | null;
+  },
+): Promise<RowDataPacket | null> {
+  const visible = await listVisibleLineIds(adminId);
+  if (visible.length) {
+    let rows: RowDataPacket[] = [];
+    if (target.clientId || target.contactId || target.unknownContactId) {
+      const col = target.clientId
+        ? "client_id"
+        : target.contactId
+          ? "contact_id"
+          : "unknown_contact_id";
+      const id = target.clientId || target.contactId || target.unknownContactId;
+      [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ${LINE_COLS} FROM conversations cv JOIN admin_phone_numbers n ON n.id = cv.ofg_number_id
+         WHERE cv.${col} = ? AND n.is_active = 1 AND n.id IN (?)
+         ORDER BY cv.last_message_at DESC, cv.id DESC LIMIT 1`,
+        [id, visible],
+      );
+    } else if (target.phone && normalizePhoneLast10(target.phone)) {
+      const p10 = normalizePhoneLast10(target.phone);
+      [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ${LINE_COLS} FROM conversations cv
+         JOIN admin_phone_numbers n ON n.id = cv.ofg_number_id
+         LEFT JOIN clients c ON c.id = cv.client_id
+         LEFT JOIN contacts k ON k.id = cv.contact_id
+         LEFT JOIN conversation_unknown_contacts u ON u.id = cv.unknown_contact_id
+         WHERE n.is_active = 1 AND n.id IN (?)
+           AND RIGHT(REGEXP_REPLACE(COALESCE(c.phone, k.phone, u.phone_e164, ''), '[^0-9]', ''), 10) = ?
+         ORDER BY cv.last_message_at DESC, cv.id DESC LIMIT 1`,
+        [visible, p10],
+      );
+    }
+    if (rows[0]) return rows[0];
+  }
+  return (await listAssignedPhoneNumbers(adminId))[0] || null;
+}
+
+type LineCallPlan = {
+  /** Browser softphones to ring (Client admin_{id}). */
+  clients: number[];
+  /** Phones to ring — always screened. */
+  numbers: { label: string; e164: string }[];
+  timeout: number;
+  greeting: { en: string; es: string };
+};
+
+const DEFAULT_VOICEMAIL_GREETING = {
+  en: "Thank you for calling Groundwork Capital. We can't take your call right now. Please leave your name, number and a short message after the tone, and we'll call you back.",
+  es: "Gracias por llamar a Groundwork Capital. En este momento no podemos atender su llamada. Por favor deje su nombre, número y un breve mensaje después del tono y le regresaremos la llamada.",
+};
+
+/**
+ * One call plan per line (the Phone lines panel is the single source of truth):
+ * members with ring_browser and voice available → their softphones; the line's
+ * ring numbers → screened phones. A line with no members (personal line) falls
+ * back to the owner's softphone + personal call forwarding. Never hangs up:
+ * an empty plan goes straight to the line's bilingual voicemail.
+ */
+async function buildLineCallPlan(
+  line: Record<string, any>,
+  callerRaw: string,
+): Promise<LineCallPlan> {
+  // Orphaned personal line → the main team's plan (keeps this line's greeting if set).
+  const eff = await effectiveLine(line);
+  if (Number(eff.id) !== Number(line.id)) {
+    const plan = await buildLineCallPlan(eff, callerRaw);
+    const [[own]] = (await pool.query<RowDataPacket[]>(
+      `SELECT voicemail_greeting_en, voicemail_greeting_es FROM admin_phone_numbers WHERE id = ? LIMIT 1`,
+      [Number(line.id)],
+    )) as unknown as [RowDataPacket[]];
+    return {
+      ...plan,
+      greeting: {
+        en: String(own?.voicemail_greeting_en || "").trim() || plan.greeting.en,
+        es: String(own?.voicemail_greeting_es || "").trim() || plan.greeting.es,
+      },
+    };
+  }
+  const personal = String(line.line_mode || "personal") === "personal";
+  const lineId = Number(line.id);
+  const [[cfg]] = (await pool.query<RowDataPacket[]>(
+    `SELECT ring_timeout_sec, voicemail_greeting_en, voicemail_greeting_es FROM admin_phone_numbers WHERE id = ? LIMIT 1`,
+    [lineId],
+  )) as unknown as [RowDataPacket[]];
+  // Line greeting, else the matched EN/ES default pair (never the legacy
+  // single-language voice_voicemail_greeting_text, which drifted from the ES copy).
+  const greeting = {
+    en:
+      String(cfg?.voicemail_greeting_en || "").trim() ||
+      DEFAULT_VOICEMAIL_GREETING.en,
+    es:
+      String(cfg?.voicemail_greeting_es || "").trim() ||
+      DEFAULT_VOICEMAIL_GREETING.es,
+  };
+  const timeout = Math.min(
+    60,
+    Math.max(10, Number(cfg?.ring_timeout_sec || 25)),
+  );
+  const callerDigits = normalizePhoneDigits(callerRaw);
+  const notCaller = (e164: string) =>
+    normalizePhoneDigits(e164).slice(-10) !== callerDigits.slice(-10);
+
+  const [members] = personal
+    ? [[] as RowDataPacket[]]
+    : await pool.query<RowDataPacket[]>(
+        `SELECT a.id, a.voice_available, m.ring_browser FROM phone_line_members m
+         JOIN admins a ON a.id = m.admin_id WHERE m.line_id = ? AND a.status = 'active'`,
+        [lineId],
+      );
+  const [rings] = await pool.query<RowDataPacket[]>(
+    `SELECT label, e164 FROM phone_line_ring_numbers WHERE line_id = ? AND is_active = 1 ORDER BY sort_order ASC, id ASC`,
+    [lineId],
+  );
+  if (!personal) {
+    return {
+      clients: members
+        .filter(
+          (m) =>
+            Number(m.ring_browser) === 1 && Number(m.voice_available) === 1,
+        )
+        .map((m) => Number(m.id))
+        .slice(0, 8),
+      numbers: rings
+        .map((r) => ({
+          label: String(r.label),
+          e164: toSmsE164(String(r.e164)),
+        }))
+        .filter((r) => r.e164 && notCaller(r.e164))
+        .slice(0, 5),
+      timeout,
+      greeting,
+    };
+  }
+  // Personal line: owner's softphone + the line's phones (panel), else personal forwarding.
+  const owner =
+    line.assigned_admin_id != null ? Number(line.assigned_admin_id) : null;
+  if (!owner) return { clients: [], numbers: [], timeout, greeting };
+  const [[a]] = (await pool.query<RowDataPacket[]>(
+    `SELECT voice_available, call_forwarding_enabled, call_forwarding_phone, phone, first_name,
+            voicemail_greeting_text
+     FROM admins WHERE id = ? AND status = 'active' LIMIT 1`,
+    [owner],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) return { clients: [], numbers: [], timeout, greeting };
+  if (a.voicemail_greeting_text && !cfg?.voicemail_greeting_en)
+    greeting.en = String(a.voicemail_greeting_text);
+  const linePhones = rings
+    .map((r) => ({ label: String(r.label), e164: toSmsE164(String(r.e164)) }))
+    .filter((r) => r.e164 && notCaller(r.e164))
+    .slice(0, 5);
+  const fwd = Number(a.call_forwarding_enabled)
+    ? toSmsE164(String(a.call_forwarding_phone || a.phone || ""))
+    : null;
+  const numbers = linePhones.length
+    ? linePhones
+    : fwd && notCaller(fwd)
+      ? [{ label: `${a.first_name} (cell)`, e164: fwd }]
+      : [];
+  return {
+    clients: Number(a.voice_available) === 1 || !numbers.length ? [owner] : [],
+    numbers,
+    timeout,
+    greeting,
+  };
+}
+
+/** The one voicemail every unanswered call gets: English, then Spanish, then the tone. */
+function appendLineVoicemail(twiml: any, greeting: { en: string; es: string }) {
+  twiml.say({ voice: "Polly.Joanna", language: "en-US" }, greeting.en);
+  twiml.say({ voice: "Polly.Mia", language: "es-MX" }, greeting.es);
+  twiml.record({
+    maxLength: 120,
+    playBeep: true,
+    recordingStatusCallback: `${groundworkApiBaseUrl()}/api/voice/recording-status`,
+    recordingStatusCallbackMethod: "POST",
+  } as any);
+}
+
+async function adminHasConversationsAccess(adminId: number): Promise<boolean> {
+  return (await listVisibleLineIds(adminId)).length > 0;
+}
+
+/** Inbox / thread scope: every line this admin can see (not just send from). */
 async function adminAssignedPhoneNumberIds(adminId: number): Promise<number[]> {
-  return (await listAssignedPhoneNumbers(adminId))
-    .map((r) => Number(r.id))
-    .filter(Boolean);
+  return (await listVisibleLineIds(adminId)).filter(Boolean);
 }
 
 async function resolveAssignedSmsFrom(adminId: number): Promise<string | null> {
@@ -14198,13 +19522,14 @@ function isValidTwilioWebhookRequest(req: Request): boolean {
   const params = (req.body as Record<string, string>) || {};
   for (const url of twilioWebhookCandidateUrls(req)) {
     try {
-      if (twilio.validateRequest(authToken, signature, url, params)) return true;
+      if (twilio.validateRequest(authToken, signature, url, params))
+        return true;
     } catch {
       /* try next */
     }
   }
   console.warn(
-    "[twilio] Invalid signature — tried URLs:",
+    "[twilio] Invalid signature. Tried URLs:",
     twilioWebhookCandidateUrls(req).join(" | "),
   );
   return false;
@@ -14256,15 +19581,28 @@ async function publishConversationRealtime(event: {
   const key = String(process.env.ABLY_API_KEY || "")
     .trim()
     .replace(/^["']|["']$/g, "");
-  if (!key || !/^[-\w]+\.[-\w]+:.+$/.test(key) || notifySandbox())
-    return;
+  if (!key || !/^[-\w]+\.[-\w]+:.+$/.test(key) || notifySandbox()) return;
   try {
     const Ably = (await import("ably")).default;
     const rest = new Ably.Rest({ key });
-    let targets = event.adminIds && event.adminIds.length > 0 ? event.adminIds : [];
+    let targets =
+      event.adminIds && event.adminIds.length > 0 ? event.adminIds : [];
     if (!targets.length) {
       const assigned = Number(event.payload.assigned_admin_id || 0);
       if (assigned > 0) targets = [assigned];
+    }
+    // Shared line: every staff member on it gets the live inbox update.
+    const convId = Number(event.payload.conversation_id || 0);
+    if (convId > 0) {
+      const [lr] = await pool.query<RowDataPacket[]>(
+        `SELECT n.id, n.assigned_admin_id, n.line_mode, n.is_primary FROM conversations c
+         JOIN admin_phone_numbers n ON n.id = c.ofg_number_id WHERE c.id = ? LIMIT 1`,
+        [convId],
+      );
+      if (lr[0])
+        targets = [
+          ...new Set([...targets, ...(await lineAudienceAdminIds(lr[0]))]),
+        ];
     }
     if (!targets.length) return;
     await Promise.all(
@@ -14288,8 +19626,7 @@ async function publishAdminBellRealtime(
   const key = String(process.env.ABLY_API_KEY || "")
     .trim()
     .replace(/^["']|["']$/g, "");
-  if (!key || !/^[-\w]+\.[-\w]+:.+$/.test(key) || notifySandbox())
-    return;
+  if (!key || !/^[-\w]+\.[-\w]+:.+$/.test(key) || notifySandbox()) return;
   try {
     const Ably = (await import("ably")).default;
     const rest = new Ably.Rest({ key });
@@ -14317,7 +19654,8 @@ function mergeAdminNotificationPrefsFromBody(
     for (const channel of ["email", "in_app", "sms"] as AdminNotifyChannel[]) {
       if (typeof m[channel] !== "boolean") continue;
       const toggles = allAdminNotifyEventsOn();
-      for (const key of ADMIN_NOTIFY_EVENT_KEYS) toggles[key] = m[channel] as boolean;
+      for (const key of ADMIN_NOTIFY_EVENT_KEYS)
+        toggles[key] = m[channel] as boolean;
       next[channel] = toggles;
     }
   }
@@ -14334,7 +19672,7 @@ async function resolveOfgNumberByToAddress(
   const variants = phoneMatchVariants(toRaw);
   if (!variants.length) return null;
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, e164, assigned_admin_id, is_active FROM admin_phone_numbers
+    `SELECT id, e164, assigned_admin_id, is_active, line_mode, is_primary FROM admin_phone_numbers
      WHERE is_active = 1 AND (
        e164 IN (${variants.map(() => "?").join(",")})
        OR REPLACE(REPLACE(REPLACE(REPLACE(e164,'+',''),'-',''),'(',''),')','') IN (${variants.map(() => "?").join(",")})
@@ -14356,6 +19694,105 @@ async function findClientIdByPhone(fromRaw: string): Promise<number | null> {
     [...variants, ...variants.map((v) => normalizePhoneDigits(v))],
   );
   return rows[0] ? Number(rows[0].id) : null;
+}
+
+const LEAD_PHONE10_SQL = (col: string) =>
+  `RIGHT(REGEXP_REPLACE(COALESCE(${col},''), '[^0-9]', ''), 10)`;
+
+/** Most recent lead with this phone not yet linked to a client/affiliate/contractor. */
+async function findOpenLeadByPhone(
+  phoneRaw: string | null,
+): Promise<RowDataPacket | null> {
+  const p10 = normalizePhoneLast10(phoneRaw);
+  if (!p10) return null;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT id, full_name, email, phone, preferred_language FROM leads
+     WHERE ${LEAD_PHONE10_SQL("phone")} = ?
+       AND client_id IS NULL AND converted_affiliate_id IS NULL AND converted_contractor_id IS NULL
+       AND status <> 'spam'
+     ORDER BY COALESCE(last_submitted_at, created_at) DESC, id DESC LIMIT 1`,
+    [p10],
+  );
+  return rows[0] || null;
+}
+
+/** Split a lead's full name into first / last ("Ana María López" → "Ana", "María López"). */
+function splitFullName(full: string): { first: string; last: string } {
+  const parts = String(full || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return { first: "", last: "" };
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
+/**
+ * Latest SMS + call per phone (last 10 digits) across all conversation threads,
+ * for the Leads list "Last text" / "Last call" columns.
+ */
+/** Attach `last_sms` / `last_call` (latest text and call with this phone) to list rows. */
+async function withLastTouches<T extends object>(rows: T[]): Promise<(T & { last_sms: unknown; last_call: unknown })[]> {
+  const phoneOf = (r: T) => String((r as { phone?: unknown }).phone || "");
+  const touches = await loadLeadTouches(rows.map(phoneOf));
+  return rows.map((r) => {
+    const t = touches.get(normalizePhoneLast10(phoneOf(r)) || "");
+    return { ...r, last_sms: t?.sms ?? null, last_call: t?.call ?? null };
+  });
+}
+
+async function loadLeadTouches(
+  phones: string[],
+): Promise<Map<string, { sms: LeadTouch | null; call: LeadTouch | null }>> {
+  const out = new Map<
+    string,
+    { sms: LeadTouch | null; call: LeadTouch | null }
+  >();
+  const keys = [
+    ...new Set(phones.map((p) => normalizePhoneLast10(p)).filter(Boolean)),
+  ] as string[];
+  if (!keys.length) return out;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT m.direction, m.channel, m.body, m.call_duration_sec, m.provider_status, m.created_at,
+            m.from_address, m.to_address, cv.client_id, cv.contact_id, cv.unknown_contact_id
+     FROM conversation_messages m
+     JOIN conversations cv ON cv.id = m.conversation_id
+     WHERE m.channel IN ('sms','call') AND m.direction IN ('inbound','outbound')
+       AND (${LEAD_PHONE10_SQL("m.from_address")} IN (?) OR ${LEAD_PHONE10_SQL("m.to_address")} IN (?))
+     ORDER BY m.created_at DESC, m.id DESC
+     LIMIT 5000`,
+    [keys, keys],
+  );
+  for (const r of rows) {
+    const other = r.direction === "inbound" ? r.from_address : r.to_address;
+    const k = normalizePhoneLast10(other);
+    if (!k || !keys.includes(k)) continue;
+    const cur = out.get(k) || { sms: null, call: null };
+    const slot = r.channel === "call" ? "call" : "sms";
+    if (cur[slot]) continue;
+    const thread = r.client_id
+      ? { kind: "client" as const, id: Number(r.client_id) }
+      : r.contact_id
+        ? { kind: "contact" as const, id: Number(r.contact_id) }
+        : r.unknown_contact_id
+          ? { kind: "unknown" as const, id: Number(r.unknown_contact_id) }
+          : null;
+    cur[slot] = {
+      at: isoDate(r.created_at) as string,
+      direction: r.direction,
+      preview:
+        slot === "sms" && r.body
+          ? String(r.body).replace(/\s+/g, " ").trim().slice(0, 80)
+          : null,
+      duration_sec:
+        slot === "call" && r.call_duration_sec != null
+          ? Number(r.call_duration_sec)
+          : null,
+      status: r.provider_status == null ? null : String(r.provider_status),
+      thread,
+    };
+    out.set(k, cur);
+  }
+  return out;
 }
 
 async function findContactIdByPhone(fromRaw: string): Promise<number | null> {
@@ -14447,11 +19884,15 @@ async function convertCrmContactToClient(opts: {
   if (!phone && !email) {
     return {
       ok: false,
-      error: "Contact needs phone or email before convert. Use update_contact first.",
+      error:
+        "Contact needs phone or email before convert. Use update_contact first.",
     };
   }
   if (email && !isValidEmail(email)) {
-    return { ok: false, error: "Contact email is invalid. Fix with update_contact." };
+    return {
+      ok: false,
+      error: "Contact email is invalid. Fix with update_contact.",
+    };
   }
 
   let existingClientId: number | null = null;
@@ -14644,14 +20085,27 @@ async function notifyAdminInboundSms(opts: {
   linkUrl: string;
   providerMessageId?: string | null;
 }): Promise<void> {
-  const adminId = opts.adminId;
+  let adminId = opts.adminId;
   if (!adminId) return;
-  const [aRows] = await pool.query<RowDataPacket[]>(
+  let [aRows] = await pool.query<RowDataPacket[]>(
     `SELECT id, email, first_name, phone, preferred_language, notification_prefs_json
      FROM admins WHERE id = ? AND status = 'active' LIMIT 1`,
     [adminId],
   );
-  if (!aRows[0]) return;
+  if (!aRows[0]) {
+    // Owner deactivated → alert the main shared line's owner so nothing is missed.
+    const fb = await fallbackSharedLine();
+    const fbOwner =
+      fb?.assigned_admin_id != null ? Number(fb.assigned_admin_id) : null;
+    if (!fbOwner || fbOwner === adminId) return;
+    adminId = fbOwner;
+    [aRows] = await pool.query<RowDataPacket[]>(
+      `SELECT id, email, first_name, phone, preferred_language, notification_prefs_json
+       FROM admins WHERE id = ? AND status = 'active' LIMIT 1`,
+      [adminId],
+    );
+    if (!aRows[0]) return;
+  }
   const prefs = parseAdminNotificationPrefs(aRows[0].notification_prefs_json);
   const body = String(opts.preview || "New message").slice(0, 500);
   const absoluteLink = opts.linkUrl.startsWith("http")
@@ -14680,12 +20134,16 @@ async function notifyAdminInboundSms(opts: {
         html: emailTpl.html,
       });
     } catch (e: any) {
-      console.error(`[notify:inbound_sms:email] ${adminEmail}:`, e?.message ?? e);
+      console.error(
+        `[notify:inbound_sms:email] ${adminEmail}:`,
+        e?.message ?? e,
+      );
     }
   }
   if (adminNotifyPrefOn(prefs, "in_app", "inbound_sms")) {
     const notifId = await insertAdminInAppNotification({
       adminId,
+      adminEmail: adminEmail || null,
       eventKey: "inbound_sms",
       title: emailTpl.subject,
       body,
@@ -14937,7 +20395,10 @@ async function getOrCreateCrmContactChannelConversation(opts: {
 async function findOrCreateOpenUnknownContact(opts: {
   phoneRaw: string;
   ofgNumberId?: number | null;
+  /** Transaction connection (default: pool). */
+  exec?: Pool | PoolConnection;
 }): Promise<{ unknownId: number; created: boolean; phoneE164: string }> {
+  const db = opts.exec ?? pool;
   const phoneE164 = toSmsE164(opts.phoneRaw);
   const phoneVariants = phoneMatchVariants(phoneE164);
   if (phoneVariants.length) {
@@ -14953,7 +20414,7 @@ async function findOrCreateOpenUnknownContact(opts: {
             ...phoneVariants,
             ...phoneVariants.map((v) => normalizePhoneDigits(v)),
           ];
-    const [found] = await pool.query<RowDataPacket[]>(
+    const [found] = await db.query<RowDataPacket[]>(
       `SELECT id FROM conversation_unknown_contacts
        WHERE status = 'open' ${ofgClause}
          AND (
@@ -14971,7 +20432,7 @@ async function findOrCreateOpenUnknownContact(opts: {
       };
     }
   }
-  const [insU] = await pool.query<ResultSetHeader>(
+  const [insU] = await db.query<ResultSetHeader>(
     `INSERT INTO conversation_unknown_contacts
        (phone_e164, ofg_number_id, status, unread_count)
      VALUES (?, ?, 'open', 0)`,
@@ -15179,16 +20640,32 @@ async function deliverHubConversationMessage(opts: {
       fromE164 = String(nrow[0].e164);
     }
   } else if (opts.ofgNumberId != null) {
-    // HTTP path: never silently fall back to a different From line.
+    // HTTP path: never silently fall back to a different From line. Any line the
+    // admin can see is allowed (admins covering a teammate's personal line).
     ofgNumberId = Number(opts.ofgNumberId);
-    const hit = assigned.find((n) => Number(n.id) === ofgNumberId);
-    if (!hit?.e164) {
+    const visible = await listVisibleLineIds(opts.adminId);
+    const [hitRows] = await pool.query<RowDataPacket[]>(
+      `SELECT id, e164 FROM admin_phone_numbers WHERE id = ? AND is_active = 1 LIMIT 1`,
+      [ofgNumberId],
+    );
+    if (!hitRows[0]?.e164 || !visible.includes(ofgNumberId)) {
       throw new Error("Groundwork phone number not assigned to this admin");
     }
-    fromE164 = String(hit.e164);
-  } else if (assigned[0]) {
-    ofgNumberId = Number(assigned[0].id);
-    fromE164 = String(assigned[0].e164);
+    fromE164 = String(hitRows[0].e164);
+  } else {
+    // Reply from the thread's line (the number the customer knows); new → own line.
+    const line = await resolveThreadLine(opts.adminId, {
+      clientId: hasClient ? opts.clientId : null,
+      contactId: hasCrm ? opts.crmContactId : null,
+      unknownContactId: hasUnknown ? opts.unknownContactId : null,
+    });
+    if (line) {
+      ofgNumberId = Number(line.id);
+      fromE164 = String(line.e164);
+    } else if (assigned[0]) {
+      ofgNumberId = Number(assigned[0].id);
+      fromE164 = String(assigned[0].e164);
+    }
   }
 
   let conversationId = 0;
@@ -15315,7 +20792,10 @@ async function deliverHubConversationMessage(opts: {
     };
   }
 
-  const preview = (opts.textBody.trim() || (mediaUrl ? "[Media]" : "")).slice(0, 200);
+  const preview = (opts.textBody.trim() || (mediaUrl ? "[Media]" : "")).slice(
+    0,
+    200,
+  );
   const [ins] = await pool.query<ResultSetHeader>(
     `INSERT INTO conversation_messages
        (conversation_id, direction, channel, body, media_url, media_content_type,
@@ -15352,7 +20832,10 @@ async function deliverHubConversationMessage(opts: {
     );
   }
   realtimePayload.message_id = ins.insertId;
-  await publishConversationRealtime({ type: "message", payload: realtimePayload });
+  await publishConversationRealtime({
+    type: "message",
+    payload: realtimePayload,
+  });
 
   return {
     ok: !errorMessage,
@@ -15530,8 +21013,12 @@ async function resolveMcpStaffAssignee(opts: {
     opts.adminId != null && Number(opts.adminId) > 0
       ? Number(opts.adminId)
       : null;
-  const name = String(opts.name || "").trim().toLowerCase();
-  const email = String(opts.email || "").trim().toLowerCase();
+  const name = String(opts.name || "")
+    .trim()
+    .toLowerCase();
+  const email = String(opts.email || "")
+    .trim()
+    .toLowerCase();
   if (!rawId && !name && !email) {
     return { ok: true, requested: false, id: null };
   }
@@ -15542,7 +21029,9 @@ async function resolveMcpStaffAssignee(opts: {
   );
   let matches = staff;
   if (email) {
-    matches = staff.filter((s) => String(s.email || "").toLowerCase() === email);
+    matches = staff.filter(
+      (s) => String(s.email || "").toLowerCase() === email,
+    );
   } else if (name) {
     matches = staff.filter((s) => {
       const full = `${s.first_name || ""} ${s.last_name || ""}`
@@ -15573,7 +21062,8 @@ async function resolveMcpStaffAssignee(opts: {
     return {
       ok: false,
       error: "assignee_ambiguous",
-      message: "Multiple staff match. Pass assigned_admin_id from search_staff.",
+      message:
+        "Multiple staff match. Pass assigned_admin_id from search_staff.",
       matches: matches.slice(0, 8).map((r) => ({
         id: Number(r.id),
         name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
@@ -15594,8 +21084,19 @@ async function resolveMcpStaffAssignee(opts: {
 async function resolveMcpSmsFromE164(
   ctxAdminId: number,
   args: Record<string, unknown>,
+  /** Recipient: when no From is given, reply from the number this contact knows. */
+  target?: {
+    clientId?: number | null;
+    contactId?: number | null;
+    phone?: string | null;
+  },
 ): Promise<
-  | { ok: true; e164: string; from_admin_id: number; ofg_number_id: number | null }
+  | {
+      ok: true;
+      e164: string;
+      from_admin_id: number;
+      ofg_number_id: number | null;
+    }
   | { ok: false; error: string; message: string }
 > {
   const phoneNumberId =
@@ -15618,7 +21119,11 @@ async function resolveMcpSmsFromE164(
     }
     const e164 = String(rows[0].e164 || "").trim();
     if (!e164) {
-      return { ok: false, error: "invalid_args", message: "Brand number has no E.164" };
+      return {
+        ok: false,
+        error: "invalid_args",
+        message: "Brand number has no E.164",
+      };
     }
     return {
       ok: true,
@@ -15637,6 +21142,17 @@ async function resolveMcpSmsFromE164(
   });
   if (named.ok === false) return named;
   const ownerId = named.requested ? named.id : ctxAdminId;
+  if (!named.requested && target) {
+    const line = await resolveThreadLine(ownerId, target);
+    if (line?.e164) {
+      return {
+        ok: true,
+        e164: String(line.e164),
+        ofg_number_id: Number(line.id),
+        from_admin_id: ownerId,
+      };
+    }
+  }
   const phones = await listAssignedPhoneNumbers(ownerId);
   if (!phones[0]) {
     return {
@@ -15659,21 +21175,24 @@ function classifySmsKeyword(body: string): "stop" | "help" | "start" | null {
   const t = String(body || "")
     .trim()
     .toUpperCase();
-  if (/^(STOP|STOPALL|UNSUBSCRIBE|END|QUIT|CANCELAR|BAJA)$/.test(t)) return "stop";
+  if (/^(STOP|STOPALL|UNSUBSCRIBE|END|QUIT|CANCELAR|BAJA)$/.test(t))
+    return "stop";
   if (/^(HELP|INFO|AYUDA)$/.test(t)) return "help";
   if (/^(START|YES|UNSTOP)$/.test(t)) return "start";
   return null;
 }
 
-async function enrichAdminAuthUser(user: PortalAuthUser): Promise<PortalAuthUser & {
-  conversations_enabled: boolean;
-  assigned_phone_numbers: ReturnType<typeof mapPhoneNumberRow>[];
-  voice_available: boolean;
-  call_forwarding_enabled: boolean;
-  call_forwarding_phone: string | null;
-  voicemail_enabled: boolean | null;
-  voicemail_greeting_text: string | null;
-}> {
+async function enrichAdminAuthUser(user: PortalAuthUser): Promise<
+  PortalAuthUser & {
+    conversations_enabled: boolean;
+    assigned_phone_numbers: ReturnType<typeof mapPhoneNumberRow>[];
+    voice_available: boolean;
+    call_forwarding_enabled: boolean;
+    call_forwarding_phone: string | null;
+    voicemail_enabled: boolean | null;
+    voicemail_greeting_text: string | null;
+  }
+> {
   const phones = await listAssignedPhoneNumbers(user.id);
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT voice_available, call_forwarding_enabled, call_forwarding_phone,
@@ -15684,9 +21203,10 @@ async function enrichAdminAuthUser(user: PortalAuthUser): Promise<PortalAuthUser
   return {
     ...user,
     assigned_phone_numbers: phones.map(mapPhoneNumberRow),
-    conversations_enabled: phones.length > 0,
+    conversations_enabled: await adminHasConversationsAccess(user.id),
     voice_available: Number(rows[0]?.voice_available || 0) === 1,
-    call_forwarding_enabled: Number(rows[0]?.call_forwarding_enabled || 0) === 1,
+    call_forwarding_enabled:
+      Number(rows[0]?.call_forwarding_enabled || 0) === 1,
     call_forwarding_phone: rows[0]?.call_forwarding_phone
       ? String(rows[0].call_forwarding_phone)
       : null,
@@ -15699,7 +21219,6 @@ async function enrichAdminAuthUser(user: PortalAuthUser): Promise<PortalAuthUser
       : null,
   };
 }
-
 
 // ── Conversations hub parity helpers (voice + MMS + call log) ───────────────
 
@@ -15801,7 +21320,9 @@ async function applyCallTranscriptResult(opts: {
     metaPatch,
     nextBody !== undefined ? { body: nextBody } : undefined,
   );
-  const assignedAdminId = await conversationAssignedAdminId(opts.conversationId);
+  const assignedAdminId = await conversationAssignedAdminId(
+    opts.conversationId,
+  );
   if (isVoicemail) {
     await emailAssigneeVoicemailTranscript({
       messageId: opts.messageId,
@@ -15835,11 +21356,22 @@ let cachedTwilioTranscriptionConfigId: string | null = null;
 function twilioVoiceAuthHeader(): string | null {
   const key = String(process.env.TWILIO_API_KEY || "").trim();
   const secret = String(process.env.TWILIO_API_SECRET || "").trim();
-  if (key && secret) return `Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`;
+  if (key && secret)
+    return `Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`;
   const sid = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
   const token = String(process.env.TWILIO_AUTH_TOKEN || "").trim();
-  if (sid.startsWith("AC") && token) return `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`;
+  if (sid.startsWith("AC") && token)
+    return `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`;
   return null;
+}
+
+/** Swappable in tests (Twilio Voice v3 REST). */
+let twilioVoiceHttp: typeof globalThis.fetch = (input, init) =>
+  globalThis.fetch(input, init);
+export function __testSetTwilioVoiceHttp(
+  fn: typeof globalThis.fetch | null,
+): void {
+  twilioVoiceHttp = fn ?? ((input, init) => globalThis.fetch(input, init));
 }
 
 async function twilioVoiceJson<T>(
@@ -15848,8 +21380,11 @@ async function twilioVoiceJson<T>(
   body?: unknown,
 ): Promise<{ status: number; data: T }> {
   const auth = twilioVoiceAuthHeader();
-  if (!auth) throw Object.assign(new Error("twilio_auth_missing"), { code: "twilio_auth_missing" });
-  const res = await fetch(url, {
+  if (!auth)
+    throw Object.assign(new Error("twilio_auth_missing"), {
+      code: "twilio_auth_missing",
+    });
+  const res = await twilioVoiceHttp(url, {
     method,
     headers: { Authorization: auth, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -15871,16 +21406,49 @@ export function twilioTranscriptionErrorCode(
   body: unknown,
 ): "twilio_ai_addendum" | "twilio_stt_failed" | null {
   if (!(httpStatus >= 400)) return null;
-  const o = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  if (httpStatus === 403 && (Number(o.code) === 46009 || /addendum/i.test(String(o.message || "")))) {
+  const o =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  if (
+    httpStatus === 403 &&
+    (Number(o.code) === 46009 || /addendum/i.test(String(o.message || "")))
+  ) {
     return "twilio_ai_addendum";
   }
   return "twilio_stt_failed";
 }
 
 /** Sentences → "Caller: … / Agent: …" (channel 1 = customer, 2 = agent), in time order. */
-export function transcriptTextFromTwilioSentences(sentences: unknown): string {
+/**
+ * Channel → speaker label. With participants (Twilio payload) a `client:` address
+ * is our staff browser → "Agent"; anything else → "Caller". Outbound browser calls
+ * put the agent on channel 1, so never assume channel 1 = caller.
+ */
+function transcriptSpeakerLabels(
+  participants: unknown,
+): Record<number, string> {
+  const out: Record<number, string> = { 1: "Caller", 2: "Agent" };
+  if (!Array.isArray(participants)) return out;
+  for (const p of participants) {
+    if (!p || typeof p !== "object") continue;
+    const o = p as Record<string, unknown>;
+    const ch = Number(o.audioChannelIndex ?? o.audio_channel_index);
+    if (!Number.isFinite(ch)) continue;
+    const addr = String(o.address || "");
+    out[ch] = /^client:/i.test(addr)
+      ? "Agent"
+      : addr
+        ? "Caller"
+        : out[ch] || "";
+  }
+  return out;
+}
+
+export function transcriptTextFromTwilioSentences(
+  sentences: unknown,
+  participants?: unknown,
+): string {
   if (!Array.isArray(sentences)) return "";
+  const labels = transcriptSpeakerLabels(participants);
   const rows: { start: number; index: number; line: string }[] = [];
   sentences.forEach((st, i) => {
     if (!st || typeof st !== "object") return;
@@ -15888,7 +21456,7 @@ export function transcriptTextFromTwilioSentences(sentences: unknown): string {
     const text = String(o.text || o.transcript || "").trim();
     if (!text) return;
     const ch = Number(o.audioChannelIndex ?? o.audio_channel_index);
-    const who = ch === 2 ? "Agent" : ch === 1 ? "Caller" : "";
+    const who = labels[ch] || "";
     const start = Number(o.startTimeSeconds ?? o.start_time);
     const index = Number(o.sentenceIndex ?? o.sentence_index);
     rows.push({
@@ -15898,27 +21466,37 @@ export function transcriptTextFromTwilioSentences(sentences: unknown): string {
     });
   });
   rows.sort((x, y) => x.start - y.start || x.index - y.index);
-  return rows.map((r) => r.line).join("\n").slice(0, 60000);
+  return rows
+    .map((r) => r.line)
+    .join("\n")
+    .slice(0, 60000);
 }
 
 async function ensureTwilioTranscriptionConfigId(): Promise<string> {
-  if (cachedTwilioTranscriptionConfigId) return cachedTwilioTranscriptionConfigId;
-  const list = await twilioVoiceJson<{ content?: Array<{ id?: string; unique_name?: string }> }>(
+  if (cachedTwilioTranscriptionConfigId)
+    return cachedTwilioTranscriptionConfigId;
+  const list = await twilioVoiceJson<{
+    content?: Array<{ id?: string; unique_name?: string }>;
+  }>(
     "GET",
     "https://voice.twilio.com/v2/Configurations/Transcription?pageSize=50",
   );
   if (list.status >= 400) {
-    const code = twilioTranscriptionErrorCode(list.status, list.data) || "twilio_stt_failed";
+    const code =
+      twilioTranscriptionErrorCode(list.status, list.data) ||
+      "twilio_stt_failed";
     throw Object.assign(new Error(code), { code });
   }
-  const found = (list.data?.content || []).find((c) => c.unique_name === TWILIO_TRANSCRIPTION_CONFIG_NAME && c.id);
+  const found = (list.data?.content || []).find(
+    (c) => c.unique_name === TWILIO_TRANSCRIPTION_CONFIG_NAME && c.id,
+  );
   if (found?.id) return (cachedTwilioTranscriptionConfigId = found.id);
   const created = await twilioVoiceJson<{ id?: string }>(
     "POST",
     "https://voice.twilio.com/v2/Configurations/Transcription",
     {
       unique_name: TWILIO_TRANSCRIPTION_CONFIG_NAME,
-      description: "Groundwork call recordings — transcript only, EN/ES auto",
+      description: "Groundwork call recordings. Transcript only, EN/ES auto",
       configuration: {
         configurationType: "Transcription",
         transcriptionEngine: "deepgram",
@@ -15936,7 +21514,9 @@ async function ensureTwilioTranscriptionConfigId(): Promise<string> {
     },
   );
   if (created.status >= 400 || !created.data?.id) {
-    const code = twilioTranscriptionErrorCode(created.status, created.data) || "twilio_stt_failed";
+    const code =
+      twilioTranscriptionErrorCode(created.status, created.data) ||
+      "twilio_stt_failed";
     throw Object.assign(new Error(code), { code });
   }
   return (cachedTwilioTranscriptionConfigId = created.data.id);
@@ -15945,26 +21525,95 @@ async function ensureTwilioTranscriptionConfigId(): Promise<string> {
 type TranscriptJob =
   | { state: "ready"; text: string }
   | { state: "pending" }
+  /** Twilio finished but the text only ships in the callback — re-request to recover. */
+  | { state: "completed_no_text" }
   | { state: "failed"; error: string };
 
-/** Read one v3 transcription job (used by the webhook and by Retry to recover missed callbacks). */
-async function fetchTwilioTranscriptionJob(jobId: string): Promise<TranscriptJob & { sourceId: string }> {
+/** Normalize a Twilio v3 transcription object (job GET or webhook body, top-level or nested). */
+export function parseTwilioTranscriptPayload(raw: unknown): {
+  jobId: string;
+  sourceId: string;
+  accountId: string;
+  status: string;
+  text: string;
+} {
+  const top = (raw && typeof raw === "object" ? raw : {}) as Record<
+    string,
+    any
+  >;
+  const t = (
+    top.transcription && typeof top.transcription === "object"
+      ? top.transcription
+      : top
+  ) as Record<string, any>;
+  return {
+    jobId: String(t.id || top.id || top.operationId || "").trim(),
+    sourceId: String(t.sourceId || t.source_id || top.sourceId || "").trim(),
+    accountId: String(
+      t.accountId || t.account_sid || top.accountId || top.account_sid || "",
+    ).trim(),
+    status: String(t.status || top.status || "").toLowerCase(),
+    text: transcriptTextFromTwilioSentences(
+      t.sentences || top.sentences,
+      t.participants || top.participants,
+    ),
+  };
+}
+
+/**
+ * Confirm a transcript callback with Twilio before trusting its text: job exists
+ * on this account, is completed/failed, and belongs to the given recording.
+ */
+async function verifyTranscriptCallback(
+  jobId: string,
+  recordingSid: string,
+): Promise<boolean> {
+  if (
+    !/^[A-Za-z0-9_-]{6,120}$/.test(jobId) ||
+    !/^RE[0-9a-f]{32}$/i.test(recordingSid)
+  )
+    return false;
+  if (!twilioVoiceAuthHeader()) return false;
+  try {
+    const got = await twilioVoiceJson<Record<string, any>>(
+      "GET",
+      `https://voice.twilio.com/v3/Transcriptions/${encodeURIComponent(jobId)}`,
+    );
+    if (got.status >= 400) return false;
+    const job = parseTwilioTranscriptPayload(got.data);
+    const ours = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
+    if (ours && job.accountId && job.accountId !== ours) return false;
+    return (
+      job.sourceId === recordingSid &&
+      ["completed", "failed", "canceled"].includes(job.status)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Read one v3 transcription job (Retry / recovery). Text is never included by Twilio here. */
+async function fetchTwilioTranscriptionJob(
+  jobId: string,
+): Promise<TranscriptJob & { sourceId: string }> {
   const got = await twilioVoiceJson<Record<string, any>>(
     "GET",
     `https://voice.twilio.com/v3/Transcriptions/${encodeURIComponent(jobId)}`,
   );
-  if (got.status >= 400) return { state: "failed", error: "twilio_stt_failed", sourceId: "" };
-  const payload = (got.data?.transcription && typeof got.data.transcription === "object"
-    ? got.data.transcription
-    : got.data) as Record<string, any>;
-  const sourceId = String(payload?.sourceId || got.data?.sourceId || "");
-  const text = transcriptTextFromTwilioSentences(payload?.sentences || got.data?.sentences);
-  if (text) return { state: "ready", text, sourceId };
-  const status = String(payload?.status || got.data?.status || "").toLowerCase();
-  if (status === "failed" || status === "canceled") {
-    return { state: "failed", error: "twilio_stt_failed", sourceId };
+  if (got.status >= 400)
+    return { state: "failed", error: "twilio_stt_failed", sourceId: "" };
+  const p = parseTwilioTranscriptPayload(got.data);
+  if (p.text) return { state: "ready", text: p.text, sourceId: p.sourceId };
+  if (p.status === "failed" || p.status === "canceled") {
+    return {
+      state: "failed",
+      error: "twilio_stt_failed",
+      sourceId: p.sourceId,
+    };
   }
-  return { state: "pending", sourceId };
+  if (p.status === "completed")
+    return { state: "completed_no_text", sourceId: p.sourceId };
+  return { state: "pending", sourceId: p.sourceId };
 }
 
 /**
@@ -15980,23 +21629,39 @@ async function requestTwilioRecordingTranscription(
   if (!sid || !messageId) return "unavailable";
   // Sandbox (tests / NOTIFY_SANDBOX): never call Twilio; the webhook path is tested directly.
   if (notifySandbox()) {
-    await mergeConversationMessageMetadata(messageId, { transcript_status: "pending" });
+    await mergeConversationMessageMetadata(messageId, {
+      transcript_status: "pending",
+    });
     return "pending";
   }
   if (!twilioVoiceAuthHeader()) {
-    await mergeConversationMessageMetadata(messageId, { transcript_status: "unavailable" });
+    await mergeConversationMessageMetadata(messageId, {
+      transcript_status: "unavailable",
+    });
     return "unavailable";
   }
   try {
     const configId = await ensureTwilioTranscriptionConfigId();
-    const created = await twilioVoiceJson<Record<string, any>>("POST", "https://voice.twilio.com/v3/Transcriptions", {
-      transcriptionConfigurationId: configId,
-      sourceId: sid,
-    });
+    const created = await twilioVoiceJson<Record<string, any>>(
+      "POST",
+      "https://voice.twilio.com/v3/Transcriptions",
+      {
+        transcriptionConfigurationId: configId,
+        sourceId: sid,
+      },
+    );
     const code = twilioTranscriptionErrorCode(created.status, created.data);
     if (code) throw Object.assign(new Error(code), { code });
-    const jobId = String(created.data?.id || created.data?.transcription?.id || created.data?.operationId || "").trim();
-    if (!jobId) throw Object.assign(new Error("twilio_stt_failed"), { code: "twilio_stt_failed" });
+    const jobId = String(
+      created.data?.id ||
+        created.data?.transcription?.id ||
+        created.data?.operationId ||
+        "",
+    ).trim();
+    if (!jobId)
+      throw Object.assign(new Error("twilio_stt_failed"), {
+        code: "twilio_stt_failed",
+      });
     await mergeConversationMessageMetadata(messageId, {
       transcript_status: "pending",
       transcript_job_id: jobId,
@@ -16006,12 +21671,454 @@ async function requestTwilioRecordingTranscription(
     return "pending";
   } catch (err: any) {
     const code = String(err?.code || "twilio_stt_failed");
-    console.warn("[voice:transcript] create failed", sid, code, err?.message ?? "");
+    console.warn(
+      "[voice:transcript] create failed",
+      sid,
+      code,
+      err?.message ?? "",
+    );
     // AI addendum not accepted → "unavailable" (account setting), anything else → "failed".
-    const status = code === "twilio_ai_addendum" || code === "twilio_auth_missing" ? "unavailable" : "failed";
-    await mergeConversationMessageMetadata(messageId, { transcript_status: status, transcript_error: code });
+    const status =
+      code === "twilio_ai_addendum" || code === "twilio_auth_missing"
+        ? "unavailable"
+        : "failed";
+    await mergeConversationMessageMetadata(messageId, {
+      transcript_status: status,
+      transcript_error: code,
+    });
     return status;
   }
+}
+
+const mapDealStatus = (r: RowDataPacket) => ({
+  id: Number(r.id),
+  label_en: String(r.label_en),
+  label_es: String(r.label_es),
+  tone: String(r.tone),
+  sort_order: Number(r.sort_order),
+  is_active: Number(r.is_active) === 1,
+});
+
+const clientAffiliate = async (
+  clientId: number,
+): Promise<RowDataPacket | null> => {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT a.id, a.email, a.phone, a.first_name, a.preferred_language, a.status
+     FROM affiliates a
+     WHERE a.id = COALESCE(
+       (SELECT affiliate_id FROM clients WHERE id = ?),
+       (SELECT COALESCE(closer_affiliate_id, affiliate_id) FROM projects WHERE client_id = ? ORDER BY id DESC LIMIT 1)
+     ) LIMIT 1`,
+    [clientId, clientId],
+  );
+  return rows[0] && String(rows[0].status) === "active" ? rows[0] : null;
+};
+
+const notifyAffiliateOfUpdate = async (opts: {
+  updateId: number;
+  clientId: number;
+  clientFirst: string;
+  clientLast: string;
+  statusLabel: { en: string; es: string } | null;
+  body: string | null;
+}) => {
+  const a = await clientAffiliate(opts.clientId);
+  if (!a) return null;
+  const l = asLang(a.preferred_language);
+  const who =
+    `${opts.clientFirst} ${String(opts.clientLast || "").charAt(0)}.`.trim();
+  const portalUrl = `${APP_URL}/affiliate/clients`;
+  const status = opts.statusLabel
+    ? l === "es"
+      ? opts.statusLabel.es
+      : opts.statusLabel.en
+    : null;
+  const sms = status
+    ? tr(
+        l,
+        `Groundwork Capital: update on ${who} · ${status}. Details in your portal: ${portalUrl}`,
+        `Groundwork Capital: actualización de ${who} · ${status}. Detalles en su portal: ${portalUrl}`,
+      )
+    : tr(
+        l,
+        `Groundwork Capital: new update on ${who}. Details in your portal: ${portalUrl}`,
+        `Groundwork Capital: nueva actualización de ${who}. Detalles en su portal: ${portalUrl}`,
+      );
+  const from = await resolveCampaignSmsFrom();
+  if (from && a.phone) {
+    try {
+      await sendSms({ to: String(a.phone), from, body: sms });
+    } catch (e: any) {
+      console.warn("[client-update] affiliate SMS failed:", e?.message ?? e);
+    }
+  }
+  if (a.email) {
+    await safeSend(
+      String(a.email),
+      tplPortalNotice({
+        lang: l,
+        subject: status
+          ? tr(
+              l,
+              `Update on ${who}: ${status}`,
+              `Actualización de ${who}: ${status}`,
+            )
+          : tr(l, `New update on ${who}`, `Nueva actualización de ${who}`),
+        headline: tr(l, `Update on ${who}`, `Actualización de ${who}`),
+        paragraphs: [
+          ...(status ? [tr(l, `Status: ${status}`, `Estatus: ${status}`)] : []),
+          ...(opts.body ? [opts.body] : []),
+        ],
+        cta: {
+          url: portalUrl,
+          label: tr(l, "Open my clients", "Abrir mis clientes"),
+        },
+      }),
+    );
+  }
+  await pool.execute(
+    `UPDATE client_updates SET notified_affiliate_id = ?, notified_at = NOW() WHERE id = ?`,
+    [a.id, opts.updateId],
+  );
+  return Number(a.id);
+};
+
+const loadClientUpdates = async (clientId: number) => {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT u.*, CONCAT(ad.first_name, ' ', ad.last_name) AS author_name,
+            CONCAT(af.first_name, ' ', af.last_name) AS notified_affiliate_name
+     FROM client_updates u
+     LEFT JOIN admins ad ON ad.id = u.created_by_admin_id
+     LEFT JOIN affiliates af ON af.id = u.notified_affiliate_id
+     WHERE u.client_id = ? ORDER BY u.id DESC LIMIT 200`,
+    [clientId],
+  );
+  return rows.map((r) => ({
+    ...r,
+    created_at: isoDate(r.created_at),
+    notified_at: isoDate(r.notified_at),
+  }));
+};
+
+const requireClientRow = async (raw: unknown) => {
+  const [[c]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT id, first_name, last_name, deal_status_id FROM clients WHERE id = ? LIMIT 1`,
+    [parseId(raw)],
+  )) as unknown as [RowDataPacket[]];
+  if (!c) throw new HttpError(404, "errors.notFound");
+  return c;
+};
+
+const loadLineSettings = async (lineId: number) => {
+  const [[line]] = (await pool.query<RowDataPacket[]>(
+    `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name
+     FROM admin_phone_numbers n LEFT JOIN admins a ON a.id = n.assigned_admin_id
+     WHERE n.id = ? LIMIT 1`,
+    [lineId],
+  )) as unknown as [RowDataPacket[]];
+  if (!line) throw new HttpError(404, "errors.notFound");
+  const [members] = await pool.query<RowDataPacket[]>(
+    `SELECT m.admin_id, m.ring_browser, a.first_name, a.last_name, a.role, a.status, a.voice_available
+     FROM phone_line_members m JOIN admins a ON a.id = m.admin_id
+     WHERE m.line_id = ? ORDER BY a.first_name ASC`,
+    [lineId],
+  );
+  const [rings] = await pool.query<RowDataPacket[]>(
+    `SELECT id, label, e164, is_active FROM phone_line_ring_numbers WHERE line_id = ? ORDER BY sort_order ASC, id ASC`,
+    [lineId],
+  );
+  const [staff] = await pool.query<RowDataPacket[]>(
+    `SELECT id, first_name, last_name, role FROM admins
+     WHERE status = 'active' AND role IN (?) ORDER BY first_name ASC`,
+    [SHARED_LINE_ROLES],
+  );
+  const plan = await buildLineCallPlan(line, "");
+  const name = (r: RowDataPacket) => `${r.first_name} ${r.last_name}`.trim();
+  const owner =
+    line.assigned_admin_id != null ? Number(line.assigned_admin_id) : null;
+  return {
+    ok: true,
+    line: {
+      id: Number(line.id),
+      e164: String(line.e164),
+      friendly_name: line.friendly_name ? String(line.friendly_name) : null,
+      is_primary: Number(line.is_primary) === 1,
+      line_mode: String(line.line_mode || "personal") as "shared" | "personal",
+      assigned_admin_id: owner,
+      assigned_admin_name: line.assigned_admin_name
+        ? String(line.assigned_admin_name)
+        : null,
+      ring_timeout_sec: Number(line.ring_timeout_sec || 25),
+      voicemail_greeting_en: line.voicemail_greeting_en
+        ? String(line.voicemail_greeting_en)
+        : null,
+      voicemail_greeting_es: line.voicemail_greeting_es
+        ? String(line.voicemail_greeting_es)
+        : null,
+    },
+    members: members.map((m) => ({
+      admin_id: Number(m.admin_id),
+      name: name(m),
+      role: String(m.role),
+      active: String(m.status) === "active",
+      ring_browser: Number(m.ring_browser) === 1,
+      browser_online: Number(m.voice_available) === 1,
+    })),
+    ring_numbers: rings.map((r) => ({
+      id: Number(r.id),
+      label: String(r.label),
+      e164: String(r.e164),
+      is_active: Number(r.is_active) === 1,
+    })),
+    staff: staff.map((a) => ({
+      id: Number(a.id),
+      name: name(a),
+      role: String(a.role),
+    })),
+    defaults: DEFAULT_VOICEMAIL_GREETING,
+    // What happens right now if someone calls (browsers that are online this minute).
+    now: {
+      ringing_browsers: plan.clients.length,
+      ringing_phones: plan.numbers.map((n) => n.label),
+      timeout: plan.timeout,
+      personal_line: String(line.line_mode || "personal") === "personal",
+      needs_owner: await lineIsOrphaned(line),
+    },
+  };
+};
+
+/** Set a client's deal status, log it, notify the affiliate (HTTP route + MCP). */
+async function setClientDealStatusCore(opts: {
+  adminId: number;
+  clientId: number;
+  dealStatusId: number | null;
+  note?: string | null;
+  notifyAffiliate?: boolean;
+}): Promise<{ updates: Record<string, unknown>[]; unchanged?: boolean }> {
+  const c = await requireClientRow(opts.clientId);
+  let label: { en: string; es: string } | null = null;
+  if (opts.dealStatusId != null) {
+    const [[ds]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT label_en, label_es, is_active FROM deal_statuses WHERE id = ? LIMIT 1`,
+      [opts.dealStatusId],
+    )) as unknown as [RowDataPacket[]];
+    if (!ds || Number(ds.is_active) !== 1)
+      throw new HttpError(400, "errors.invalidReference");
+    label = { en: String(ds.label_en), es: String(ds.label_es) };
+  }
+  if (
+    (c.deal_status_id == null ? null : Number(c.deal_status_id)) ===
+    opts.dealStatusId
+  ) {
+    return { updates: await loadClientUpdates(Number(c.id)), unchanged: true };
+  }
+  const note =
+    String(opts.note || "")
+      .trim()
+      .slice(0, 4000) || null;
+  const notify = opts.notifyAffiliate !== false;
+  await pool.execute(
+    `UPDATE clients SET deal_status_id = ?, deal_status_changed_at = NOW() WHERE id = ?`,
+    [opts.dealStatusId, c.id],
+  );
+  const cleared = {
+    en: "Status cleared. Back on track",
+    es: "Estatus eliminado. De nuevo en curso",
+  };
+  const shown = label || cleared;
+  const [ins] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO client_updates
+       (client_id, kind, visibility, body, deal_status_id, deal_status_label_en, deal_status_label_es, created_by_admin_id)
+     VALUES (?, 'deal_status', ?, ?, ?, ?, ?, ?)`,
+    [
+      c.id,
+      notify ? "affiliate" : "internal",
+      note,
+      opts.dealStatusId,
+      shown.en,
+      shown.es,
+      opts.adminId,
+    ],
+  );
+  if (notify) {
+    await notifyAffiliateOfUpdate({
+      updateId: Number(ins.insertId),
+      clientId: Number(c.id),
+      clientFirst: String(c.first_name),
+      clientLast: String(c.last_name),
+      statusLabel: shown,
+      body: note,
+    });
+  }
+  return { updates: await loadClientUpdates(Number(c.id)) };
+}
+
+/** Add a client note (internal, or shared with the affiliate + notify). */
+async function addClientUpdateCore(opts: {
+  adminId: number;
+  clientId: number;
+  body: string;
+  shareWithAffiliate: boolean;
+}): Promise<{ updates: Record<string, unknown>[] }> {
+  const c = await requireClientRow(opts.clientId);
+  const body = String(opts.body || "")
+    .trim()
+    .slice(0, 4000);
+  if (body.length < 2) throw new HttpError(400, "validation.invalidField");
+  const [ins] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO client_updates (client_id, kind, visibility, body, created_by_admin_id)
+     VALUES (?, 'note', ?, ?, ?)`,
+    [
+      c.id,
+      opts.shareWithAffiliate ? "affiliate" : "internal",
+      body,
+      opts.adminId,
+    ],
+  );
+  if (opts.shareWithAffiliate) {
+    await notifyAffiliateOfUpdate({
+      updateId: Number(ins.insertId),
+      clientId: Number(c.id),
+      clientFirst: String(c.first_name),
+      clientLast: String(c.last_name),
+      statusLabel: null,
+      body,
+    });
+  }
+  return { updates: await loadClientUpdates(Number(c.id)) };
+}
+
+/** Sponsor change (Agreement §4): refuses self / cycles / unknown sponsor. */
+async function assertSponsorAllowed(
+  affiliateId: number,
+  parentId: number | null,
+): Promise<void> {
+  if (parentId == null) return;
+  if (parentId === affiliateId) throw new HttpError(400, "errors.sponsorCycle");
+  let cur: number | null = parentId;
+  for (let depth = 0; cur != null && depth < 50; depth++) {
+    if (cur === affiliateId) throw new HttpError(400, "errors.sponsorCycle");
+    const [up] = await pool.execute<RowDataPacket[]>(
+      `SELECT parent_affiliate_id FROM affiliates WHERE id = ? LIMIT 1`,
+      [cur],
+    );
+    if (!up[0]) {
+      if (depth === 0) throw new HttpError(400, "errors.invalidReference");
+      break;
+    }
+    cur = up[0].parent_affiliate_id ? Number(up[0].parent_affiliate_id) : null;
+  }
+}
+
+/** Monthly agreement price (Section 3); first price on an active affiliate emails them. */
+async function setAffiliateSubscriptionPriceCore(
+  affiliateId: number,
+  price: number | null,
+): Promise<{ emailed: boolean }> {
+  const [[a]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT id, email, first_name, preferred_language, status, subscription_price_cents FROM affiliates WHERE id = ? LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) throw new HttpError(404, "errors.notFound");
+  if (
+    price !== null &&
+    (!Number.isInteger(price) || price < 0 || price > 10_000_000)
+  ) {
+    throw new HttpError(400, "validation.invalidField");
+  }
+  if ((await affiliateOnboardingState(affiliateId)).agreement_signed)
+    throw new HttpError(409, "errors.agreementAlreadySigned");
+  await pool.execute(
+    `UPDATE affiliates SET subscription_price_cents = ? WHERE id = ?`,
+    [price, affiliateId],
+  );
+  const firstTime = a.subscription_price_cents == null && price != null;
+  if (firstTime && String(a.status) === "active") {
+    const l = asLang(a.preferred_language);
+    await safeSend(
+      String(a.email),
+      tplPortalNotice({
+        lang: l,
+        subject: tr(
+          l,
+          "Your Groundwork affiliate agreement is ready to sign",
+          "Su acuerdo de afiliado de Groundwork está listo para firmar",
+        ),
+        headline: tr(
+          l,
+          "Sign your agreement and W-9",
+          "Firme su acuerdo y su W-9",
+        ),
+        paragraphs: [
+          tr(
+            l,
+            `Hi ${a.first_name}, your Affiliate Agreement is ready. Sign it and complete your W-9 in your portal. It takes about 5 minutes.`,
+            `Hola ${a.first_name}, su Acuerdo de Afiliados está listo. Fírmelo y complete su W-9 en su portal; toma unos 5 minutos.`,
+          ),
+          tr(
+            l,
+            "Referral fees are paid only after both are on file.",
+            "Las comisiones se pagan solo cuando ambos están completos.",
+          ),
+        ],
+        cta: {
+          url: `${APP_URL}/affiliate/agreement`,
+          label: tr(l, "Open my agreement", "Abrir mi acuerdo"),
+        },
+      }),
+    );
+  }
+  return { emailed: firstTime };
+}
+
+/**
+ * Self-heal call transcripts stuck in "pending" (missed callback): when a thread
+ * is opened, re-request up to 2 jobs that Twilio finished > 15 min ago without
+ * delivering text. One automatic retry per call (transcript_auto_retried).
+ */
+async function recoverStuckTranscripts(
+  messages: RowDataPacket[],
+): Promise<void> {
+  if (notifySandbox()) return;
+  const stuck = messages
+    .filter((m) => m.channel === "call")
+    .map((m) => ({ m, meta: parseMessageMetadataJson(m.metadata_json) }))
+    .filter(
+      ({ m, meta }) =>
+        meta.transcript_status === "pending" &&
+        meta.transcript_job_id &&
+        !meta.transcript_auto_retried &&
+        /^RE[0-9a-f]{32}$/i.test(String(meta.recording_sid || "")) &&
+        Date.now() - new Date(m.created_at).getTime() > 15 * 60 * 1000,
+    )
+    .slice(0, 2);
+  await Promise.allSettled(
+    stuck.map(async ({ m, meta }) => {
+      const job = await fetchTwilioTranscriptionJob(
+        String(meta.transcript_job_id),
+      );
+      if (job.state === "pending") return;
+      await mergeConversationMessageMetadata(Number(m.id), {
+        transcript_auto_retried: true,
+      });
+      if (job.state === "ready") {
+        await applyCallTranscriptResult({
+          messageId: Number(m.id),
+          conversationId: Number(m.conversation_id || 0),
+          metaRaw: m.metadata_json,
+          bodyRaw: m.body != null ? String(m.body) : null,
+          completed: true,
+          transcript: job.text,
+          recordingSid: null,
+        });
+        return;
+      }
+      await requestTwilioRecordingTranscription(
+        String(meta.recording_sid),
+        Number(m.id),
+      );
+    }),
+  );
 }
 
 async function conversationAssignedAdminId(
@@ -16138,7 +22245,11 @@ async function emailAssigneeVoicemailTranscript(opts: {
   }
 }
 
-type PendingRecording = { mp3Url: string; durationSec: number | null; at: number };
+type PendingRecording = {
+  mp3Url: string;
+  durationSec: number | null;
+  at: number;
+};
 const pendingRecordings = new Map<string, PendingRecording>();
 
 function rememberPendingRecording(
@@ -16222,7 +22333,10 @@ async function getOrCreateTwimlAppSid(): Promise<string | null> {
 
   const appName = "Groundwork Capital Voice App";
   try {
-    const apps = await client.applications.list({ friendlyName: appName, limit: 1 });
+    const apps = await client.applications.list({
+      friendlyName: appName,
+      limit: 1,
+    });
     if (apps.length > 0) {
       const existing = apps[0];
       if (existing.voiceUrl !== voiceUrl) {
@@ -16298,7 +22412,6 @@ async function persistMmsMedia(opts: {
   return { id, publicUrl: cdnUrl, cdnUrl };
 }
 
-
 async function fetchTwilioMediaAsBuffer(
   mediaUrl: string,
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
@@ -16331,7 +22444,11 @@ async function ingestInboundTwilioMedia(
   ).trim();
   if (!twilioUrl) return { mediaUrl: null, mediaContentType: null };
   const fetched = await fetchTwilioMediaAsBuffer(twilioUrl).catch(() => null);
-  if (fetched && fetched.buffer.length > 0 && fetched.buffer.length <= MMS_MAX_BYTES) {
+  if (
+    fetched &&
+    fetched.buffer.length > 0 &&
+    fetched.buffer.length <= MMS_MAX_BYTES
+  ) {
     try {
       const stored = await persistMmsMedia({
         buffer: fetched.buffer,
@@ -16605,7 +22722,6 @@ async function insertCallMessage(opts: {
   return { id: messageId, created: true };
 }
 
-
 function registerConversationsRoutes(app: Express) {
   const withAccess = (
     fn: (req: Request, res: Response, adminId: number) => Promise<unknown>,
@@ -16620,9 +22736,11 @@ function registerConversationsRoutes(app: Express) {
     "/api/admin/conversations/access",
     requireAdmin(),
     route(async (_req, res) => {
-      const phones = await listAssignedPhoneNumbers(portalUser(res).id);
+      const me = portalUser(res).id;
+      const phones = await listAssignedPhoneNumbers(me);
       res.json({
-        enabled: phones.length > 0,
+        // Enabled when any line is visible (admins covering personal lines too).
+        enabled: await adminHasConversationsAccess(me),
         numbers: phones.map(mapPhoneNumberRow),
       });
     }),
@@ -16632,6 +22750,11 @@ function registerConversationsRoutes(app: Express) {
     "/api/admin/conversations/badge",
     requireAdmin(),
     withAccess(async (_req, res, adminId) => {
+      // Badge = lines this person works (own + member lines), not every visible line.
+      const sendable = (await listAssignedPhoneNumbers(adminId)).map((r) =>
+        Number(r.id),
+      );
+      const workLines = sendable.length ? sendable : [0];
       const [clientRows] = await pool.query<RowDataPacket[]>(
         `SELECT COALESCE(SUM(cv.unread_count), 0) AS unread
          FROM conversations cv
@@ -16641,27 +22764,21 @@ function registerConversationsRoutes(app: Express) {
              cv.assigned_admin_id = ?
              OR (
                cv.assigned_admin_id IS NULL
-               AND cv.ofg_number_id IN (
-                 SELECT id FROM admin_phone_numbers
-                 WHERE assigned_admin_id = ? AND is_active = 1
-               )
+               AND cv.ofg_number_id IN (?)
              )
            )`,
-        [adminId, adminId],
+        [adminId, workLines],
       );
       const [unknownRows] = await pool.query<RowDataPacket[]>(
         `SELECT COALESCE(SUM(u.unread_count), 0) AS unread
          FROM conversation_unknown_contacts u
          WHERE u.status = 'open'
-           AND u.ofg_number_id IN (
-             SELECT id FROM admin_phone_numbers
-             WHERE assigned_admin_id = ? AND is_active = 1
-           )
+           AND u.ofg_number_id IN (?)
            AND EXISTS (
              SELECT 1 FROM conversations cvu
              WHERE cvu.unknown_contact_id = u.id AND cvu.status = 'open'
            )`,
-        [adminId],
+        [workLines],
       );
       const [crmRows] = await pool.query<RowDataPacket[]>(
         `SELECT COALESCE(SUM(cv.unread_count), 0) AS unread
@@ -16669,12 +22786,9 @@ function registerConversationsRoutes(app: Express) {
          WHERE cv.contact_id IS NOT NULL AND cv.status = 'open'
            AND (
              cv.assigned_admin_id = ?
-             OR cv.ofg_number_id IN (
-               SELECT id FROM admin_phone_numbers
-               WHERE assigned_admin_id = ? AND is_active = 1
-             )
+             OR cv.ofg_number_id IN (?)
            )`,
-        [adminId, adminId],
+        [adminId, workLines],
       );
       res.json({
         unread_total:
@@ -16718,14 +22832,21 @@ function registerConversationsRoutes(app: Express) {
       const q = String(req.query.q || "")
         .trim()
         .slice(0, 120);
-      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+      const page = Math.max(
+        1,
+        parseInt(String(req.query.page || "1"), 10) || 1,
+      );
       const limit = Math.min(
         100,
         Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50),
       );
       const offset = (page - 1) * limit;
       const ofgIds = await adminAssignedPhoneNumberIds(adminId);
-      const clientScope = adminClientConversationScopeSql("cv", adminId, ofgIds);
+      const clientScope = adminClientConversationScopeSql(
+        "cv",
+        adminId,
+        ofgIds,
+      );
       const like = q ? likeParam(q) : null;
 
       /** Shared hub row shape for UNION ALL (client | contact | unknown). */
@@ -16836,9 +22957,15 @@ function registerConversationsRoutes(app: Express) {
 
       if (
         ofgIds.length &&
-        ["all", "unknown", "unread", "unassigned", "open", "mine", "closed"].includes(
-          view,
-        )
+        [
+          "all",
+          "unknown",
+          "unread",
+          "unassigned",
+          "open",
+          "mine",
+          "closed",
+        ].includes(view)
       ) {
         const unkWhere: string[] = [
           `u.status = 'open'`,
@@ -16881,10 +23008,14 @@ function registerConversationsRoutes(app: Express) {
           );
         }
         if (like) {
+          // Also match the name of whoever owns the number (affiliate, contractor, lead…).
+          const namedPhones = await phonesForName(like);
           unkWhere.push(
-            `(u.display_name LIKE ? OR u.phone_e164 LIKE ? OR u.email LIKE ? OR u.last_message_preview LIKE ?)`,
+            `(u.display_name LIKE ? OR u.phone_e164 LIKE ? OR u.email LIKE ? OR u.last_message_preview LIKE ?${
+              namedPhones.length ? ` OR ${phone10Sql("u.phone_e164")} IN (?)` : ""
+            })`,
           );
-          unkArgs.push(like, like, like, like);
+          unkArgs.push(like, like, like, like, ...(namedPhones.length ? [namedPhones] : []));
         }
         unionParts.push(`
           SELECT
@@ -16933,17 +23064,24 @@ function registerConversationsRoutes(app: Express) {
         [...unionArgs, limit, offset],
       );
 
+      // Unknown numbers that belong to someone we know (affiliate, contractor, lead…): show their name.
+      const phoneMatches = await resolvePeopleByPhone(
+        rows.filter((r) => String(r.kind) === "unknown").map((r) => r.phone),
+      );
       const contacts = rows.map((r) => {
         const kind = String(r.kind || "client") as
-          | "client"
-          | "contact"
-          | "unknown";
+          "client" | "contact" | "unknown";
         const contactId = Number(r.contact_id);
         const base = {
           kind,
           contact_id: contactId,
-          display_name: String(r.display_name || "").trim() ||
-            (kind === "unknown" ? "Unknown" : kind === "contact" ? "Contact" : "Client"),
+          display_name:
+            String(r.display_name || "").trim() ||
+            (kind === "unknown"
+              ? "Unknown"
+              : kind === "contact"
+                ? "Contact"
+                : "Client"),
           phone: r.phone ?? null,
           email: r.email ?? null,
           last_message_at: isoDate(r.last_message_at),
@@ -16970,8 +23108,13 @@ function registerConversationsRoutes(app: Express) {
             crm_contact_id: Number(r.crm_contact_id || contactId),
           };
         }
+        const match = phoneMatches.get(normalizePhoneLast10(String(r.phone || "")) || "") ?? null;
+        const named = String(r.display_name || "").trim();
         return {
           ...base,
+          // A saved name on the thread wins; otherwise the record that owns the number.
+          display_name: match && (!named || named === String(r.phone || "")) ? match.name : base.display_name,
+          match,
           unknown_contact_id: Number(r.unknown_contact_id || contactId),
         };
       });
@@ -17073,16 +23216,24 @@ function registerConversationsRoutes(app: Express) {
         throw new HttpError(400, "validation.phoneMin");
       }
       const assigned = await listAssignedPhoneNumbers(adminId);
+      const visibleIds = await listVisibleLineIds(adminId);
+      // No line chosen: if this person already has a thread with us, keep using
+      // that line (the number they know); otherwise the sender's default line.
+      const threadLine =
+        ofg_number_id == null
+          ? await resolveThreadLine(adminId, { phone: phoneRaw })
+          : null;
+      const threadHit =
+        threadLine && visibleIds.includes(Number(threadLine.id))
+          ? Number(threadLine.id)
+          : null;
+      if (!assigned.length && !threadHit)
+        throw new HttpError(400, "errors.noPhoneLine");
       const ofgNumberId =
         ofg_number_id != null
           ? Number(ofg_number_id)
-          : assigned[0]
-            ? Number(assigned[0].id)
-            : null;
-      if (
-        !ofgNumberId ||
-        !assigned.some((n) => Number(n.id) === ofgNumberId)
-      ) {
+          : (threadHit ?? (assigned[0] ? Number(assigned[0].id) : null));
+      if (!ofgNumberId || !visibleIds.includes(ofgNumberId)) {
         throw new HttpError(400, "validation.invalidField");
       }
       const mediaUrl = mediaUrlRaw
@@ -17261,6 +23412,7 @@ function registerConversationsRoutes(app: Express) {
             convIds,
           );
           messages = m;
+          await recoverStuckTranscripts(messages);
         }
         await pool.query(
           `UPDATE conversation_unknown_contacts SET unread_count = 0 WHERE id = ?`,
@@ -17300,6 +23452,7 @@ function registerConversationsRoutes(app: Express) {
             convIds,
           );
           messages = m;
+          await recoverStuckTranscripts(messages);
           await pool.query(
             `UPDATE conversations SET unread_count = 0 WHERE contact_id = ?`,
             [id],
@@ -17312,7 +23465,8 @@ function registerConversationsRoutes(app: Express) {
           messages,
         });
       }
-      if (kind !== "client") throw new HttpError(400, "validation.invalidField");
+      if (kind !== "client")
+        throw new HttpError(400, "validation.invalidField");
       if (!(await adminCanAccessClientConversations(adminId, id))) {
         throw new HttpError(404, "errors.notFound");
       }
@@ -17344,6 +23498,7 @@ function registerConversationsRoutes(app: Express) {
           convIds,
         );
         messages = m;
+        await recoverStuckTranscripts(messages);
         await pool.query(
           `UPDATE conversations SET unread_count = 0 WHERE client_id = ? AND id IN (${convIds.map(() => "?").join(",")})`,
           [id, ...convIds],
@@ -17354,6 +23509,16 @@ function registerConversationsRoutes(app: Express) {
   );
 
   // ── Conversation templates (SMS library) ──────────────────────────────────
+  const CONVERSATION_TEMPLATE_CATEGORIES: string[] = [
+    "general",
+    "welcome",
+    "follow_up",
+    "reminder",
+    "status_update",
+    "documents",
+    "scheduling",
+  ];
+
   function mapConversationTemplateRow(r: RowDataPacket) {
     return {
       id: Number(r.id),
@@ -17362,6 +23527,9 @@ function registerConversationsRoutes(app: Express) {
       body_es: r.body_es != null ? String(r.body_es) : null,
       is_active: Number(r.is_active) === 1,
       sort_order: Number(r.sort_order || 0),
+      category: String(r.category || "general"),
+      usage_count: Number(r.usage_count || 0),
+      last_used_at: isoDate(r.last_used_at),
       created_by_admin_id:
         r.created_by_admin_id != null ? Number(r.created_by_admin_id) : null,
       created_at: isoDate(r.created_at),
@@ -17384,31 +23552,50 @@ function registerConversationsRoutes(app: Express) {
     }),
   );
 
+  // Bump usage when staff insert a template into a message (sorts "most used").
+  app.post(
+    "/api/admin/conversation-templates/:id/used",
+    requireAdmin(),
+    route(async (req, res) => {
+      await pool.query(
+        `UPDATE conversation_templates SET usage_count = usage_count + 1, last_used_at = NOW() WHERE id = ?`,
+        [parseId(req.params.id)],
+      );
+      res.json({ ok: true });
+    }),
+  );
+
   app.post(
     "/api/admin/conversation-templates",
-    requireAdmin("people.write"),
+    requireAdmin(),
     route(async (req, res) => {
       const me = portalUser(res);
       const role = String(me.role || "");
-      if (role !== "super_admin" && role !== "admin") {
+      if (!SHARED_LINE_ROLES.includes(role)) {
         throw new HttpError(403, "errors.forbidden");
       }
-      const title = String(req.body?.title || "").trim().slice(0, 120);
+      const title = String(req.body?.title || "")
+        .trim()
+        .slice(0, 120);
       const bodyEn = decodeLiteralUnicodeEscapes(
         String(req.body?.body_en || ""),
       ).trim();
       const bodyEsRaw = decodeLiteralUnicodeEscapes(
         String(req.body?.body_es || ""),
       ).trim();
-      if (!title || !bodyEn) throw new HttpError(400, "validation.invalidField");
+      if (!title || !bodyEn)
+        throw new HttpError(400, "validation.invalidField");
       const [ins] = await pool.query<ResultSetHeader>(
         `INSERT INTO conversation_templates
-           (title, body_en, body_es, is_active, sort_order, created_by_admin_id)
-         VALUES (?, ?, ?, 1, ?, ?)`,
+           (title, body_en, body_es, category, is_active, sort_order, created_by_admin_id)
+         VALUES (?, ?, ?, ?, 1, ?, ?)`,
         [
           title,
           bodyEn,
           bodyEsRaw || null,
+          CONVERSATION_TEMPLATE_CATEGORIES.includes(String(req.body?.category))
+            ? String(req.body.category)
+            : "general",
           Number(req.body?.sort_order) || 0,
           me.id,
         ],
@@ -17423,11 +23610,11 @@ function registerConversationsRoutes(app: Express) {
 
   app.patch(
     "/api/admin/conversation-templates/:id",
-    requireAdmin("people.write"),
+    requireAdmin(),
     route(async (req, res) => {
       const me = portalUser(res);
       const role = String(me.role || "");
-      if (role !== "super_admin" && role !== "admin") {
+      if (!SHARED_LINE_ROLES.includes(role)) {
         throw new HttpError(403, "errors.forbidden");
       }
       const id = parseId(req.params.id);
@@ -17439,7 +23626,9 @@ function registerConversationsRoutes(app: Express) {
       const sets: string[] = [];
       const args: any[] = [];
       if (req.body?.title !== undefined) {
-        const title = String(req.body.title || "").trim().slice(0, 120);
+        const title = String(req.body.title || "")
+          .trim()
+          .slice(0, 120);
         if (!title) throw new HttpError(400, "validation.invalidField");
         sets.push("title = ?");
         args.push(title);
@@ -17458,6 +23647,15 @@ function registerConversationsRoutes(app: Express) {
         ).trim();
         sets.push("body_es = ?");
         args.push(bodyEs || null);
+      }
+      if (req.body?.category !== undefined) {
+        if (
+          !CONVERSATION_TEMPLATE_CATEGORIES.includes(String(req.body.category))
+        ) {
+          throw new HttpError(400, "validation.invalidField");
+        }
+        sets.push("category = ?");
+        args.push(String(req.body.category));
       }
       if (req.body?.is_active !== undefined) {
         sets.push("is_active = ?");
@@ -17489,11 +23687,11 @@ function registerConversationsRoutes(app: Express) {
 
   app.delete(
     "/api/admin/conversation-templates/:id",
-    requireAdmin("people.write"),
+    requireAdmin(),
     route(async (req, res) => {
       const me = portalUser(res);
       const role = String(me.role || "");
-      if (role !== "super_admin" && role !== "admin") {
+      if (!SHARED_LINE_ROLES.includes(role)) {
         throw new HttpError(403, "errors.forbidden");
       }
       const id = parseId(req.params.id);
@@ -17511,13 +23709,18 @@ function registerConversationsRoutes(app: Express) {
     "/api/admin/contacts",
     requireAdmin("people.read"),
     route(async (req, res) => {
-      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+      const page = Math.max(
+        1,
+        parseInt(String(req.query.page || "1"), 10) || 1,
+      );
       const limit = Math.min(
         100,
         Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50),
       );
       const offset = (page - 1) * limit;
-      const search = String(req.query.search || "").trim().slice(0, 120);
+      const search = String(req.query.search || "")
+        .trim()
+        .slice(0, 120);
       const where = ["c.deleted_at IS NULL", "c.converted_client_id IS NULL"];
       const args: any[] = [];
       if (search) {
@@ -17539,7 +23742,7 @@ function registerConversationsRoutes(app: Express) {
         [...args, limit, offset],
       );
       res.json({
-        contacts: rows.map(mapCrmContactRow),
+        contacts: await withLastTouches(rows.map(mapCrmContactRow)),
         pagination: {
           page,
           limit,
@@ -17769,10 +23972,12 @@ function registerConversationsRoutes(app: Express) {
       const role = String(me.role || "");
       if (role === "super_admin" || role === "admin") {
         const [rows] = await pool.query<RowDataPacket[]>(
-          `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name
+          `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name,
+                  a.status AS assigned_admin_status,
+                  (SELECT COUNT(*) FROM phone_line_members m WHERE m.line_id = n.id) AS member_count
            FROM admin_phone_numbers n
            LEFT JOIN admins a ON a.id = n.assigned_admin_id
-           ORDER BY n.id ASC`,
+           ORDER BY n.is_primary DESC, n.id ASC`,
         );
         return res.json({ numbers: rows.map(mapPhoneNumberRow) });
       }
@@ -17788,15 +23993,27 @@ function registerConversationsRoutes(app: Express) {
       const client = getTwilioClient();
       if (!client || process.env.VITEST === "true") {
         if (process.env.VITEST === "true") {
-          return res.json({ ok: true, upserted: 0, numbers: [], dry_run: true });
+          return res.json({
+            ok: true,
+            upserted: 0,
+            numbers: [],
+            dry_run: true,
+          });
         }
         throw new HttpError(503, "errors.server");
       }
       const list = await client.incomingPhoneNumbers.list({ limit: 200 });
       let upserted = 0;
+      let skipped = 0;
       for (const n of list) {
         const e164 = String(n.phoneNumber || "").trim();
         if (!e164.startsWith("+")) continue;
+        // The Twilio account is shared with other brands: only import lines whose
+        // webhooks point at this app (a disconnected line stays out / inactive).
+        if (!twilioNumberPointsHere(n.smsUrl, n.voiceUrl)) {
+          skipped++;
+          continue;
+        }
         const caps = {
           sms: !!(n.capabilities as any)?.sms,
           mms: !!(n.capabilities as any)?.mms,
@@ -17822,7 +24039,301 @@ function registerConversationsRoutes(app: Express) {
          LEFT JOIN admins a ON a.id = n.assigned_admin_id
          ORDER BY n.id ASC`,
       );
-      res.json({ ok: true, upserted, numbers: rows.map(mapPhoneNumberRow) });
+      res.json({
+        ok: true,
+        upserted,
+        skipped,
+        numbers: rows.map(mapPhoneNumberRow),
+      });
+    }),
+  );
+
+  // ── Phone line settings (members, ring list, ring time, bilingual voicemail) ─
+  const requireLineManager = (res: Response) => {
+    const role = String(portalUser(res).role || "");
+    if (role !== "super_admin" && role !== "admin")
+      throw new HttpError(403, "errors.forbidden");
+  };
+
+  // ── Connect / disconnect Twilio numbers from Settings ─────────────────────
+  app.get(
+    "/api/admin/phone-lines/available",
+    requireAdmin(),
+    route(async (_req, res) => {
+      requireLineManager(res);
+      const list = await twilioNumbersApi.list();
+      const [connected] = await pool.query<RowDataPacket[]>(
+        `SELECT e164, is_active FROM admin_phone_numbers`,
+      );
+      const activeHere = new Set(
+        connected
+          .filter((r) => Number(r.is_active) === 1)
+          .map((r) => String(r.e164)),
+      );
+      const host = (u: unknown) => {
+        try {
+          return u ? new URL(String(u)).hostname.replace(/^www\./, "") : null;
+        } catch {
+          return null;
+        }
+      };
+      res.json({
+        ok: true,
+        numbers: list
+          .filter(
+            (n) =>
+              !(
+                activeHere.has(n.phoneNumber) &&
+                twilioNumberPointsHere(n.smsUrl, n.voiceUrl)
+              ),
+          )
+          .map((n) => ({
+            sid: n.sid,
+            e164: n.phoneNumber,
+            friendly_name: n.friendlyName || null,
+            capabilities: n.capabilities,
+            // Who answers this number today (another app means connecting takes it over).
+            current_host: host(n.voiceUrl) || host(n.smsUrl),
+            in_use_elsewhere: Boolean(
+              (n.smsUrl || n.voiceUrl) &&
+              !twilioNumberPointsHere(n.smsUrl, n.voiceUrl),
+            ),
+          })),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/admin/phone-lines/connect",
+    requireAdmin(),
+    route(async (req, res) => {
+      requireLineManager(res);
+      const b = req.body || {};
+      const sid = String(b.sid || "").trim();
+      if (!/^PN[0-9a-f]{32}$/i.test(sid))
+        throw new HttpError(400, "validation.invalidField");
+      const mode = b.line_mode === "shared" ? "shared" : "personal";
+      const owner =
+        b.assigned_admin_id == null || b.assigned_admin_id === ""
+          ? null
+          : Number(b.assigned_admin_id);
+      if (mode === "personal" && owner == null)
+        throw new HttpError(400, "validation.personalLineOwner");
+      if (owner != null) {
+        const [ok] = await pool.query<RowDataPacket[]>(
+          `SELECT id FROM admins WHERE id = ? AND status = 'active' AND role IN (?) LIMIT 1`,
+          [owner, SHARED_LINE_ROLES],
+        );
+        if (!ok[0]) throw new HttpError(400, "validation.invalidField");
+      }
+      const n = (await twilioNumbersApi.list()).find((x) => x.sid === sid);
+      if (!n) throw new HttpError(404, "errors.notFound");
+      const elsewhere = Boolean(
+        (n.smsUrl || n.voiceUrl) &&
+        !twilioNumberPointsHere(n.smsUrl, n.voiceUrl),
+      );
+      // Taking a number from another app (e.g. Encore) needs an explicit confirmation.
+      if (elsewhere && b.take_over !== true) {
+        return res
+          .status(409)
+          .json({
+            error: "errors.lineInUseElsewhere",
+            current_host: n.voiceUrl || n.smsUrl,
+          });
+      }
+      await twilioNumbersApi.update(sid, {
+        smsUrl: `${APP_URL}/api/webhooks/twilio/sms`,
+        smsMethod: "POST",
+        voiceUrl: `${APP_URL}/api/voice/incoming`,
+        voiceMethod: "POST",
+        statusCallback: `${APP_URL}/api/webhooks/twilio/sms-status`,
+        statusCallbackMethod: "POST",
+      });
+      const caps = {
+        sms: Boolean(n.capabilities?.sms),
+        mms: Boolean(n.capabilities?.mms),
+        voice: Boolean(n.capabilities?.voice),
+      };
+      await pool.query(
+        `INSERT INTO admin_phone_numbers (e164, friendly_name, twilio_sid, capabilities_json, is_active, assigned_admin_id, line_mode)
+         VALUES (?, ?, ?, ?, 1, ?, ?)
+         ON DUPLICATE KEY UPDATE friendly_name = VALUES(friendly_name), twilio_sid = VALUES(twilio_sid),
+           capabilities_json = VALUES(capabilities_json), is_active = 1,
+           assigned_admin_id = VALUES(assigned_admin_id), line_mode = VALUES(line_mode)`,
+        [
+          n.phoneNumber,
+          n.friendlyName || null,
+          sid,
+          JSON.stringify(caps),
+          owner,
+          mode,
+        ],
+      );
+      const [[row]] = (await pool.query<RowDataPacket[]>(
+        `SELECT id FROM admin_phone_numbers WHERE e164 = ? LIMIT 1`,
+        [n.phoneNumber],
+      )) as unknown as [RowDataPacket[]];
+      res.status(201).json(await loadLineSettings(Number(row.id)));
+    }),
+  );
+
+  app.post(
+    "/api/admin/phone-lines/:id/disconnect",
+    requireAdmin(),
+    route(async (req, res) => {
+      requireLineManager(res);
+      const lineId = parseId(req.params.id);
+      const [[line]] = (await pool.query<RowDataPacket[]>(
+        `SELECT id, e164, twilio_sid, is_primary FROM admin_phone_numbers WHERE id = ? LIMIT 1`,
+        [lineId],
+      )) as unknown as [RowDataPacket[]];
+      if (!line) throw new HttpError(404, "errors.notFound");
+      if (Number(line.is_primary) === 1)
+        throw new HttpError(409, "errors.cannotDisconnectPrimary");
+      if (String(req.body?.confirm || "") !== String(line.e164))
+        throw new HttpError(400, "validation.confirmNumber");
+      // Only clear webhooks that still point at us (never break another app's config).
+      if (line.twilio_sid) {
+        const n = (await twilioNumbersApi.list()).find(
+          (x) => x.sid === line.twilio_sid,
+        );
+        if (n && twilioNumberPointsHere(n.smsUrl, n.voiceUrl)) {
+          await twilioNumbersApi.update(String(line.twilio_sid), {
+            smsUrl: "",
+            voiceUrl: "",
+            statusCallback: "",
+          });
+        }
+      }
+      await pool.query(
+        `UPDATE admin_phone_numbers SET is_active = 0, is_primary = 0 WHERE id = ?`,
+        [lineId],
+      );
+      await pool.query(`DELETE FROM phone_line_members WHERE line_id = ?`, [
+        lineId,
+      ]);
+      res.json({ ok: true });
+    }),
+  );
+
+  app.get(
+    "/api/admin/phone-lines/:id",
+    requireAdmin(),
+    route(async (req, res) => {
+      requireLineManager(res);
+      res.json(await loadLineSettings(parseId(req.params.id)));
+    }),
+  );
+
+  app.put(
+    "/api/admin/phone-lines/:id",
+    requireAdmin(),
+    route(async (req, res) => {
+      requireLineManager(res);
+      const lineId = parseId(req.params.id);
+      const b = req.body || {};
+      const [[line]] = (await pool.query<RowDataPacket[]>(
+        `SELECT id, e164 FROM admin_phone_numbers WHERE id = ? LIMIT 1`,
+        [lineId],
+      )) as unknown as [RowDataPacket[]];
+      if (!line) throw new HttpError(404, "errors.notFound");
+      const [staff] = await pool.query<RowDataPacket[]>(
+        `SELECT id FROM admins WHERE status = 'active' AND role IN (?)`,
+        [SHARED_LINE_ROLES],
+      );
+      const staffIds = new Set(staff.map((a) => Number(a.id)));
+      const owner =
+        b.assigned_admin_id == null || b.assigned_admin_id === ""
+          ? null
+          : Number(b.assigned_admin_id);
+      if (owner != null && !staffIds.has(owner))
+        throw new HttpError(400, "validation.invalidField");
+      const mode =
+        b.line_mode === "shared"
+          ? "shared"
+          : b.line_mode === "personal"
+            ? "personal"
+            : null;
+      if (!mode) throw new HttpError(400, "validation.invalidField");
+      // A personal line belongs to exactly one staff member.
+      if (mode === "personal" && owner == null)
+        throw new HttpError(400, "validation.personalLineOwner");
+      const members: { admin_id: number; ring_browser: boolean }[] =
+        mode === "shared" && Array.isArray(b.members)
+          ? b.members.map((m: any) => ({
+              admin_id: Number(m?.admin_id),
+              ring_browser: m?.ring_browser !== false,
+            }))
+          : [];
+      if (new Set(members.map((m) => m.admin_id)).size !== members.length)
+        throw new HttpError(400, "validation.invalidField");
+      if (members.some((m) => !staffIds.has(m.admin_id)))
+        throw new HttpError(400, "validation.invalidField");
+      // Brand lines can't ring each other (call loops).
+      const [brandLines] = await pool.query<RowDataPacket[]>(
+        `SELECT e164 FROM admin_phone_numbers`,
+      );
+      const brand10 = new Set(
+        brandLines.map((r) => normalizePhoneDigits(String(r.e164)).slice(-10)),
+      );
+      const ringNumbers: { label: string; e164: string; is_active: boolean }[] =
+        [];
+      for (const r of Array.isArray(b.ring_numbers) ? b.ring_numbers : []) {
+        const label = String(r?.label || "")
+          .trim()
+          .slice(0, 80);
+        const d = normalizePhoneDigits(String(r?.e164 || "")).slice(-10);
+        if (!label || d.length !== 10)
+          throw new HttpError(400, "validation.ringNumberInvalid");
+        if (brand10.has(d))
+          throw new HttpError(400, "validation.ringNumberLoop");
+        if (ringNumbers.some((x) => x.e164 === `+1${d}`)) continue;
+        ringNumbers.push({
+          label,
+          e164: `+1${d}`,
+          is_active: r?.is_active !== false,
+        });
+      }
+      if (ringNumbers.length > 5)
+        throw new HttpError(400, "validation.ringNumberLimit");
+      const timeout = Number(b.ring_timeout_sec ?? 25);
+      if (!Number.isInteger(timeout) || timeout < 10 || timeout > 60)
+        throw new HttpError(400, "validation.invalidField");
+      const greet = (v: unknown) => {
+        const t = String(v ?? "").trim();
+        if (t.length > 600) throw new HttpError(400, "validation.invalidField");
+        return t || null;
+      };
+      const greetingEn = greet(b.voicemail_greeting_en);
+      const greetingEs = greet(b.voicemail_greeting_es);
+      await withTx(async (conn) => {
+        await conn.execute(
+          `UPDATE admin_phone_numbers
+           SET assigned_admin_id = ?, line_mode = ?, ring_timeout_sec = ?, voicemail_greeting_en = ?, voicemail_greeting_es = ?
+           WHERE id = ?`,
+          [owner, mode, timeout, greetingEn, greetingEs, lineId],
+        );
+        await conn.execute(`DELETE FROM phone_line_members WHERE line_id = ?`, [
+          lineId,
+        ]);
+        for (const m of members) {
+          await conn.execute(
+            `INSERT INTO phone_line_members (line_id, admin_id, ring_browser) VALUES (?, ?, ?)`,
+            [lineId, m.admin_id, m.ring_browser ? 1 : 0],
+          );
+        }
+        await conn.execute(
+          `DELETE FROM phone_line_ring_numbers WHERE line_id = ?`,
+          [lineId],
+        );
+        for (const [i, r] of ringNumbers.entries()) {
+          await conn.execute(
+            `INSERT INTO phone_line_ring_numbers (line_id, label, e164, is_active, sort_order) VALUES (?, ?, ?, ?, ?)`,
+            [lineId, r.label, r.e164, r.is_active ? 1 : 0, (i + 1) * 10],
+          );
+        }
+      });
+      res.json(await loadLineSettings(lineId));
     }),
   );
 
@@ -17836,11 +24347,13 @@ function registerConversationsRoutes(app: Express) {
         throw new HttpError(403, "errors.forbidden");
       }
       const id = parseId(req.params.id);
+      const hasAssigned = Object.prototype.hasOwnProperty.call(
+        req.body || {},
+        "assigned_admin_id",
+      );
       const assignedRaw = req.body?.assigned_admin_id;
       const assignedAdminId =
-        assignedRaw === null || assignedRaw === ""
-          ? null
-          : Number(assignedRaw);
+        assignedRaw === null || assignedRaw === "" ? null : Number(assignedRaw);
       if (
         assignedAdminId != null &&
         (!Number.isFinite(assignedAdminId) || assignedAdminId <= 0)
@@ -17861,19 +24374,22 @@ function registerConversationsRoutes(app: Express) {
         req.body?.friendly_name !== undefined
           ? String(req.body.friendly_name || "").trim() || null
           : undefined;
-      if (friendly !== undefined) {
-        await pool.query(
-          `UPDATE admin_phone_numbers
-           SET assigned_admin_id = ?, friendly_name = COALESCE(?, friendly_name)
-           WHERE id = ?`,
-          [assignedAdminId, friendly, id],
-        );
-      } else {
-        await pool.query(
-          `UPDATE admin_phone_numbers SET assigned_admin_id = ? WHERE id = ?`,
-          [assignedAdminId, id],
-        );
+      // Only touch the fields sent (a shared-line toggle must not clear the owner).
+      const sets: string[] = [];
+      const vals: (string | number | null)[] = [];
+      if (hasAssigned) {
+        sets.push("assigned_admin_id = ?");
+        vals.push(assignedAdminId);
       }
+      if (friendly !== undefined) {
+        sets.push("friendly_name = COALESCE(?, friendly_name)");
+        vals.push(friendly);
+      }
+      if (!sets.length) throw new HttpError(400, "validation.invalidField");
+      await pool.query(
+        `UPDATE admin_phone_numbers SET ${sets.join(", ")} WHERE id = ?`,
+        [...vals, id],
+      );
       const [rows] = await pool.query<RowDataPacket[]>(
         `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name
          FROM admin_phone_numbers n
@@ -17885,7 +24401,6 @@ function registerConversationsRoutes(app: Express) {
       res.json({ number: mapPhoneNumberRow(rows[0]) });
     }),
   );
-
 
   /** (Re)transcribe a recorded call — retries stuck / failed transcripts and recovers missed webhooks. */
   app.post(
@@ -17900,13 +24415,18 @@ function registerConversationsRoutes(app: Express) {
       if (!rows[0]) throw new HttpError(404, "errors.notFound");
       const meta = parseMessageMetadataJson(rows[0].metadata_json);
       const recordingSid = String(meta.recording_sid || "");
-      if (!/^RE[0-9a-f]{32}$/i.test(recordingSid)) throw new HttpError(409, "errors.noRecording");
-      if (meta.transcript_status === "ready") throw new HttpError(409, "errors.transcriptReady");
-      // A job already exists (webhook missed?) → read it before submitting a new one.
+      if (!/^RE[0-9a-f]{32}$/i.test(recordingSid))
+        throw new HttpError(409, "errors.noRecording");
+      if (meta.transcript_status === "ready")
+        throw new HttpError(409, "errors.transcriptReady");
+      // A job already exists → still processing: wait. Finished but the callback
+      // was missed (text only ships in the callback): fall through and re-request.
       const jobId = String(meta.transcript_job_id || "");
       if (jobId && meta.transcript_status === "pending" && !notifySandbox()) {
         const job = await fetchTwilioTranscriptionJob(jobId);
-        if (job.state !== "pending") {
+        if (job.state === "pending")
+          return res.json({ ok: true, transcript_status: "pending" });
+        if (job.state === "ready") {
           const [mr] = await pool.query<RowDataPacket[]>(
             `SELECT conversation_id, metadata_json, body FROM conversation_messages WHERE id = ? LIMIT 1`,
             [id],
@@ -17916,16 +24436,19 @@ function registerConversationsRoutes(app: Express) {
             conversationId: Number(mr[0]?.conversation_id || 0),
             metaRaw: mr[0]?.metadata_json,
             bodyRaw: mr[0]?.body != null ? String(mr[0].body) : null,
-            completed: job.state === "ready",
-            transcript: job.state === "ready" ? job.text : "",
+            completed: true,
+            transcript: job.text,
             recordingSid: null,
           });
-          return res.json({ ok: true, transcript_status: job.state === "ready" ? "ready" : "failed" });
+          return res.json({ ok: true, transcript_status: "ready" });
         }
-        return res.json({ ok: true, transcript_status: "pending" });
       }
-      const status = await requestTwilioRecordingTranscription(recordingSid, id);
-      if (status === "unavailable") throw new HttpError(503, "errors.transcriptionNotConfigured");
+      const status = await requestTwilioRecordingTranscription(
+        recordingSid,
+        id,
+      );
+      if (status === "unavailable")
+        throw new HttpError(503, "errors.transcriptionNotConfigured");
       res.json({ ok: true, transcript_status: status });
     }),
   );
@@ -17984,13 +24507,17 @@ function registerConversationsRoutes(app: Express) {
        WHERE id = ? AND expires_at > NOW() LIMIT 1`,
       [id],
     );
-    if (!rows[0]) return res.status(404).json({ error: "Media not found or expired" });
+    if (!rows[0])
+      return res.status(404).json({ error: "Media not found or expired" });
     if (rows[0].cdn_url && String(rows[0].cdn_url).startsWith("https://")) {
       return res.redirect(302, String(rows[0].cdn_url));
     }
-    const contentType = String(rows[0].content_type || "application/octet-stream");
+    const contentType = String(
+      rows[0].content_type || "application/octet-stream",
+    );
     const raw = rows[0].data;
-    if (!raw) return res.status(404).json({ error: "Media not found or expired" });
+    if (!raw)
+      return res.status(404).json({ error: "Media not found or expired" });
     const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as any);
     res.set("Content-Type", contentType);
     res.set("Cache-Control", "public, max-age=3600");
@@ -18029,7 +24556,9 @@ function registerConversationsRoutes(app: Express) {
         redirect: "follow",
       });
       if (!upstream.ok) {
-        return res.status(upstream.status).json({ error: "Media fetch failed" });
+        return res
+          .status(upstream.status)
+          .json({ error: "Media fetch failed" });
       }
       const contentType =
         upstream.headers.get("content-type") || "application/octet-stream";
@@ -18129,12 +24658,20 @@ function registerConversationsRoutes(app: Express) {
         [unknownId],
       );
       if (!urows[0]) throw new HttpError(404, "errors.notFound");
-      const first = String(req.body?.first_name || "").trim() || "Unknown";
-      const last = String(req.body?.last_name || "").trim() || "Lead";
-      const phone = urows[0].phone_e164
-        ? String(urows[0].phone_e164)
-        : null;
-      const emailRaw = String(req.body?.email || urows[0].email || "")
+      const phone = urows[0].phone_e164 ? String(urows[0].phone_e164) : null;
+      // The number usually belongs to an existing lead — reuse its details instead
+      // of creating an "Unknown Lead" prospect, then link the lead to the client.
+      const lead = await findOpenLeadByPhone(phone);
+      const leadName = splitFullName(lead?.full_name || "");
+      const first =
+        String(req.body?.first_name || "").trim() ||
+        leadName.first ||
+        "Unknown";
+      const last =
+        String(req.body?.last_name || "").trim() || leadName.last || "Lead";
+      const emailRaw = String(
+        req.body?.email || urows[0].email || lead?.email || "",
+      )
         .trim()
         .toLowerCase();
       const email = emailRaw || null;
@@ -18142,7 +24679,9 @@ function registerConversationsRoutes(app: Express) {
         req.body?.preferred_language === "es" ||
         req.body?.preferred_language === "en"
           ? req.body.preferred_language
-          : "en";
+          : lead?.preferred_language === "es"
+            ? "es"
+            : "en";
       if (email && !isValidEmail(email)) {
         throw new HttpError(400, "validation.emailInvalid");
       }
@@ -18186,7 +24725,12 @@ function registerConversationsRoutes(app: Express) {
       );
       const clientId = Number(ins.insertId);
       if (phoneOverride) {
-        await recordSharedPhoneOverride({ entity: "client", id: clientId, override: phoneOverride, adminId });
+        await recordSharedPhoneOverride({
+          entity: "client",
+          id: clientId,
+          override: phoneOverride,
+          adminId,
+        });
       }
       await pool.query(
         `UPDATE conversations SET client_id = ?, unknown_contact_id = NULL
@@ -18198,6 +24742,12 @@ function registerConversationsRoutes(app: Express) {
          SET status = 'linked', linked_client_id = ? WHERE id = ?`,
         [clientId, unknownId],
       );
+      if (lead) {
+        await pool.query(
+          `UPDATE leads SET client_id = ? WHERE id = ? AND client_id IS NULL`,
+          [clientId, lead.id],
+        );
+      }
       await publishConversationRealtime({
         type: "unknown_linked",
         payload: { unknown_contact_id: unknownId, client_id: clientId },
@@ -18206,6 +24756,7 @@ function registerConversationsRoutes(app: Express) {
         ok: true,
         client_id: clientId,
         preferred_language: lang,
+        lead_id: lead ? Number(lead.id) : null,
       });
     }),
   );
@@ -18232,6 +24783,48 @@ function registerConversationsRoutes(app: Express) {
         payload: { unknown_contact_id: unknownId },
       });
       res.json({ ok: true });
+    }),
+  );
+
+  // Conversations search: leads (not yet a client/affiliate/contractor) by name,
+  // email or phone, with any open unknown-number thread for that phone.
+  app.get(
+    "/api/admin/conversations/lead-search",
+    requireAdmin(),
+    withAccess(async (req, res) => {
+      const q = String(req.query.q || "")
+        .trim()
+        .slice(0, 120);
+      if (q.length < 2) return res.json({ ok: true, leads: [] });
+      const like = likeParam(q);
+      const digits = q.replace(/\D/g, "");
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT l.id, l.full_name, l.email, l.phone, l.status, l.client_id,
+                (SELECT u.id FROM conversation_unknown_contacts u
+                  WHERE u.status = 'open' AND ${LEAD_PHONE10_SQL("u.phone_e164")} = ${LEAD_PHONE10_SQL("l.phone")}
+                  ORDER BY u.last_message_at DESC LIMIT 1) AS unknown_contact_id
+         FROM leads l
+         WHERE l.status <> 'spam'
+           AND l.converted_affiliate_id IS NULL AND l.converted_contractor_id IS NULL
+           AND (l.full_name LIKE ? OR l.email LIKE ? OR l.phone LIKE ?
+                ${digits.length >= 4 ? `OR ${LEAD_PHONE10_SQL("l.phone")} LIKE ?` : ""})
+         ORDER BY COALESCE(l.last_submitted_at, l.created_at) DESC
+         LIMIT 8`,
+        digits.length >= 4
+          ? [like, like, like, `%${digits.slice(-10)}%`]
+          : [like, like, like],
+      );
+      const leads: ConversationLeadMatch[] = rows.map((r) => ({
+        lead_id: Number(r.id),
+        full_name: String(r.full_name || ""),
+        email: String(r.email || ""),
+        phone: String(r.phone || ""),
+        status: r.status,
+        unknown_contact_id:
+          r.unknown_contact_id == null ? null : Number(r.unknown_contact_id),
+        client_id: r.client_id == null ? null : Number(r.client_id),
+      }));
+      res.json({ ok: true, leads });
     }),
   );
 
@@ -18345,15 +24938,22 @@ function registerConversationsRoutes(app: Express) {
     requireAdmin(),
     withAccess(async (_req, res, adminId) => {
       if (process.env.VITEST === "true") {
-        return res.json({ success: true, token: `vitest-voice-token-${adminId}` });
+        return res.json({
+          success: true,
+          token: `vitest-voice-token-${adminId}`,
+        });
       }
       const twilioClient = getTwilioClient();
       if (!twilioClient) {
-        return res.status(503).json({ success: false, error: "Twilio not configured" });
+        return res
+          .status(503)
+          .json({ success: false, error: "Twilio not configured" });
       }
       const twimlAppSid = await getOrCreateTwimlAppSid();
       if (!twimlAppSid) {
-        return res.status(503).json({ success: false, error: "TwiML App unavailable" });
+        return res
+          .status(503)
+          .json({ success: false, error: "TwiML App unavailable" });
       }
       const accountSid = (process.env.TWILIO_ACCOUNT_SID || "").trim();
       const apiKey = (process.env.TWILIO_API_KEY || "").trim();
@@ -18367,8 +24967,7 @@ function registerConversationsRoutes(app: Express) {
       if (!apiKey.startsWith("SK") || apiSecret.length < 20) {
         return res.status(503).json({
           success: false,
-          error:
-            "Voice tokens require TWILIO_API_KEY and TWILIO_API_SECRET",
+          error: "Voice tokens require TWILIO_API_KEY and TWILIO_API_SECRET",
         });
       }
       const AccessToken = twilio.jwt.AccessToken;
@@ -18407,8 +25006,9 @@ function registerConversationsRoutes(app: Express) {
       const match = identity.match(/admin_(\d+)/);
       if (match) {
         const adminId = parseInt(match[1], 10);
-        const phones = await listAssignedPhoneNumbers(adminId);
-        if (phones[0]?.e164) callerId = String(phones[0].e164);
+        // Call from the line this contact already knows; new numbers → own line.
+        const line = await resolveThreadLine(adminId, { phone: To });
+        if (line?.e164) callerId = String(line.e164);
       }
       const VoiceResponse = twilio.twiml.VoiceResponse;
       const twiml = new VoiceResponse();
@@ -18466,7 +25066,8 @@ function registerConversationsRoutes(app: Express) {
       const maxSeconds = Math.min(
         Math.max(
           parseInt(
-            (await getSystemSettingValue("voice_voicemail_max_seconds")) || "120",
+            (await getSystemSettingValue("voice_voicemail_max_seconds")) ||
+              "120",
             10,
           ) || 120,
           10,
@@ -18556,7 +25157,7 @@ function registerConversationsRoutes(app: Express) {
         if (existing[0]) {
           const durationSec = duration ?? 0;
           const statusLabel = call_status ?? "completed";
-          const body = `Voice call — ${durationSec}s (${statusLabel})`;
+          const body = `Voice call · ${durationSec}s (${statusLabel})`;
           const pendingRec = takePendingRecording(call_sid);
           await pool.query(
             `UPDATE conversation_messages
@@ -18582,8 +25183,11 @@ function registerConversationsRoutes(app: Express) {
       if (!resolvedClientId) {
         resolvedClientId = await findClientIdByPhone(normalizedPhone);
       }
-      const phones = await listAssignedPhoneNumbers(adminId);
-      const ofgNumberId = phones[0] ? Number(phones[0].id) : null;
+      const line = await resolveThreadLine(adminId, {
+        clientId: resolvedClientId,
+        phone: normalizedPhone,
+      });
+      const ofgNumberId = line ? Number(line.id) : null;
       const dir = direction === "inbound" ? "inbound" : "outbound";
       let unknownContactId: number | null = null;
       let conversationId: number;
@@ -18609,8 +25213,8 @@ function registerConversationsRoutes(app: Express) {
       }
       const durationSec = duration ?? 0;
       const statusLabel = call_status ?? "completed";
-      const body = `Voice call — ${durationSec}s (${statusLabel})`;
-      const ofgE164 = phones[0] ? String(phones[0].e164) : null;
+      const body = `Voice call · ${durationSec}s (${statusLabel})`;
+      const ofgE164 = line ? String(line.e164) : null;
       const pendingRec = call_sid ? takePendingRecording(call_sid) : null;
       await insertCallMessage({
         conversationId,
@@ -18646,7 +25250,9 @@ function registerConversationsRoutes(app: Express) {
     "/api/voice/call-answered",
     requireAdmin(),
     withAccess(async (req, res, _adminId) => {
-      const callSid = String(req.body?.call_sid || req.body?.CallSid || "").trim();
+      const callSid = String(
+        req.body?.call_sid || req.body?.CallSid || "",
+      ).trim();
       if (callSid) {
         await pool.query(
           `UPDATE conversation_messages
@@ -18763,17 +25369,13 @@ function registerConversationsRoutes(app: Express) {
       if (!isValidTwilioWebhookRequest(req) && process.env.VITEST !== "true") {
         return res.sendStatus(403);
       }
-      const {
-        CallSid,
-        RecordingSid,
-        TranscriptionText,
-        TranscriptionStatus,
-      } = req.body as {
-        CallSid?: string;
-        RecordingSid?: string;
-        TranscriptionText?: string;
-        TranscriptionStatus?: string;
-      };
+      const { CallSid, RecordingSid, TranscriptionText, TranscriptionStatus } =
+        req.body as {
+          CallSid?: string;
+          RecordingSid?: string;
+          TranscriptionText?: string;
+          TranscriptionStatus?: string;
+        };
       const status = String(TranscriptionStatus || "")
         .trim()
         .toLowerCase();
@@ -18850,35 +25452,72 @@ function registerConversationsRoutes(app: Express) {
    */
   app.post("/api/voice/call-transcript", async (req, res) => {
     try {
-      const b = (req.body || {}) as Record<string, unknown>;
+      // The transcript text ships only in this callback (Twilio's job GET never
+      // returns it), so read it here — top-level or nested `transcription`.
+      const p = parseTwilioTranscriptPayload(req.body);
       const ours = String(process.env.TWILIO_ACCOUNT_SID || "").trim();
-      const accountId = String(b.accountId || b.account_sid || "").trim();
-      if (ours && accountId && accountId !== ours) return res.status(200).json({ ok: true });
-      const jobId = String(b.id || "").trim();
-      if (!/^[A-Za-z0-9_-]{6,120}$/.test(jobId)) return res.status(200).json({ ok: true });
+      if (ours && p.accountId && p.accountId !== ours)
+        return res.status(200).json({ ok: true });
+      const jobOk = /^[A-Za-z0-9_-]{6,120}$/.test(p.jobId);
+      const recOk = /^RE[0-9a-f]{32}$/i.test(p.sourceId);
+      if (!jobOk && !recOk) return res.status(200).json({ ok: true });
       const [rows] = await pool.query<RowDataPacket[]>(
         `SELECT id, conversation_id, metadata_json, body FROM conversation_messages
-         WHERE channel = 'call' AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.transcript_job_id')) = ?
+         WHERE channel = 'call' AND (
+           (? <> '' AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.transcript_job_id')) = ?)
+           OR (? <> '' AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.recording_sid')) = ?)
+         )
          ORDER BY id DESC LIMIT 1`,
-        [jobId],
+        [jobOk ? p.jobId : "", p.jobId, recOk ? p.sourceId : "", p.sourceId],
       );
       const m = rows[0];
-      if (!m) return res.status(200).json({ ok: true });
-      const meta = parseMessageMetadataJson(m.metadata_json);
-      const job = await fetchTwilioTranscriptionJob(jobId);
-      if (job.sourceId && meta.recording_sid && job.sourceId !== meta.recording_sid) {
+      if (!m) {
+        console.warn(
+          "[voice:call-transcript] no matching call",
+          p.jobId,
+          p.sourceId,
+        );
         return res.status(200).json({ ok: true });
       }
-      if (job.state !== "pending") {
+      const meta = parseMessageMetadataJson(m.metadata_json);
+      if (meta.transcript_status === "ready")
+        return res.status(200).json({ ok: true });
+      // The callback isn't signed like form webhooks, so confirm it with Twilio:
+      // the job must exist on our account, be finished, and be for this recording.
+      if (
+        !(await verifyTranscriptCallback(
+          p.jobId,
+          String(meta.recording_sid || p.sourceId),
+        ))
+      ) {
+        console.warn("[voice:call-transcript] unverified callback", p.jobId);
+        return res.status(200).json({ ok: true });
+      }
+      const failed = p.status === "failed" || p.status === "canceled";
+      if (p.text || failed) {
         await applyCallTranscriptResult({
           messageId: Number(m.id),
           conversationId: Number(m.conversation_id || 0),
           metaRaw: m.metadata_json,
           bodyRaw: m.body != null ? String(m.body) : null,
-          completed: job.state === "ready",
-          transcript: job.state === "ready" ? job.text : "",
+          completed: Boolean(p.text),
+          transcript: p.text,
           recordingSid: null,
-          extraMeta: job.state === "failed" ? { transcript_error: job.error } : { transcript_error: null },
+          extraMeta: p.text
+            ? { transcript_error: null }
+            : { transcript_error: "twilio_stt_failed" },
+        });
+      } else if (p.status === "completed") {
+        // Finished with no speech (silence / instant hang-up).
+        await applyCallTranscriptResult({
+          messageId: Number(m.id),
+          conversationId: Number(m.conversation_id || 0),
+          metaRaw: m.metadata_json,
+          bodyRaw: m.body != null ? String(m.body) : null,
+          completed: false,
+          transcript: "",
+          recordingSid: null,
+          extraMeta: { transcript_error: "no_speech" },
         });
       }
       return res.status(200).json({ ok: true });
@@ -18886,6 +25525,45 @@ function registerConversationsRoutes(app: Express) {
       console.error("[voice:call-transcript]", err);
       return res.status(200).json({ ok: true });
     }
+  });
+
+  // Call screening for ring numbers (cells): the callee must press 1, so a
+  // personal/carrier voicemail can never pick up a Groundwork call.
+  app.post("/api/voice/screen", async (req, res) => {
+    res.set("Content-Type", "text/xml");
+    if (!isValidTwilioWebhookRequest(req) && process.env.VITEST !== "true") {
+      return res.status(403).send("<Response/>");
+    }
+    const twiml = new twilio.twiml.VoiceResponse();
+    const g = twiml.gather({
+      numDigits: 1,
+      timeout: 6,
+      action: `${groundworkApiBaseUrl()}/api/voice/screen-accept`,
+      method: "POST",
+    } as any);
+    g.say(
+      { voice: "Polly.Joanna", language: "en-US" },
+      "Groundwork Capital call. Press 1 to accept.",
+    );
+    g.say(
+      { voice: "Polly.Mia", language: "es-MX" },
+      "Llamada de Groundwork Capital. Oprima 1 para contestar.",
+    );
+    twiml.hangup();
+    return res.send(twiml.toString());
+  });
+
+  app.post("/api/voice/screen-accept", async (req, res) => {
+    res.set("Content-Type", "text/xml");
+    if (!isValidTwilioWebhookRequest(req) && process.env.VITEST !== "true") {
+      return res.status(403).send("<Response/>");
+    }
+    // Empty response bridges the caller; anything else drops this leg only.
+    return res.send(
+      String(req.body?.Digits || "") === "1"
+        ? "<Response/>"
+        : "<Response><Hangup/></Response>",
+    );
   });
 
   app.post("/api/voice/dial-status", async (req, res) => {
@@ -18916,35 +25594,15 @@ function registerConversationsRoutes(app: Express) {
       if (!unanswered) {
         return res.status(200).send("<Response></Response>");
       }
-      // Voicemail fallback when no answer
+      // Voicemail fallback when no answer — the line's one bilingual greeting.
       const ofg = calledNumber
         ? await resolveOfgNumberByToAddress(calledNumber)
         : null;
-      const assignedAdminId =
-        ofg?.assigned_admin_id != null ? Number(ofg.assigned_admin_id) : null;
       const VoiceResponse = twilio.twiml.VoiceResponse;
       const twiml = new VoiceResponse();
-      let vmEnabled = (await getSystemSettingValue("voice_voicemail_enabled")) !== "0";
-      let greeting =
-        (await getSystemSettingValue("voice_voicemail_greeting_text")) ||
-        "Hello, you have reached Groundwork Capital. We are unable to take your call right now. Please leave a message after the tone.";
-      if (assignedAdminId) {
-        const [ar] = await pool.query<RowDataPacket[]>(
-          `SELECT voicemail_enabled, voicemail_greeting_text FROM admins WHERE id = ? LIMIT 1`,
-          [assignedAdminId],
-        );
-        if (ar[0]?.voicemail_enabled != null) {
-          vmEnabled = Number(ar[0].voicemail_enabled) === 1;
-        }
-        if (ar[0]?.voicemail_greeting_text) {
-          greeting = String(ar[0].voicemail_greeting_text);
-        }
-      }
-      if (!vmEnabled) {
-        twiml.say({ voice: "alice" }, "Thank you for calling Groundwork Capital. Goodbye.");
-        twiml.hangup();
-        return res.send(twiml.toString());
-      }
+      const plan = ofg
+        ? await buildLineCallPlan(ofg, String(req.body?.From || ""))
+        : null;
       if (callSid) {
         const [vmRows] = await pool.query<RowDataPacket[]>(
           `SELECT id FROM conversation_messages
@@ -18964,18 +25622,14 @@ function registerConversationsRoutes(app: Express) {
           );
         }
       }
-      twiml.say({ voice: "alice" }, greeting);
-      twiml.record({
-        maxLength: 120,
-        playBeep: true,
-        recordingStatusCallback: `${groundworkApiBaseUrl()}/api/voice/recording-status`,
-        recordingStatusCallbackMethod: "POST",
-        transcriptionCallbackMethod: "POST",
-      } as any);
+      appendLineVoicemail(twiml, plan?.greeting || DEFAULT_VOICEMAIL_GREETING);
       return res.send(twiml.toString());
     } catch (e: any) {
       console.error("[voice:dial-status]", e?.message ?? e);
-      return res.status(200).send("<Response></Response>");
+      // Never a dead end: default bilingual voicemail.
+      const fallback = new twilio.twiml.VoiceResponse();
+      appendLineVoicemail(fallback, DEFAULT_VOICEMAIL_GREETING);
+      return res.status(200).send(fallback.toString());
     }
   });
 
@@ -18987,7 +25641,9 @@ function registerConversationsRoutes(app: Express) {
     res.set("Content-Type", "text/xml");
     try {
       if (!process.env.TWILIO_AUTH_TOKEN && IS_PROD) {
-        return res.status(503).send("<Response><Say>Service unavailable.</Say></Response>");
+        return res
+          .status(503)
+          .send("<Response><Say>Service unavailable.</Say></Response>");
       }
       if (!isValidTwilioWebhookRequest(req) && process.env.VITEST !== "true") {
         console.warn("[twilio:voice] Invalid or missing signature");
@@ -18999,15 +25655,15 @@ function registerConversationsRoutes(app: Express) {
       const brand = await resolveOfgNumberByToAddress(to);
       const VoiceResponse = twilio.twiml.VoiceResponse;
       const twiml = new VoiceResponse();
-      if (!brand?.assigned_admin_id) {
-        twiml.say(
-          { voice: "alice" },
-          "Thank you for calling Groundwork Capital. We are unable to take your call right now. Please try again later or visit groundwork capital group dot com.",
-        );
+      if (!brand) {
+        // Not one of our lines (misconfigured webhook): still never a dead end.
+        appendLineVoicemail(twiml, DEFAULT_VOICEMAIL_GREETING);
         return res.send(twiml.toString());
       }
-      const assignedAdminId = Number(brand.assigned_admin_id);
+      // Orphaned personal line → the main team's owner takes the conversation.
+      const assignedAdminId = await lineDefaultAssignee(brand);
       const ofgNumberId = Number(brand.id);
+      const audience = await lineAudienceAdminIds(brand);
 
       // Log inbound call row up-front
       try {
@@ -19029,7 +25685,7 @@ function registerConversationsRoutes(app: Express) {
         });
         await publishConversationRealtime({
           type: "message",
-          adminIds: [assignedAdminId],
+          adminIds: audience,
           payload: {
             conversation_id: created.conversationId,
             client_id: created.clientId,
@@ -19042,37 +25698,17 @@ function registerConversationsRoutes(app: Express) {
         console.error("[voice:incoming] log error:", logErr?.message ?? logErr);
       }
 
-      const [admins] = await pool.query<RowDataPacket[]>(
-        `SELECT voice_available, call_forwarding_enabled, call_forwarding_phone, phone, first_name
-         FROM admins WHERE id = ? AND status = 'active' LIMIT 1`,
-        [assignedAdminId],
+      const plan = await buildLineCallPlan(brand, from);
+      console.log(
+        `[twilio:voice] inbound from=${from} to=${brand.e164} browsers=${plan.clients.join(",") || "-"} phones=${plan.numbers.length} timeout=${plan.timeout}`,
       );
-      const admin = admins[0];
-      const softphoneOnline = !!(admin && Number(admin.voice_available) === 1);
-      const forwardRaw =
-        admin && Number(admin.call_forwarding_enabled)
-          ? admin.call_forwarding_phone || admin.phone
-          : null;
-      const forward = forwardRaw ? toSmsE164(String(forwardRaw)) : null;
-      const callerDigits = normalizePhoneDigits(from);
-      const fwdDigits = forward ? normalizePhoneDigits(forward) : "";
-      const ringCell = !!forward && !!fwdDigits && fwdDigits !== callerDigits;
-      const ringSoftphone = softphoneOnline || !ringCell;
-
-      if (!ringSoftphone && !ringCell) {
-        twiml.say(
-          { voice: "alice" },
-          "Thank you for calling Groundwork Capital. We are unable to take your call right now.",
-        );
+      if (!plan.clients.length && !plan.numbers.length) {
+        appendLineVoicemail(twiml, plan.greeting);
         return res.send(twiml.toString());
       }
-
-      console.log(
-        `[twilio:voice] inbound from=${from} to=${brand.e164} softphone=${ringSoftphone} forward=${forward || "-"} admin=${assignedAdminId}`,
-      );
       const dial = twiml.dial({
         callerId: brand.e164,
-        timeout: ringCell ? 28 : 22,
+        timeout: plan.timeout,
         answerOnBridge: true,
         action: `${groundworkApiBaseUrl()}/api/voice/dial-status`,
         method: "POST",
@@ -19081,23 +25717,26 @@ function registerConversationsRoutes(app: Express) {
         recordingStatusCallbackMethod: "POST",
         trim: "trim-silence",
       } as any);
-      if (ringSoftphone) {
-        dial.client(`admin_${assignedAdminId}`);
-      }
-      if (ringCell && forward) {
-        dial.number(forward);
+      for (const id of plan.clients) dial.client(`admin_${id}`);
+      // Screened: the person must press 1, so carrier voicemail can't take the call.
+      for (const n of plan.numbers) {
+        dial.number(
+          {
+            url: `${groundworkApiBaseUrl()}/api/voice/screen`,
+            method: "POST",
+          } as any,
+          n.e164,
+        );
       }
       return res.send(twiml.toString());
     } catch (e: any) {
       console.error("[twilio:voice]", e?.message ?? e);
-      return res
-        .status(500)
-        .send(
-          "<Response><Say>We are unable to complete your call. Please try again later.</Say></Response>",
-        );
+      // Same caller experience even on errors: the default bilingual voicemail.
+      const fallback = new twilio.twiml.VoiceResponse();
+      appendLineVoicemail(fallback, DEFAULT_VOICEMAIL_GREETING);
+      return res.status(200).send(fallback.toString());
     }
   });
-
 }
 
 function registerTwilioWebhookRoutes(app: Express) {
@@ -19156,23 +25795,25 @@ function registerTwilioWebhookRoutes(app: Express) {
 
       const ofgNumber = await resolveOfgNumberByToAddress(to);
       const ofgNumberId = ofgNumber ? Number(ofgNumber.id) : null;
-      const assigneeId =
-        ofgNumber?.assigned_admin_id != null
-          ? Number(ofgNumber.assigned_admin_id)
-          : null;
+      // Orphaned personal line → the main shared line's owner takes new threads.
+      const assigneeId = ofgNumber
+        ? await lineDefaultAssignee(ofgNumber)
+        : null;
       const clientId = await findClientIdByPhone(from);
       const preview = (body || (mediaUrl ? "[Media]" : "")).slice(0, 200);
 
       if (!clientId) {
         const crmContactId = await findContactIdByPhone(from);
         if (crmContactId) {
-          const conversationId = await getOrCreateCrmContactChannelConversation({
-            crmContactId,
-            channel: "sms",
-            ofgNumberId,
-            assignedAdminId: assigneeId,
-            reopenIfClosed: true,
-          });
+          const conversationId = await getOrCreateCrmContactChannelConversation(
+            {
+              crmContactId,
+              channel: "sms",
+              ofgNumberId,
+              assignedAdminId: assigneeId,
+              reopenIfClosed: true,
+            },
+          );
           await pool.query(
             `INSERT INTO conversation_messages
                (conversation_id, direction, channel, body, media_url, media_content_type,
@@ -19462,8 +26103,5691 @@ function registerTwilioWebhookRoutes(app: Express) {
   });
 }
 
-
 // ─── App ─────────────────────────────────────────────────────────────────────
+
+// ─── Affiliate link: self-service name, EN/ES links, QR flyer ────────────────
+
+const AFFILIATE_SLUG_CHANGE_DAYS = 30;
+const LOGO_PATH = "public/logos/groundwork-logo.png";
+
+async function loadLogoPng(): Promise<Buffer | null> {
+  try {
+    return fs.readFileSync(path.join(process.cwd(), LOGO_PATH));
+  } catch {
+    try {
+      const r = await globalThis.fetch(`${APP_URL}/logos/groundwork-logo.png`);
+      return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function affiliateLinkUrls(a: Record<string, unknown>) {
+  const code = String(a.slug || a.referral_code || "").trim();
+  const base = `${siteOrigin()}/r/${encodeURIComponent(code)}`;
+  return { en: base, es: `${base}?lang=es` };
+}
+
+/**
+ * One-page homeowner flyer (Letter): logo, headline, the affiliate's QR +
+ * short link, "Referred by". Copy stays within Agreement §10 (no prices,
+ * income or approval promises).
+ */
+export async function buildAffiliateFlyerPdf(opts: {
+  lang: Lang;
+  url: string;
+  displayUrl: string;
+  name: string;
+  company: string | null;
+}): Promise<Buffer> {
+  const l = opts.lang;
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const serif = await doc.embedFont(StandardFonts.TimesRoman);
+  const sans = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const navy = rgb(14 / 255, 42 / 255, 74 / 255);
+  const gold = rgb(217 / 255, 164 / 255, 65 / 255);
+  const paper = rgb(248 / 255, 245 / 255, 239 / 255);
+  const charcoal = rgb(31 / 255, 36 / 255, 48 / 255);
+  const clay = rgb(193 / 255, 99 / 255, 59 / 255);
+  const W = 612;
+  page.drawRectangle({ x: 0, y: 0, width: W, height: 792, color: paper });
+  // Header band
+  page.drawRectangle({
+    x: 0,
+    y: 672,
+    width: W,
+    height: 120,
+    color: rgb(1, 1, 1),
+  });
+  page.drawRectangle({ x: 0, y: 668, width: W, height: 4, color: gold });
+  const logo = await loadLogoPng();
+  if (logo) {
+    const img = await doc.embedPng(logo);
+    const h = 54;
+    const w = (img.width / img.height) * h;
+    page.drawImage(img, { x: 48, y: 704, width: w, height: h });
+  }
+  const t = (en: string, es: string) => pdfSafe(l === "es" ? es : en);
+  const eyebrow = t(
+    "ACCESSORY DWELLING UNITS",
+    "UNIDADES DE VIVIENDA ADICIONAL",
+  );
+  page.drawText(eyebrow, {
+    x: W - 48 - bold.widthOfTextAtSize(eyebrow, 9),
+    y: 726,
+    size: 9,
+    font: bold,
+    color: clay,
+  });
+
+  const wrap = (text: string, font: typeof sans, size: number, max: number) => {
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let cur = "";
+    for (const w of words) {
+      const next = cur ? `${cur} ${w}` : w;
+      if (font.widthOfTextAtSize(next, size) > max && cur) {
+        lines.push(cur);
+        cur = w;
+      } else cur = next;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  };
+  let y = 600;
+  for (const line of wrap(
+    t("Add an ADU to your property", "Agregue una ADU a su propiedad"),
+    serif,
+    40,
+    W - 96,
+  )) {
+    page.drawText(line, { x: 48, y, size: 40, font: serif, color: navy });
+    y -= 46;
+  }
+  y -= 4;
+  for (const line of wrap(
+    t(
+      "A backyard home for family, guests or extra space. Designed, permitted and built by Groundwork Capital, with financing options.",
+      "Una casa en su patio para su familia, visitas o más espacio. Diseñada, con permisos y construida por Groundwork Capital, con opciones de financiamiento.",
+    ),
+    sans,
+    14,
+    W - 96,
+  )) {
+    page.drawText(line, { x: 48, y, size: 14, font: sans, color: charcoal });
+    y -= 20;
+  }
+  // Bullets
+  y -= 14;
+  for (const b of [
+    t("Free consultation", "Consulta gratuita"),
+    t(
+      "Optional soft-pull credit snapshot (no score impact)",
+      "Reporte de crédito opcional sin afectar su puntaje",
+    ),
+    t("English and Spanish support", "Atención en inglés y español"),
+  ]) {
+    page.drawCircle({ x: 54, y: y + 4, size: 3.5, color: gold });
+    page.drawText(b, { x: 66, y, size: 13, font: sans, color: charcoal });
+    y -= 22;
+  }
+  // QR card
+  const cardY = 120;
+  const cardH = 250;
+  page.drawRectangle({
+    x: 48,
+    y: cardY,
+    width: W - 96,
+    height: cardH,
+    color: navy,
+  });
+  const qrPng = await QRCode.toBuffer(opts.url, {
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: 600,
+    color: { dark: "#0e2a4a", light: "#ffffff" },
+  });
+  const qr = await doc.embedPng(qrPng);
+  const qs = 190;
+  page.drawRectangle({
+    x: 78,
+    y: cardY + 30,
+    width: qs + 20,
+    height: qs + 20,
+    color: rgb(1, 1, 1),
+  });
+  page.drawImage(qr, { x: 88, y: cardY + 40, width: qs, height: qs });
+  const tx = 88 + qs + 40;
+  const scan = t("Scan to get started", "Escanee para comenzar");
+  let ssize = 22;
+  while (bold.widthOfTextAtSize(scan, ssize) > W - 48 - tx - 30 && ssize > 12)
+    ssize -= 0.5;
+  page.drawText(scan, {
+    x: tx,
+    y: cardY + 180,
+    size: ssize,
+    font: bold,
+    color: rgb(1, 1, 1),
+  });
+  page.drawText(t("or visit", "o visite"), {
+    x: tx,
+    y: cardY + 150,
+    size: 12,
+    font: sans,
+    color: rgb(0.85, 0.85, 0.85),
+  });
+  const disp = pdfSafe(opts.displayUrl);
+  let dsize = 14;
+  while (bold.widthOfTextAtSize(disp, dsize) > W - 48 - tx - 30 && dsize > 8)
+    dsize -= 0.5;
+  page.drawText(disp, {
+    x: tx,
+    y: cardY + 128,
+    size: dsize,
+    font: bold,
+    color: gold,
+  });
+  page.drawText(t("Referred by", "Recomendado por"), {
+    x: tx,
+    y: cardY + 86,
+    size: 10,
+    font: sans,
+    color: rgb(0.8, 0.8, 0.8),
+  });
+  page.drawText(pdfSafe(opts.name), {
+    x: tx,
+    y: cardY + 66,
+    size: 16,
+    font: bold,
+    color: rgb(1, 1, 1),
+  });
+  if (opts.company)
+    page.drawText(pdfSafe(opts.company).slice(0, 48), {
+      x: tx,
+      y: cardY + 48,
+      size: 11,
+      font: sans,
+      color: rgb(0.85, 0.85, 0.85),
+    });
+  // Footer
+  const foot = pdfSafe(
+    "Groundwork Capital Group · groundworkcapitalgroup.com · (866) 864-7506",
+  );
+  page.drawText(foot, {
+    x: (W - sans.widthOfTextAtSize(foot, 9)) / 2,
+    y: 60,
+    size: 9,
+    font: sans,
+    color: rgb(0.45, 0.47, 0.52),
+  });
+  return Buffer.from(await doc.save());
+}
+
+function registerAffiliateLinkRoutes(app: Express) {
+  const aff = requirePortal("affiliate");
+
+  const linkPayload = async (id: number) => {
+    const [[a]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT id, slug, referral_code, slug_changed_at,
+              (SELECT COUNT(*) FROM affiliate_link_clicks k WHERE k.affiliate_id = affiliates.id) AS clicks_total,
+              (SELECT COUNT(*) FROM affiliate_link_clicks k WHERE k.affiliate_id = affiliates.id AND k.created_at > NOW() - INTERVAL 7 DAY) AS clicks_7d,
+              (SELECT COUNT(*) FROM leads l WHERE l.affiliate_id = affiliates.id) AS leads,
+              (SELECT COUNT(*) FROM clients c WHERE c.affiliate_id = affiliates.id) AS clients
+       FROM affiliates WHERE id = ? LIMIT 1`,
+      [id],
+    )) as unknown as [RowDataPacket[]];
+    if (!a) throw new HttpError(404, "errors.notFound");
+    const changed = a.slug_changed_at ? new Date(a.slug_changed_at) : null;
+    const nextChange = changed
+      ? new Date(changed.getTime() + AFFILIATE_SLUG_CHANGE_DAYS * 86400_000)
+      : null;
+    return {
+      ok: true,
+      slug: a.slug ? String(a.slug) : null,
+      referral_code: String(a.referral_code),
+      urls: affiliateLinkUrls(a),
+      display: `${new URL(siteOrigin()).host.replace(/^www\./, "")}/r/${a.slug || a.referral_code}`,
+      can_change_slug_at:
+        nextChange && nextChange > new Date() ? nextChange.toISOString() : null,
+      stats: {
+        clicks_total: Number(a.clicks_total || 0),
+        clicks_7d: Number(a.clicks_7d || 0),
+        leads: Number(a.leads || 0),
+        clients: Number(a.clients || 0),
+      },
+    };
+  };
+
+  app.get(
+    "/api/affiliate/link",
+    aff,
+    route(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await linkPayload(portalUser(res).id));
+    }),
+  );
+
+  // Self-service link name (once per 30 days; the old name keeps working 30 days).
+  app.patch(
+    "/api/affiliate/link",
+    aff,
+    route(async (req, res) => {
+      const me = portalUser(res).id;
+      const slug = normalizeAffiliateSlugInput(req.body?.slug);
+      if (!slug) throw new HttpError(400, "validation.slugFormat");
+      const [[a]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT slug, slug_changed_at FROM affiliates WHERE id = ? LIMIT 1`,
+        [me],
+      )) as unknown as [RowDataPacket[]];
+      if (!a) throw new HttpError(404, "errors.notFound");
+      if (String(a.slug || "") === slug) return res.json(await linkPayload(me));
+      if (
+        a.slug_changed_at &&
+        Date.now() - new Date(a.slug_changed_at).getTime() <
+          AFFILIATE_SLUG_CHANGE_DAYS * 86400_000
+      ) {
+        throw new HttpError(429, "errors.slugChangeTooSoon");
+      }
+      await assertAffiliateSlugAvailable(slug, me);
+      await retireAffiliateSlug(me, a.slug ? String(a.slug) : null, slug);
+      await pool.execute(
+        `UPDATE affiliates SET slug = ?, slug_changed_at = NOW() WHERE id = ?`,
+        [slug, me],
+      );
+      res.json(await linkPayload(me));
+    }),
+  );
+
+  app.get(
+    "/api/affiliate/link/flyer",
+    aff,
+    route(async (req, res) => {
+      const lang = asLang(req.query.lang);
+      const [[a]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT slug, referral_code, first_name, last_name, company FROM affiliates WHERE id = ? LIMIT 1`,
+        [portalUser(res).id],
+      )) as unknown as [RowDataPacket[]];
+      if (!a) throw new HttpError(404, "errors.notFound");
+      const urls = affiliateLinkUrls(a);
+      const url = lang === "es" ? urls.es : urls.en;
+      const pdf = await buildAffiliateFlyerPdf({
+        lang,
+        url,
+        displayUrl: `${new URL(siteOrigin()).host.replace(/^www\./, "")}/r/${a.slug || a.referral_code}${lang === "es" ? "?lang=es" : ""}`,
+        name: `${a.first_name || ""} ${a.last_name || ""}`.trim(),
+        company: a.company ? String(a.company) : null,
+      });
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="groundwork-flyer-${a.slug || a.referral_code}-${lang}.pdf"`,
+      );
+      res.setHeader("Cache-Control", "private, no-store");
+      res.send(pdf);
+    }),
+  );
+}
+
+// ─── Scheduler: appointments, tagged attendees, lenders, booking links ────────
+
+const APPOINTMENT_KINDS = [
+  "property_inspection",
+  "site_visit",
+  "lender_meeting",
+  "consultation",
+  "call",
+  "other",
+] as const;
+type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
+const APPOINTMENT_LOCATION_TYPES = [
+  "onsite",
+  "office",
+  "phone",
+  "video",
+] as const;
+const DEFAULT_APPT_TZ = "America/Los_Angeles";
+const APPT_KIND_LABEL: Record<AppointmentKind, { en: string; es: string }> = {
+  property_inspection: {
+    en: "Property inspection",
+    es: "Inspección de la propiedad",
+  },
+  site_visit: { en: "Site visit", es: "Visita a la obra" },
+  lender_meeting: { en: "Lender meeting", es: "Cita con el prestamista" },
+  consultation: { en: "Consultation", es: "Consulta" },
+  call: { en: "Call", es: "Llamada" },
+  other: { en: "Appointment", es: "Cita" },
+};
+const APPT_LOCATION_LABEL: Record<
+  (typeof APPOINTMENT_LOCATION_TYPES)[number],
+  { en: string; es: string }
+> = {
+  onsite: { en: "At the property", es: "En la propiedad" },
+  office: { en: "Our office", es: "Nuestra oficina" },
+  phone: { en: "Phone call", es: "Llamada telefónica" },
+  video: { en: "Video call", es: "Videollamada" },
+};
+
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Minutes the zone is ahead of UTC at an instant (DST-aware). */
+function tzOffsetMinutes(at: Date, tz: string): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+      .formatToParts(at)
+      .map((p) => [p.type, p.value]),
+  );
+  const asUtc = Date.UTC(
+    +parts.year,
+    +parts.month - 1,
+    +parts.day,
+    +parts.hour % 24,
+    +parts.minute,
+    +parts.second,
+  );
+  return Math.round((asUtc - Math.floor(at.getTime() / 1000) * 1000) / 60000);
+}
+
+/** Wall-clock date + time in a zone → UTC instant (handles DST edges). */
+export function zonedTimeToUtc(date: string, time: string, tz: string): Date {
+  const [y, mo, d] = date.split("-").map(Number);
+  const [h, mi] = time.split(":").map(Number);
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  const off1 = tzOffsetMinutes(new Date(guess), tz);
+  let utc = guess - off1 * 60000;
+  const off2 = tzOffsetMinutes(new Date(utc), tz);
+  if (off2 !== off1) utc = guess - off2 * 60000;
+  return new Date(utc);
+}
+
+/** UTC instant → wall-clock parts in a zone. */
+export function utcToZoned(
+  at: Date,
+  tz: string,
+): { date: string; time: string; dow: number } {
+  const local = new Date(at.getTime() + tzOffsetMinutes(at, tz) * 60000);
+  const iso = local.toISOString();
+  return {
+    date: iso.slice(0, 10),
+    time: iso.slice(11, 16),
+    dow: local.getUTCDay(),
+  };
+}
+
+function formatApptWhen(
+  start: Date,
+  end: Date,
+  tz: string,
+  lang: Lang,
+): string {
+  const loc = lang === "es" ? "es-US" : "en-US";
+  const day = new Intl.DateTimeFormat(loc, {
+    timeZone: tz,
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(start);
+  const t = (d: Date) =>
+    new Intl.DateTimeFormat(loc, {
+      timeZone: tz,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(d);
+  const zone =
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" })
+      .formatToParts(start)
+      .find((p) => p.type === "timeZoneName")?.value || "";
+  return `${day} · ${t(start)}–${t(end)} ${zone}`.trim();
+}
+
+// ── Calendar invite (.ics, RFC 5545) ──
+const icsEscape = (v: string) =>
+  v
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
+const icsDate = (d: Date) =>
+  d
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}/, "");
+function icsFold(line: string): string {
+  const out: string[] = [];
+  let rest = line;
+  while (Buffer.byteLength(rest, "utf8") > 74) {
+    let cut = 74;
+    while (Buffer.byteLength(rest.slice(0, cut), "utf8") > 74) cut--;
+    out.push(rest.slice(0, cut));
+    rest = " " + rest.slice(cut);
+  }
+  out.push(rest);
+  return out.join("\r\n");
+}
+export function buildAppointmentIcs(opts: {
+  uid: string;
+  sequence: number;
+  start: Date;
+  end: Date;
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  url?: string | null;
+  cancelled?: boolean;
+}): string {
+  const fromAddr = (
+    String(SMTP_FROM).match(/<([^>]+)>/)?.[1] || String(SMTP_FROM)
+  ).trim();
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Groundwork Capital//Scheduler//EN",
+    "CALSCALE:GREGORIAN",
+    `METHOD:${opts.cancelled ? "CANCEL" : "REQUEST"}`,
+    "BEGIN:VEVENT",
+    `UID:${opts.uid}`,
+    `SEQUENCE:${opts.sequence}`,
+    `DTSTAMP:${icsDate(new Date())}`,
+    `DTSTART:${icsDate(opts.start)}`,
+    `DTEND:${icsDate(opts.end)}`,
+    `SUMMARY:${icsEscape(opts.title)}`,
+    ...(opts.description ? [`DESCRIPTION:${icsEscape(opts.description)}`] : []),
+    ...(opts.location ? [`LOCATION:${icsEscape(opts.location)}`] : []),
+    ...(opts.url ? [`URL:${opts.url}`] : []),
+    `ORGANIZER;CN=Groundwork Capital:mailto:${fromAddr}`,
+    `STATUS:${opts.cancelled ? "CANCELLED" : "CONFIRMED"}`,
+    ...(opts.cancelled
+      ? []
+      : [
+          "BEGIN:VALARM",
+          "ACTION:DISPLAY",
+          "DESCRIPTION:Reminder",
+          "TRIGGER:-PT1H",
+          "END:VALARM",
+        ]),
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+  return lines.map(icsFold).join("\r\n") + "\r\n";
+}
+
+type ApptAttendeeInput =
+  | { kind: "admin"; admin_id: number }
+  | { kind: "contractor"; contractor_id: number }
+  | { kind: "lender"; lender_id: number }
+  | {
+      kind: "guest";
+      name: string;
+      email?: string | null;
+      phone?: string | null;
+      preferred_language?: Lang;
+    };
+
+function parseAttendeeInputs(raw: unknown): ApptAttendeeInput[] {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > 25)
+    throw new HttpError(400, "validation.invalidField");
+  const out: ApptAttendeeInput[] = [];
+  for (const a of raw as any[]) {
+    const kind = String(a?.kind || "");
+    if (kind === "admin") out.push({ kind, admin_id: parseId(a.admin_id) });
+    else if (kind === "contractor")
+      out.push({ kind, contractor_id: parseId(a.contractor_id) });
+    else if (kind === "lender")
+      out.push({ kind, lender_id: parseId(a.lender_id) });
+    else if (kind === "guest") {
+      const name = String(a.name || "")
+        .trim()
+        .slice(0, 200);
+      const email = a.email ? normalizeEmail(a.email) : null;
+      const phone = a.phone ? String(a.phone).trim().slice(0, 40) : null;
+      if (!name || (!email && !phone) || (email && !isValidEmail(email)))
+        throw new HttpError(400, "validation.attendeeContact");
+      out.push({
+        kind,
+        name,
+        email,
+        phone,
+        preferred_language: asLang(a.preferred_language),
+      });
+    } else throw new HttpError(400, "validation.invalidField");
+  }
+  return out;
+}
+
+/** Resolve tagged people to concrete contact rows (snapshot on the appointment). */
+async function resolveAttendees(
+  inputs: ApptAttendeeInput[],
+  exec: Pool | PoolConnection = pool,
+) {
+  const rows: Array<{
+    kind: string;
+    admin_id: number | null;
+    contractor_id: number | null;
+    lender_id: number | null;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    preferred_language: Lang;
+  }> = [];
+  const seen = new Set<string>();
+  for (const a of inputs) {
+    const key =
+      a.kind === "guest"
+        ? `guest:${a.email || a.phone}`
+        : `${a.kind}:${(a as any)[`${a.kind}_id`]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (a.kind === "admin") {
+      const [[r]] = (await exec.query<RowDataPacket[]>(
+        `SELECT id, email, phone, first_name, last_name, preferred_language FROM admins WHERE id = ? AND status = 'active' LIMIT 1`,
+        [a.admin_id],
+      )) as unknown as [RowDataPacket[]];
+      if (!r) throw new HttpError(400, "validation.invalidReference");
+      rows.push({
+        kind: "admin",
+        admin_id: Number(r.id),
+        contractor_id: null,
+        lender_id: null,
+        name: `${r.first_name} ${r.last_name}`.trim(),
+        email: r.email ? String(r.email) : null,
+        phone: r.phone ? String(r.phone) : null,
+        preferred_language: asLang(r.preferred_language),
+      });
+    } else if (a.kind === "contractor") {
+      const [[r]] = (await exec.query<RowDataPacket[]>(
+        `SELECT id, email, phone, first_name, last_name, company, preferred_language FROM contractors WHERE id = ? AND status IN ('active','pending','invited') LIMIT 1`,
+        [a.contractor_id],
+      )) as unknown as [RowDataPacket[]];
+      if (!r) throw new HttpError(400, "validation.invalidReference");
+      rows.push({
+        kind: "contractor",
+        admin_id: null,
+        contractor_id: Number(r.id),
+        lender_id: null,
+        name: [`${r.first_name || ""} ${r.last_name || ""}`.trim(), r.company]
+          .filter(Boolean)
+          .join(" · "),
+        email: r.email ? String(r.email) : null,
+        phone: r.phone ? String(r.phone) : null,
+        preferred_language: asLang(r.preferred_language),
+      });
+    } else if (a.kind === "lender") {
+      const [[r]] = (await exec.query<RowDataPacket[]>(
+        `SELECT id, company, contact_name, email, phone, preferred_language FROM lenders WHERE id = ? AND is_active = 1 LIMIT 1`,
+        [a.lender_id],
+      )) as unknown as [RowDataPacket[]];
+      if (!r) throw new HttpError(400, "validation.invalidReference");
+      rows.push({
+        kind: "lender",
+        admin_id: null,
+        contractor_id: null,
+        lender_id: Number(r.id),
+        name: [r.contact_name, r.company].filter(Boolean).join(" · "),
+        email: r.email ? String(r.email) : null,
+        phone: r.phone ? String(r.phone) : null,
+        preferred_language: asLang(r.preferred_language),
+      });
+    } else {
+      rows.push({
+        kind: "guest",
+        admin_id: null,
+        contractor_id: null,
+        lender_id: null,
+        name: a.name,
+        email: a.email ?? null,
+        phone: a.phone ?? null,
+        preferred_language: a.preferred_language ?? "en",
+      });
+    }
+  }
+  return rows;
+}
+
+/** Homeowner contact for an appointment (client first, then lead). */
+async function appointmentHomeowner(
+  clientId: number | null,
+  leadId: number | null,
+  exec: Pool | PoolConnection = pool,
+) {
+  if (clientId) {
+    const [[c]] = (await exec.query<RowDataPacket[]>(
+      `SELECT first_name, last_name, email, phone, preferred_language, address_line1, city, zip FROM clients WHERE id = ? LIMIT 1`,
+      [clientId],
+    )) as unknown as [RowDataPacket[]];
+    if (c)
+      return {
+        name: `${c.first_name} ${c.last_name}`.trim(),
+        email: c.email ? String(c.email) : null,
+        phone: c.phone ? String(c.phone) : null,
+        lang: asLang(c.preferred_language),
+        address:
+          [c.address_line1, c.city, c.zip].filter(Boolean).join(", ") || null,
+      };
+  }
+  if (leadId) {
+    const [[l]] = (await exec.query<RowDataPacket[]>(
+      `SELECT full_name, email, phone, preferred_language, property_address FROM leads WHERE id = ? LIMIT 1`,
+      [leadId],
+    )) as unknown as [RowDataPacket[]];
+    if (l)
+      return {
+        name: String(l.full_name || ""),
+        email: l.email ? String(l.email) : null,
+        phone: l.phone ? String(l.phone) : null,
+        lang: asLang(l.preferred_language),
+        address: l.property_address ? String(l.property_address) : null,
+      };
+  }
+  return null;
+}
+
+async function loadAppointmentFull(
+  id: number,
+  exec: Pool | PoolConnection = pool,
+) {
+  const [[a]] = (await exec.query<RowDataPacket[]>(
+    `SELECT ap.*, CONCAT(c.first_name, ' ', c.last_name) AS client_name, l.full_name AS lead_name, p.public_id AS project_public_id,
+            CONCAT(o.first_name, ' ', o.last_name) AS owner_name
+     FROM appointments ap
+     LEFT JOIN clients c ON c.id = ap.client_id
+     LEFT JOIN leads l ON l.id = ap.lead_id
+     LEFT JOIN projects p ON p.id = ap.project_id
+     LEFT JOIN admins o ON o.id = ap.owner_admin_id
+     WHERE ap.id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) return null;
+  const [att] = await exec.query<RowDataPacket[]>(
+    `SELECT * FROM appointment_attendees WHERE appointment_id = ? ORDER BY id`,
+    [id],
+  );
+  return { a, attendees: att };
+}
+
+function mapAppointment(
+  a: RowDataPacket,
+  attendees: RowDataPacket[],
+  opts: { internal: boolean },
+) {
+  return {
+    id: Number(a.id),
+    title: String(a.title),
+    kind: String(a.kind) as AppointmentKind,
+    starts_at: isoDate(a.starts_at),
+    ends_at: isoDate(a.ends_at),
+    timezone: String(a.timezone),
+    location_type: String(a.location_type),
+    location: a.location ? String(a.location) : null,
+    video_url: a.video_url ? String(a.video_url) : null,
+    description: a.description ? String(a.description) : null,
+    ...(opts.internal ? { notes: a.notes ? String(a.notes) : null } : {}),
+    status: String(a.status),
+    source: String(a.source),
+    notify_homeowner: Number(a.notify_homeowner) === 1,
+    client_id: a.client_id != null ? Number(a.client_id) : null,
+    client_name: a.client_name ? String(a.client_name) : null,
+    lead_id: a.lead_id != null ? Number(a.lead_id) : null,
+    lead_name: a.lead_name ? String(a.lead_name) : null,
+    project_id: a.project_id != null ? Number(a.project_id) : null,
+    project_public_id: a.project_public_id ? String(a.project_public_id) : null,
+    owner_admin_id: a.owner_admin_id != null ? Number(a.owner_admin_id) : null,
+    owner_name: a.owner_name ? String(a.owner_name).trim() : null,
+    cancelled_reason: a.cancelled_reason ? String(a.cancelled_reason) : null,
+    attendees: attendees.map((t) => ({
+      id: Number(t.id),
+      kind: String(t.kind),
+      admin_id: t.admin_id != null ? Number(t.admin_id) : null,
+      contractor_id: t.contractor_id != null ? Number(t.contractor_id) : null,
+      lender_id: t.lender_id != null ? Number(t.lender_id) : null,
+      name: t.name ? String(t.name) : null,
+      ...(opts.internal
+        ? {
+            email: t.email ? String(t.email) : null,
+            phone: t.phone ? String(t.phone) : null,
+            notified_at: isoDate(t.notified_at),
+          }
+        : {}),
+    })),
+  };
+}
+
+type ApptNotice =
+  "created" | "updated" | "cancelled" | "reminder_24h" | "reminder_1h";
+
+/**
+ * Email (+ calendar invite) and text to everyone tagged. Staff, contractors,
+ * lenders, guests and the homeowner (when enabled) each get their own
+ * language; the homeowner link lets them cancel / reschedule.
+ */
+async function notifyAppointment(
+  id: number,
+  event: ApptNotice,
+  opts: { attendeeIds?: number[]; manageToken?: string | null } = {},
+): Promise<number> {
+  const full = await loadAppointmentFull(id);
+  if (!full) return 0;
+  const { a, attendees } = full;
+  const start = new Date(a.starts_at);
+  const end = new Date(a.ends_at);
+  const tz = String(a.timezone || DEFAULT_APPT_TZ);
+  const kind = (APPOINTMENT_KINDS as readonly string[]).includes(String(a.kind))
+    ? (String(a.kind) as AppointmentKind)
+    : "other";
+  const who = String(a.client_name || a.lead_name || "").trim();
+  const cancelled = event === "cancelled";
+  const targets = attendees.filter(
+    (t) => !opts.attendeeIds || opts.attendeeIds.includes(Number(t.id)),
+  );
+  const locationText = (l: Lang) =>
+    [
+      APPT_LOCATION_LABEL[
+        a.location_type as keyof typeof APPT_LOCATION_LABEL
+      ]?.[l],
+      a.location,
+      a.location_type === "video" ? a.video_url : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  let sent = 0;
+  for (const t of targets) {
+    const l = asLang(t.preferred_language);
+    const when = formatApptWhen(start, end, tz, l);
+    const title = String(a.title);
+    const subject = {
+      created: tr(
+        l,
+        `Appointment: ${title} · ${when}`,
+        `Cita: ${title} · ${when}`,
+      ),
+      updated: tr(
+        l,
+        `Updated appointment: ${title} · ${when}`,
+        `Cita actualizada: ${title} · ${when}`,
+      ),
+      cancelled: tr(
+        l,
+        `Cancelled: ${title} · ${when}`,
+        `Cancelada: ${title} · ${when}`,
+      ),
+      reminder_24h: tr(
+        l,
+        `Tomorrow: ${title} · ${when}`,
+        `Mañana: ${title} · ${when}`,
+      ),
+      reminder_1h: tr(l, `In 1 hour: ${title}`, `En 1 hora: ${title}`),
+    }[event];
+    const lead = {
+      created: tr(
+        l,
+        "You're on the schedule for this appointment.",
+        "Estás agendado para esta cita.",
+      ),
+      updated: tr(
+        l,
+        "This appointment changed. The details below are current.",
+        "Esta cita cambió. Estos son los datos actuales.",
+      ),
+      cancelled: tr(
+        l,
+        "This appointment was cancelled.",
+        "Esta cita fue cancelada.",
+      ),
+      reminder_24h: tr(
+        l,
+        "A reminder about your appointment tomorrow.",
+        "Un recordatorio de tu cita de mañana.",
+      ),
+      reminder_1h: tr(
+        l,
+        "Your appointment starts in about an hour.",
+        "Tu cita empieza en aproximadamente una hora.",
+      ),
+    }[event];
+    const isHomeowner = t.kind === "homeowner";
+    const manageUrl =
+      isHomeowner && opts.manageToken
+        ? `${APP_URL}/appointment/${opts.manageToken}`
+        : null;
+    const cta =
+      t.kind === "admin"
+        ? {
+            url: `${APP_URL}/admin/calendar?appointment=${id}`,
+            label: tr(l, "Open in calendar", "Abrir en el calendario"),
+          }
+        : t.kind === "contractor"
+          ? {
+              url: `${APP_URL}/contractor/appointments`,
+              label: tr(l, "Open my appointments", "Abrir mis citas"),
+            }
+          : manageUrl && !cancelled
+            ? {
+                url: manageUrl,
+                label: tr(l, "Reschedule or cancel", "Reagendar o cancelar"),
+              }
+            : undefined;
+    const details: Array<[string, string]> = [
+      [tr(l, "When", "Cuándo"), when],
+      [tr(l, "What", "Qué"), APPT_KIND_LABEL[kind][l]],
+      ...(locationText(l)
+        ? ([[tr(l, "Where", "Dónde"), locationText(l)]] as Array<
+            [string, string]
+          >)
+        : []),
+      ...(who && !isHomeowner
+        ? ([[tr(l, "Homeowner", "Propietario"), who]] as Array<
+            [string, string]
+          >)
+        : []),
+      ...(a.owner_name
+        ? ([[tr(l, "With", "Con"), String(a.owner_name).trim()]] as Array<
+            [string, string]
+          >)
+        : []),
+    ];
+    if (t.email) {
+      const ics = buildAppointmentIcs({
+        uid: String(a.ics_uid),
+        sequence: Number(a.ics_sequence || 0),
+        start,
+        end,
+        title: `${title}${who && !isHomeowner ? ` · ${who}` : ""}`,
+        description:
+          [a.description, manageUrl].filter(Boolean).join("\n\n") || null,
+        location: locationText(l) || null,
+        url: manageUrl,
+        cancelled,
+      });
+      const tpl = tplPortalNotice({
+        lang: l,
+        subject,
+        headline: cancelled
+          ? tr(l, "Appointment cancelled", "Cita cancelada")
+          : title,
+        paragraphs: [
+          lead,
+          ...(a.description && !cancelled ? [String(a.description)] : []),
+          ...(cancelled && a.cancelled_reason
+            ? [String(a.cancelled_reason)]
+            : []),
+          ...(!cancelled
+            ? [
+                tr(
+                  l,
+                  "The calendar invite is attached. Open it to add this to your calendar.",
+                  "La invitación de calendario va adjunta. Ábrela para agregarla a tu calendario.",
+                ),
+              ]
+            : []),
+        ],
+        details,
+        ...(cta ? { cta } : {}),
+      });
+      try {
+        const r = await sendEmail({
+          to: String(t.email),
+          subject: tpl.subject,
+          html: tpl.html,
+          attachments: [
+            {
+              filename: cancelled ? "cancelled.ics" : "invite.ics",
+              content: ics,
+              contentType: `text/calendar; charset=utf-8; method=${cancelled ? "CANCEL" : "REQUEST"}`,
+            },
+          ],
+        });
+        if (r.ok) sent++;
+      } catch (e: any) {
+        console.warn("[appointments] email failed:", e?.message ?? e);
+      }
+    }
+    if (t.phone && event !== "reminder_24h") {
+      const from = await resolveCampaignSmsFrom();
+      if (from) {
+        const body = `Groundwork Capital: ${subject}${locationText(l) ? ` · ${locationText(l)}` : ""}${manageUrl && !cancelled ? ` · ${manageUrl}` : ""}`;
+        try {
+          await sendSms({
+            to: String(t.phone),
+            from,
+            body: body.slice(0, 600),
+          });
+        } catch (e: any) {
+          console.warn("[appointments] SMS failed:", e?.message ?? e);
+        }
+      }
+    }
+    if (event === "created" || event === "updated") {
+      await pool.execute(
+        `UPDATE appointment_attendees SET notified_at = NOW() WHERE id = ?`,
+        [Number(t.id)],
+      );
+    }
+  }
+  return sent;
+}
+
+type AppointmentInput = {
+  title?: unknown;
+  kind?: unknown;
+  date?: unknown;
+  start?: unknown;
+  duration_minutes?: unknown;
+  timezone?: unknown;
+  location_type?: unknown;
+  location?: unknown;
+  video_url?: unknown;
+  description?: unknown;
+  notes?: unknown;
+  client_id?: unknown;
+  lead_id?: unknown;
+  project_id?: unknown;
+  owner_admin_id?: unknown;
+  notify_homeowner?: unknown;
+  attendees?: unknown;
+};
+
+function parseApptTiming(b: AppointmentInput, fallbackTz = DEFAULT_APPT_TZ) {
+  const tz = String(b.timezone || fallbackTz).trim();
+  if (!isValidTimeZone(tz)) throw new HttpError(400, "validation.invalidField");
+  const date = String(b.date || "");
+  const time = String(b.start || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time))
+    throw new HttpError(400, "validation.appointmentTime");
+  const minutes = Math.round(Number(b.duration_minutes ?? 60));
+  if (!Number.isFinite(minutes) || minutes < 10 || minutes > 12 * 60)
+    throw new HttpError(400, "validation.appointmentTime");
+  const start = zonedTimeToUtc(date, time, tz);
+  if (Number.isNaN(start.getTime()))
+    throw new HttpError(400, "validation.appointmentTime");
+  return { tz, start, end: new Date(start.getTime() + minutes * 60000) };
+}
+
+/** Overlapping scheduled appointments for the same owner / tagged staff / contractor (warnings, not blocks). */
+async function appointmentConflicts(opts: {
+  start: Date;
+  end: Date;
+  ownerAdminId: number | null;
+  attendees: Array<{ admin_id: number | null; contractor_id: number | null }>;
+  excludeId?: number | null;
+}) {
+  const adminIds = [
+    ...new Set(
+      [opts.ownerAdminId, ...opts.attendees.map((x) => x.admin_id)].filter(
+        (x): x is number => !!x,
+      ),
+    ),
+  ];
+  const contractorIds = [
+    ...new Set(
+      opts.attendees
+        .map((x) => x.contractor_id)
+        .filter((x): x is number => !!x),
+    ),
+  ];
+  if (!adminIds.length && !contractorIds.length) return [];
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT DISTINCT ap.id, ap.title, ap.starts_at, ap.ends_at FROM appointments ap
+     LEFT JOIN appointment_attendees t ON t.appointment_id = ap.id
+     WHERE ap.status = 'scheduled' AND ap.starts_at < ? AND ap.ends_at > ? AND ap.id <> ?
+       AND (ap.owner_admin_id IN (?) OR t.admin_id IN (?) OR t.contractor_id IN (?))
+     LIMIT 5`,
+    [
+      opts.end,
+      opts.start,
+      opts.excludeId ?? 0,
+      adminIds.length ? adminIds : [0],
+      adminIds.length ? adminIds : [0],
+      contractorIds.length ? contractorIds : [0],
+    ],
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    title: String(r.title),
+    starts_at: isoDate(r.starts_at),
+    ends_at: isoDate(r.ends_at),
+  }));
+}
+
+/** Create (staff or booking). Returns id + one-time homeowner manage token. */
+export async function createAppointment(
+  b: AppointmentInput,
+  opts: {
+    adminId: number | null;
+    source: "staff" | "booking";
+    attendees?: ApptAttendeeInput[];
+  },
+) {
+  const kind = (APPOINTMENT_KINDS as readonly string[]).includes(String(b.kind))
+    ? (String(b.kind) as AppointmentKind)
+    : "consultation";
+  const locationType = (
+    APPOINTMENT_LOCATION_TYPES as readonly string[]
+  ).includes(String(b.location_type))
+    ? String(b.location_type)
+    : "onsite";
+  const { tz, start, end } = parseApptTiming(b);
+  const clientId = b.client_id ? parseId(b.client_id) : null;
+  const leadId = b.lead_id ? parseId(b.lead_id) : null;
+  let projectId = b.project_id ? parseId(b.project_id) : null;
+  let clientFromProject: number | null = null;
+  if (projectId) {
+    const [[p]] = (await pool.query<RowDataPacket[]>(
+      `SELECT id, client_id FROM projects WHERE id = ? LIMIT 1`,
+      [projectId],
+    )) as unknown as [RowDataPacket[]];
+    if (!p) throw new HttpError(400, "validation.invalidReference");
+    clientFromProject = p.client_id != null ? Number(p.client_id) : null;
+  }
+  const effClient = clientId ?? clientFromProject;
+  if (effClient && !projectId) {
+    const [[p]] = (await pool.query<RowDataPacket[]>(
+      `SELECT id FROM projects WHERE client_id = ? ORDER BY id DESC LIMIT 1`,
+      [effClient],
+    )) as unknown as [RowDataPacket[]];
+    projectId = p ? Number(p.id) : null;
+  }
+  const home = await appointmentHomeowner(effClient, leadId);
+  const ownerAdminId = b.owner_admin_id
+    ? parseId(b.owner_admin_id)
+    : opts.adminId;
+  const inputs = opts.attendees ?? parseAttendeeInputs(b.attendees);
+  if (
+    ownerAdminId &&
+    !inputs.some((x) => x.kind === "admin" && x.admin_id === ownerAdminId)
+  )
+    inputs.unshift({ kind: "admin", admin_id: ownerAdminId });
+  const people = await resolveAttendees(inputs);
+  const notifyHome =
+    b.notify_homeowner !== false && b.notify_homeowner !== "false";
+  const title =
+    String(b.title || "")
+      .trim()
+      .slice(0, 200) ||
+    `${APPT_KIND_LABEL[kind].en}${home?.name ? ` · ${home.name}` : ""}`;
+  const location =
+    String(b.location || "")
+      .trim()
+      .slice(0, 500) ||
+    (locationType === "onsite" ? (home?.address ?? null) : null);
+  const manageToken =
+    notifyHome && home && (home.email || home.phone)
+      ? crypto.randomBytes(24).toString("hex")
+      : null;
+  const conflicts = await appointmentConflicts({
+    start,
+    end,
+    ownerAdminId,
+    attendees: people,
+  });
+
+  const id = await withTx(async (conn) => {
+    const [ins] = await conn.execute<ResultSetHeader>(
+      `INSERT INTO appointments (title, kind, starts_at, ends_at, timezone, location_type, location, video_url, description, notes,
+         client_id, lead_id, project_id, owner_admin_id, source, notify_homeowner, manage_token_hash, ics_uid, created_by_admin_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        title,
+        kind,
+        start,
+        end,
+        tz,
+        locationType,
+        location,
+        String(b.video_url || "")
+          .trim()
+          .slice(0, 500) || null,
+        String(b.description || "")
+          .trim()
+          .slice(0, 4000) || null,
+        String(b.notes || "")
+          .trim()
+          .slice(0, 4000) || null,
+        effClient,
+        leadId,
+        projectId,
+        ownerAdminId,
+        opts.source,
+        notifyHome ? 1 : 0,
+        manageToken ? sha256(manageToken) : null,
+        `gw-appt-${crypto.randomUUID()}@groundworkcapitalgroup.com`,
+        opts.source === "staff" ? opts.adminId : null,
+      ],
+    );
+    const apptId = Number(ins.insertId);
+    for (const p of people) {
+      await conn.execute(
+        `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          apptId,
+          p.kind,
+          p.admin_id,
+          p.contractor_id,
+          p.lender_id,
+          p.name,
+          p.email,
+          p.phone,
+          p.preferred_language,
+        ],
+      );
+    }
+    if (notifyHome && home && (home.email || home.phone)) {
+      await conn.execute(
+        `INSERT INTO appointment_attendees (appointment_id, kind, name, email, phone, preferred_language) VALUES (?, 'homeowner', ?, ?, ?, ?)`,
+        [apptId, home.name || null, home.email, home.phone, home.lang],
+      );
+    }
+    return apptId;
+  });
+  await notifyAppointment(id, "created", { manageToken });
+  return { id, conflicts, manageToken };
+}
+
+/** Staff edit: time / place / people. Changed attendees get the right notice. */
+async function updateAppointment(
+  id: number,
+  b: AppointmentInput,
+  adminId: number,
+) {
+  const full = await loadAppointmentFull(id);
+  if (!full) throw new HttpError(404, "errors.notFound");
+  const { a, attendees } = full;
+  if (String(a.status) === "cancelled")
+    throw new HttpError(409, "errors.appointmentCancelled");
+  const sets: string[] = [];
+  const params: any[] = [];
+  let timeChanged = false;
+  let whereChanged = false;
+  if (
+    b.date !== undefined ||
+    b.start !== undefined ||
+    b.duration_minutes !== undefined ||
+    b.timezone !== undefined
+  ) {
+    const cur = utcToZoned(new Date(a.starts_at), String(a.timezone));
+    const tz = String(b.timezone || a.timezone);
+    const { start, end } = parseApptTiming({
+      date: b.date ?? utcToZoned(new Date(a.starts_at), tz).date ?? cur.date,
+      start: b.start ?? utcToZoned(new Date(a.starts_at), tz).time,
+      duration_minutes:
+        b.duration_minutes ??
+        Math.round(
+          (new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) /
+            60000,
+        ),
+      timezone: tz,
+    });
+    if (
+      start.getTime() !== new Date(a.starts_at).getTime() ||
+      end.getTime() !== new Date(a.ends_at).getTime() ||
+      tz !== String(a.timezone)
+    ) {
+      timeChanged = true;
+      sets.push(
+        "starts_at = ?",
+        "ends_at = ?",
+        "timezone = ?",
+        "reminder_24h_sent_at = NULL",
+        "reminder_1h_sent_at = NULL",
+      );
+      params.push(start, end, tz);
+    }
+  }
+  const text = (k: keyof AppointmentInput, max: number, col = String(k)) => {
+    if (b[k] === undefined) return;
+    const v =
+      String(b[k] ?? "")
+        .trim()
+        .slice(0, max) || null;
+    if ((a[col] ?? null) !== v) {
+      sets.push(`${col} = ?`);
+      params.push(v);
+      if (["location", "video_url"].includes(col)) whereChanged = true;
+    }
+  };
+  if (
+    b.kind !== undefined &&
+    (APPOINTMENT_KINDS as readonly string[]).includes(String(b.kind))
+  ) {
+    sets.push("kind = ?");
+    params.push(String(b.kind));
+  }
+  if (
+    b.location_type !== undefined &&
+    (APPOINTMENT_LOCATION_TYPES as readonly string[]).includes(
+      String(b.location_type),
+    ) &&
+    String(b.location_type) !== String(a.location_type)
+  ) {
+    sets.push("location_type = ?");
+    params.push(String(b.location_type));
+    whereChanged = true;
+  }
+  text("title", 200);
+  text("location", 500);
+  text("video_url", 500);
+  text("description", 4000);
+  text("notes", 4000);
+  if (b.owner_admin_id !== undefined) {
+    sets.push("owner_admin_id = ?");
+    params.push(b.owner_admin_id ? parseId(b.owner_admin_id) : null);
+  }
+  // Who it's for (search picker): a project implies its client; null clears the link.
+  if (b.client_id !== undefined || b.lead_id !== undefined || b.project_id !== undefined) {
+    let projectId = b.project_id ? parseId(b.project_id) : null;
+    let clientId = b.client_id ? parseId(b.client_id) : null;
+    const leadId = b.lead_id ? parseId(b.lead_id) : null;
+    if (projectId) {
+      const [[pr]] = (await pool.execute<RowDataPacket[]>(`SELECT id, client_id FROM projects WHERE id = ? LIMIT 1`, [projectId])) as unknown as [RowDataPacket[]];
+      if (!pr) throw new HttpError(404, "errors.notFound");
+      clientId = pr.client_id != null ? Number(pr.client_id) : clientId;
+    } else if (clientId) {
+      projectId = null;
+    }
+    sets.push("client_id = ?", "lead_id = ?", "project_id = ?");
+    params.push(clientId, clientId || projectId ? null : leadId, projectId);
+  }
+  const material = timeChanged || whereChanged;
+  if (material) sets.push("ics_sequence = ics_sequence + 1");
+  if (sets.length)
+    await pool.query(
+      `UPDATE appointments SET ${sets.join(", ")} WHERE id = ?`,
+      [...params, id],
+    );
+
+  // Attendee changes (homeowner row is managed by notify_homeowner).
+  const added: number[] = [];
+  let removed: RowDataPacket[] = [];
+  if (b.attendees !== undefined) {
+    const inputs = parseAttendeeInputs(b.attendees);
+    // The owner always stays on their own appointment (same as create).
+    const owner =
+      b.owner_admin_id !== undefined
+        ? b.owner_admin_id
+          ? parseId(b.owner_admin_id)
+          : null
+        : a.owner_admin_id != null
+          ? Number(a.owner_admin_id)
+          : null;
+    if (
+      owner &&
+      !inputs.some((x) => x.kind === "admin" && x.admin_id === owner)
+    )
+      inputs.unshift({ kind: "admin", admin_id: owner });
+    const wanted = await resolveAttendees(inputs);
+    const keyOf = (x: {
+      kind: string;
+      admin_id?: unknown;
+      contractor_id?: unknown;
+      lender_id?: unknown;
+      email?: unknown;
+      phone?: unknown;
+    }) =>
+      x.kind === "guest"
+        ? `guest:${x.email || x.phone}`
+        : `${x.kind}:${x.admin_id ?? x.contractor_id ?? x.lender_id}`;
+    const current = attendees.filter((t) => t.kind !== "homeowner");
+    const wantKeys = new Set(wanted.map(keyOf));
+    const curKeys = new Set(current.map((t) => keyOf(t as any)));
+    removed = current.filter((t) => !wantKeys.has(keyOf(t as any)));
+    for (const p of wanted.filter((w) => !curKeys.has(keyOf(w)))) {
+      const [ins] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          p.kind,
+          p.admin_id,
+          p.contractor_id,
+          p.lender_id,
+          p.name,
+          p.email,
+          p.phone,
+          p.preferred_language,
+        ],
+      );
+      added.push(Number(ins.insertId));
+    }
+  }
+  if (removed.length) {
+    // They get a cancellation for their copy before the row goes away.
+    await pool.execute(
+      `UPDATE appointments SET ics_sequence = ics_sequence + 1 WHERE id = ?`,
+      [id],
+    );
+    await notifyAppointment(id, "cancelled", {
+      attendeeIds: removed.map((r) => Number(r.id)),
+    });
+    await pool.query(`DELETE FROM appointment_attendees WHERE id IN (?)`, [
+      removed.map((r) => Number(r.id)),
+    ]);
+  }
+  if (b.notify_homeowner !== undefined) {
+    const want = b.notify_homeowner === true || b.notify_homeowner === "true";
+    await pool.execute(
+      `UPDATE appointments SET notify_homeowner = ? WHERE id = ?`,
+      [want ? 1 : 0, id],
+    );
+    const hasRow = attendees.some((t) => t.kind === "homeowner");
+    if (!want && hasRow)
+      await pool.execute(
+        `DELETE FROM appointment_attendees WHERE appointment_id = ? AND kind = 'homeowner'`,
+        [id],
+      );
+  }
+  if (material) {
+    const others = (await loadAppointmentFull(id))!.attendees
+      .map((t) => Number(t.id))
+      .filter((x) => !added.includes(x));
+    if (others.length)
+      await notifyAppointment(id, "updated", { attendeeIds: others });
+  }
+  if (added.length)
+    await notifyAppointment(id, "created", { attendeeIds: added });
+  void adminId;
+  const fresh = (await loadAppointmentFull(id))!;
+  const conflicts = timeChanged
+    ? await appointmentConflicts({
+        start: new Date(fresh.a.starts_at),
+        end: new Date(fresh.a.ends_at),
+        ownerAdminId: fresh.a.owner_admin_id,
+        attendees: fresh.attendees as any,
+        excludeId: id,
+      })
+    : [];
+  return {
+    appointment: mapAppointment(fresh.a, fresh.attendees, { internal: true }),
+    conflicts,
+  };
+}
+
+async function cancelAppointment(id: number, reason: string | null) {
+  const full = await loadAppointmentFull(id);
+  if (!full) throw new HttpError(404, "errors.notFound");
+  if (String(full.a.status) === "cancelled") return;
+  await pool.execute(
+    `UPDATE appointments SET status = 'cancelled', cancelled_reason = ?, cancelled_at = NOW(), ics_sequence = ics_sequence + 1 WHERE id = ?`,
+    [reason ? reason.slice(0, 500) : null, id],
+  );
+  await notifyAppointment(id, "cancelled");
+}
+
+/** Every 15 min: 24h and 1h reminders (skipped when booked inside that window). */
+export async function runAppointmentReminders(
+  now = new Date(),
+  /** Tests scope the sweep to their own appointments (shared DB). */
+  onlyIds?: number[],
+): Promise<{ reminded_24h: number; reminded_1h: number }> {
+  const out = { reminded_24h: 0, reminded_1h: 0 };
+  const scope = onlyIds
+    ? ` AND id IN (${onlyIds.length ? onlyIds.map(Number).join(",") : "0"})`
+    : "";
+  const [due24] = await pool.query<RowDataPacket[]>(
+    `SELECT id, created_at, starts_at FROM appointments
+     WHERE status = 'scheduled' AND reminder_24h_sent_at IS NULL AND starts_at > ? AND starts_at <= ?${scope}`,
+    [
+      new Date(now.getTime() + 2 * 3600_000),
+      new Date(now.getTime() + 24 * 3600_000),
+    ],
+  );
+  for (const r of due24) {
+    await pool.execute(
+      `UPDATE appointments SET reminder_24h_sent_at = NOW() WHERE id = ? AND reminder_24h_sent_at IS NULL`,
+      [r.id],
+    );
+    if (
+      new Date(r.created_at).getTime() <=
+      new Date(r.starts_at).getTime() - 24 * 3600_000
+    ) {
+      await notifyAppointment(Number(r.id), "reminder_24h");
+      out.reminded_24h++;
+    }
+  }
+  const [due1] = await pool.query<RowDataPacket[]>(
+    `SELECT id, created_at, starts_at FROM appointments
+     WHERE status = 'scheduled' AND reminder_1h_sent_at IS NULL AND starts_at > ? AND starts_at <= ?${scope}`,
+    [now, new Date(now.getTime() + 75 * 60000)],
+  );
+  for (const r of due1) {
+    await pool.execute(
+      `UPDATE appointments SET reminder_1h_sent_at = NOW() WHERE id = ? AND reminder_1h_sent_at IS NULL`,
+      [r.id],
+    );
+    if (
+      new Date(r.created_at).getTime() <=
+      new Date(r.starts_at).getTime() - 2 * 3600_000
+    ) {
+      await notifyAppointment(Number(r.id), "reminder_1h");
+      out.reminded_1h++;
+    }
+  }
+  return out;
+}
+
+// ── Booking links (per staff) ──
+
+type SchedulerConfig = {
+  admin_id: number;
+  is_enabled: boolean;
+  slug: string;
+  title_en: string;
+  title_es: string;
+  description_en: string | null;
+  description_es: string | null;
+  kind: AppointmentKind;
+  duration_minutes: number;
+  buffer_minutes: number;
+  advance_days: number;
+  min_notice_hours: number;
+  timezone: string;
+  allow_phone: boolean;
+  allow_video: boolean;
+  allow_office: boolean;
+  allow_onsite: boolean;
+  video_url: string | null;
+  availability: Array<{
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+  }>;
+};
+
+async function loadSchedulerConfig(
+  where: { adminId?: number; slug?: string },
+  createIfMissing = false,
+): Promise<SchedulerConfig | null> {
+  const [[row]] = (await pool.query<RowDataPacket[]>(
+    where.adminId
+      ? `SELECT * FROM scheduler_settings WHERE admin_id = ? LIMIT 1`
+      : `SELECT * FROM scheduler_settings WHERE slug = ? LIMIT 1`,
+    [where.adminId ?? String(where.slug || "").toLowerCase()],
+  )) as unknown as [RowDataPacket[]];
+  let r = row;
+  if (!r && where.adminId && createIfMissing) {
+    const [[adm]] = (await pool.query<RowDataPacket[]>(
+      `SELECT first_name, last_name FROM admins WHERE id = ? LIMIT 1`,
+      [where.adminId],
+    )) as unknown as [RowDataPacket[]];
+    const base =
+      slugifyText(`${adm?.first_name || "team"}-${adm?.last_name || ""}`) ||
+      `team-${where.adminId}`;
+    let slug = base;
+    for (let i = 2; i < 50; i++) {
+      const [[taken]] = (await pool.query<RowDataPacket[]>(
+        `SELECT admin_id FROM scheduler_settings WHERE slug = ? LIMIT 1`,
+        [slug],
+      )) as unknown as [RowDataPacket[]];
+      if (!taken) break;
+      slug = `${base}-${i}`;
+    }
+    await pool.execute(
+      `INSERT IGNORE INTO scheduler_settings (admin_id, slug) VALUES (?, ?)`,
+      [where.adminId, slug],
+    );
+    for (const d of [1, 2, 3, 4, 5]) {
+      await pool.execute(
+        `INSERT INTO scheduler_availability (admin_id, day_of_week, start_time, end_time) VALUES (?, ?, '09:00', '17:00')`,
+        [where.adminId, d],
+      );
+    }
+    return loadSchedulerConfig(where, false);
+  }
+  if (!r) return null;
+  const [av] = await pool.query<RowDataPacket[]>(
+    `SELECT day_of_week, TIME_FORMAT(start_time, '%H:%i') s, TIME_FORMAT(end_time, '%H:%i') e FROM scheduler_availability WHERE admin_id = ? ORDER BY day_of_week, start_time`,
+    [r.admin_id],
+  );
+  return {
+    admin_id: Number(r.admin_id),
+    is_enabled: Number(r.is_enabled) === 1,
+    slug: String(r.slug),
+    title_en: String(r.title_en),
+    title_es: String(r.title_es),
+    description_en: r.description_en ? String(r.description_en) : null,
+    description_es: r.description_es ? String(r.description_es) : null,
+    kind: String(r.kind) as AppointmentKind,
+    duration_minutes: Number(r.duration_minutes),
+    buffer_minutes: Number(r.buffer_minutes),
+    advance_days: Number(r.advance_days),
+    min_notice_hours: Number(r.min_notice_hours),
+    timezone: String(r.timezone),
+    allow_phone: Number(r.allow_phone) === 1,
+    allow_video: Number(r.allow_video) === 1,
+    allow_office: Number(r.allow_office) === 1,
+    allow_onsite: Number(r.allow_onsite) === 1,
+    video_url: r.video_url ? String(r.video_url) : null,
+    availability: av.map((x) => ({
+      day_of_week: Number(x.day_of_week),
+      start_time: String(x.s),
+      end_time: String(x.e),
+    })),
+  };
+}
+
+function slugifyText(v: string): string {
+  return v
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+/** Open start times (HH:mm, local) for a day — availability minus busy, blocks, notice, horizon. */
+export async function bookingSlots(
+  cfg: SchedulerConfig,
+  date: string,
+  now = new Date(),
+): Promise<string[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+    throw new HttpError(400, "validation.appointmentTime");
+  const tz = cfg.timezone;
+  const dayStart = zonedTimeToUtc(date, "00:00", tz);
+  const horizon = new Date(now.getTime() + cfg.advance_days * 86400_000);
+  const earliest = new Date(now.getTime() + cfg.min_notice_hours * 3600_000);
+  if (dayStart > horizon) return [];
+  const dow = utcToZoned(new Date(dayStart.getTime() + 12 * 3600_000), tz).dow;
+  const windows = cfg.availability.filter((w) => w.day_of_week === dow);
+  if (!windows.length) return [];
+  const dayEnd = new Date(zonedTimeToUtc(date, "23:59", tz).getTime() + 60000);
+  const buffer = cfg.buffer_minutes * 60000;
+  const [busy] = await pool.query<RowDataPacket[]>(
+    `SELECT DISTINCT ap.starts_at, ap.ends_at FROM appointments ap
+     LEFT JOIN appointment_attendees t ON t.appointment_id = ap.id AND t.admin_id = ?
+     WHERE ap.status = 'scheduled' AND ap.starts_at < ? AND ap.ends_at > ? AND (ap.owner_admin_id = ? OR t.id IS NOT NULL)`,
+    [
+      cfg.admin_id,
+      new Date(dayEnd.getTime() + buffer),
+      new Date(dayStart.getTime() - buffer),
+      cfg.admin_id,
+    ],
+  );
+  const [blocks] = await pool.query<RowDataPacket[]>(
+    `SELECT starts_at, ends_at FROM scheduler_blocked_ranges WHERE admin_id = ? AND starts_at < ? AND ends_at > ?`,
+    [cfg.admin_id, dayEnd, dayStart],
+  );
+  const taken = [
+    ...busy.map((b) => [
+      new Date(b.starts_at).getTime() - buffer,
+      new Date(b.ends_at).getTime() + buffer,
+    ]),
+    ...blocks.map((b) => [
+      new Date(b.starts_at).getTime(),
+      new Date(b.ends_at).getTime(),
+    ]),
+  ];
+  const dur = cfg.duration_minutes * 60000;
+  const step = Math.max(15, Math.min(cfg.duration_minutes, 60)) * 60000;
+  const out: string[] = [];
+  for (const w of windows) {
+    const ws = zonedTimeToUtc(date, w.start_time, tz).getTime();
+    const we = zonedTimeToUtc(date, w.end_time, tz).getTime();
+    for (let t = ws; t + dur <= we; t += step) {
+      if (t < earliest.getTime() || t > horizon.getTime()) continue;
+      if (taken.some(([s, e]) => t < e && t + dur > s)) continue;
+      out.push(utcToZoned(new Date(t), tz).time);
+    }
+  }
+  return [...new Set(out)].sort();
+}
+
+/** Match a booker to a client or lead (one person per email / phone), else create a lead. */
+async function bookingPerson(input: {
+  name: string;
+  email: string;
+  phone: string;
+  address: string | null;
+  lang: Lang;
+}) {
+  const matches = await findPersonMatches({
+    email: input.email,
+    phone: input.phone,
+  });
+  const client = matches.find((m) => m.entity === "client");
+  if (client) return { client_id: client.id, lead_id: null };
+  const phone10 = normalizePhoneLast10(input.phone) || "x";
+  const [[lead]] = (await pool.query<RowDataPacket[]>(
+    `SELECT id FROM leads WHERE (email = ? OR ${phone10Sql("phone")} = ?) AND status <> 'spam' ORDER BY id DESC LIMIT 1`,
+    [input.email, phone10],
+  )) as unknown as [RowDataPacket[]];
+  if (lead) return { client_id: null, lead_id: Number(lead.id) };
+  const parts = input.name.trim().split(/\s+/);
+  const [ins] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO leads (first_name, last_name, full_name, email, phone, property_address, preferred_language, source, status, mode, last_submitted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'booking', 'new', 'standard', NOW())`,
+    [
+      parts[0] || input.name,
+      parts.slice(1).join(" ") || null,
+      input.name,
+      input.email,
+      input.phone,
+      input.address,
+      input.lang,
+    ],
+  );
+  return { client_id: null, lead_id: Number(ins.insertId) };
+}
+
+async function loadAppointmentByToken(token: string) {
+  if (!/^[a-f0-9]{48}$/.test(token)) return null;
+  const [[a]] = (await pool.query<RowDataPacket[]>(
+    `SELECT id FROM appointments WHERE manage_token_hash = ? LIMIT 1`,
+    [sha256(token)],
+  )) as unknown as [RowDataPacket[]];
+  return a ? loadAppointmentFull(Number(a.id)) : null;
+}
+
+function registerSchedulerRoutes(app: Express) {
+  const bookLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  const readLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // ── Lenders directory ──
+  const mapLender = (r: RowDataPacket) => ({
+    id: Number(r.id),
+    company: String(r.company),
+    contact_name: r.contact_name ? String(r.contact_name) : null,
+    email: r.email ? String(r.email) : null,
+    phone: r.phone ? String(r.phone) : null,
+    preferred_language: asLang(r.preferred_language),
+    notes: r.notes ? String(r.notes) : null,
+    is_active: Number(r.is_active) === 1,
+    project_count: Number(r.project_count || 0),
+  });
+  const listLenders = async () => {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT l.*, (SELECT COUNT(*) FROM projects p WHERE p.lender_id = l.id) AS project_count FROM lenders l ORDER BY l.is_active DESC, l.company`,
+    );
+    return rows.map(mapLender);
+  };
+  const lenderBody = (b: any) => {
+    const company = String(b?.company || "")
+      .trim()
+      .slice(0, 200);
+    if (company.length < 2)
+      throw new HttpError(400, "validation.lenderCompany");
+    const email = b?.email ? normalizeEmail(b.email) : null;
+    if (email && !isValidEmail(email))
+      throw new HttpError(400, "validation.emailInvalid");
+    return [
+      company,
+      String(b?.contact_name || "")
+        .trim()
+        .slice(0, 200) || null,
+      email,
+      String(b?.phone || "")
+        .trim()
+        .slice(0, 40) || null,
+      asLang(b?.preferred_language),
+      String(b?.notes || "")
+        .trim()
+        .slice(0, 2000) || null,
+      b?.is_active === false ? 0 : 1,
+    ];
+  };
+  app.get(
+    "/api/admin/lenders",
+    requireAdmin("projects.read"),
+    route(async (_req, res) =>
+      res.json({ ok: true, lenders: await listLenders() }),
+    ),
+  );
+  app.post(
+    "/api/admin/lenders",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      await pool.execute(
+        `INSERT INTO lenders (company, contact_name, email, phone, preferred_language, notes, is_active, created_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [...lenderBody(req.body), portalUser(res).id],
+      );
+      res.status(201).json({ ok: true, lenders: await listLenders() });
+    }),
+  );
+  app.put(
+    "/api/admin/lenders/:id",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE lenders SET company = ?, contact_name = ?, email = ?, phone = ?, preferred_language = ?, notes = ?, is_active = ? WHERE id = ?`,
+        [...lenderBody(req.body), parseId(req.params.id)],
+      );
+      if (!r.affectedRows) throw new HttpError(404, "errors.notFound");
+      // Projects keep the display name in sync.
+      await pool.execute(
+        `UPDATE projects p JOIN lenders l ON l.id = p.lender_id SET p.loan_lender_name = l.company WHERE l.id = ?`,
+        [parseId(req.params.id)],
+      );
+      res.json({ ok: true, lenders: await listLenders() });
+    }),
+  );
+
+  // ── Appointments (staff) ──
+  app.get(
+    "/api/admin/appointments",
+    requireAdmin("projects.read"),
+    route(async (req, res) => {
+      const from =
+        asDate(req.query.from) || new Date(Date.now() - 7 * 86400_000);
+      const to =
+        asDate(req.query.to) || new Date(from.getTime() + 42 * 86400_000);
+      if (to.getTime() - from.getTime() > 120 * 86400_000)
+        throw new HttpError(400, "validation.invalidField");
+      const where = ["ap.starts_at < ?", "ap.ends_at > ?"];
+      const params: unknown[] = [to, from];
+      const num = (k: string) => (req.query[k] ? parseId(req.query[k]) : null);
+      if (num("client_id")) {
+        where.push("ap.client_id = ?");
+        params.push(num("client_id"));
+      }
+      if (num("project_id")) {
+        where.push("ap.project_id = ?");
+        params.push(num("project_id"));
+      }
+      if (num("lead_id")) {
+        where.push("ap.lead_id = ?");
+        params.push(num("lead_id"));
+      }
+      if (num("admin_id")) {
+        where.push(
+          "(ap.owner_admin_id = ? OR EXISTS (SELECT 1 FROM appointment_attendees t WHERE t.appointment_id = ap.id AND t.admin_id = ?))",
+        );
+        params.push(num("admin_id"), num("admin_id"));
+      }
+      if (req.query.include_cancelled !== "1")
+        where.push("ap.status <> 'cancelled'");
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ap.*, CONCAT(c.first_name, ' ', c.last_name) AS client_name, l.full_name AS lead_name, p.public_id AS project_public_id,
+                CONCAT(o.first_name, ' ', o.last_name) AS owner_name
+         FROM appointments ap
+         LEFT JOIN clients c ON c.id = ap.client_id
+         LEFT JOIN leads l ON l.id = ap.lead_id
+         LEFT JOIN projects p ON p.id = ap.project_id
+         LEFT JOIN admins o ON o.id = ap.owner_admin_id
+         WHERE ${where.join(" AND ")} ORDER BY ap.starts_at ASC LIMIT 500`,
+        params,
+      );
+      const ids = rows.map((r) => Number(r.id));
+      const [att] = ids.length
+        ? await pool.query<RowDataPacket[]>(
+            `SELECT * FROM appointment_attendees WHERE appointment_id IN (?) ORDER BY id`,
+            [ids],
+          )
+        : [[] as RowDataPacket[]];
+      res.json({
+        ok: true,
+        appointments: rows.map((r) =>
+          mapAppointment(
+            r,
+            att.filter((t) => Number(t.appointment_id) === Number(r.id)),
+            { internal: true },
+          ),
+        ),
+      });
+    }),
+  );
+  app.get(
+    "/api/admin/appointments/:id",
+    requireAdmin("projects.read"),
+    route(async (req, res) => {
+      const full = await loadAppointmentFull(parseId(req.params.id));
+      if (!full) throw new HttpError(404, "errors.notFound");
+      res.json({
+        ok: true,
+        appointment: mapAppointment(full.a, full.attendees, { internal: true }),
+      });
+    }),
+  );
+  app.post(
+    "/api/admin/appointments",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      const out = await createAppointment(req.body || {}, {
+        adminId: portalUser(res).id,
+        source: "staff",
+      });
+      const full = (await loadAppointmentFull(out.id))!;
+      res
+        .status(201)
+        .json({
+          ok: true,
+          appointment: mapAppointment(full.a, full.attendees, {
+            internal: true,
+          }),
+          conflicts: out.conflicts,
+        });
+    }),
+  );
+  app.patch(
+    "/api/admin/appointments/:id",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      const out = await updateAppointment(
+        parseId(req.params.id),
+        req.body || {},
+        portalUser(res).id,
+      );
+      res.json({ ok: true, ...out });
+    }),
+  );
+  app.post(
+    "/api/admin/appointments/:id/cancel",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      await cancelAppointment(
+        parseId(req.params.id),
+        String(req.body?.reason || "").trim() || null,
+      );
+      res.json({ ok: true });
+    }),
+  );
+  app.post(
+    "/api/admin/appointments/:id/status",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      const status = String(req.body?.status || "");
+      if (!["completed", "no_show", "scheduled"].includes(status))
+        throw new HttpError(400, "validation.invalidField");
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE appointments SET status = ? WHERE id = ? AND status <> 'cancelled'`,
+        [status, parseId(req.params.id)],
+      );
+      if (!r.affectedRows) throw new HttpError(404, "errors.notFound");
+      res.json({ ok: true });
+    }),
+  );
+
+  // ── Contractor + affiliate portals ──
+  app.get(
+    "/api/contractor/appointments",
+    requirePortal("contractor"),
+    route(async (_req, res) => {
+      const me = portalUser(res).id;
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ap.*, CONCAT(c.first_name, ' ', c.last_name) AS client_name, NULL AS lead_name, p.public_id AS project_public_id,
+                CONCAT(o.first_name, ' ', o.last_name) AS owner_name
+         FROM appointments ap JOIN appointment_attendees t ON t.appointment_id = ap.id AND t.contractor_id = ?
+         LEFT JOIN clients c ON c.id = ap.client_id LEFT JOIN projects p ON p.id = ap.project_id LEFT JOIN admins o ON o.id = ap.owner_admin_id
+         WHERE ap.ends_at > NOW() - INTERVAL 30 DAY ORDER BY ap.starts_at ASC LIMIT 200`,
+        [me],
+      );
+      res.json({
+        ok: true,
+        appointments: rows.map((r) => ({
+          ...mapAppointment(r, [], { internal: false }),
+          attendees: [],
+        })),
+      });
+    }),
+  );
+  app.get(
+    "/api/affiliate/appointments",
+    requirePortal("affiliate"),
+    route(async (_req, res) => {
+      const me = portalUser(res).id;
+      // Referred clients only; time + type + status (no addresses / notes).
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ap.id, ap.kind, ap.starts_at, ap.ends_at, ap.timezone, ap.status, c.first_name, c.last_name
+         FROM appointments ap JOIN clients c ON c.id = ap.client_id
+         LEFT JOIN projects p ON p.id = ap.project_id
+         WHERE (c.affiliate_id = ? OR p.affiliate_id = ? OR p.closer_affiliate_id = ?) AND ap.ends_at > NOW() - INTERVAL 30 DAY
+         ORDER BY ap.starts_at ASC LIMIT 200`,
+        [me, me, me],
+      );
+      res.json({
+        ok: true,
+        appointments: rows.map((r) => ({
+          id: Number(r.id),
+          kind: String(r.kind),
+          starts_at: isoDate(r.starts_at),
+          ends_at: isoDate(r.ends_at),
+          timezone: String(r.timezone),
+          status: String(r.status),
+          client_name:
+            `${r.first_name} ${String(r.last_name || "").charAt(0)}.`.trim(),
+        })),
+      });
+    }),
+  );
+
+  // ── My booking link (staff) ──
+  app.get(
+    "/api/admin/scheduler",
+    requireAdmin(),
+    route(async (_req, res) => {
+      const me = portalUser(res).id;
+      const cfg = await loadSchedulerConfig({ adminId: me }, true);
+      const [blocks] = await pool.query<RowDataPacket[]>(
+        `SELECT id, starts_at, ends_at, label FROM scheduler_blocked_ranges WHERE admin_id = ? AND ends_at > NOW() ORDER BY starts_at LIMIT 100`,
+        [me],
+      );
+      res.json({
+        ok: true,
+        settings: cfg,
+        booking_url: `${APP_URL}/book/${cfg!.slug}`,
+        blocked: blocks.map((b) => ({
+          id: Number(b.id),
+          starts_at: isoDate(b.starts_at),
+          ends_at: isoDate(b.ends_at),
+          label: b.label ? String(b.label) : null,
+        })),
+      });
+    }),
+  );
+  app.put(
+    "/api/admin/scheduler",
+    requireAdmin(),
+    route(async (req, res) => {
+      const me = portalUser(res).id;
+      const cur = (await loadSchedulerConfig({ adminId: me }, true))!;
+      const b = req.body || {};
+      const int = (v: unknown, lo: number, hi: number, d: number) =>
+        Number.isFinite(Number(v))
+          ? Math.min(hi, Math.max(lo, Math.round(Number(v))))
+          : d;
+      const slug =
+        b.slug !== undefined ? slugifyText(String(b.slug)) : cur.slug;
+      if (slug.length < 3) throw new HttpError(400, "validation.slugFormat");
+      const [[taken]] = (await pool.query<RowDataPacket[]>(
+        `SELECT admin_id FROM scheduler_settings WHERE slug = ? AND admin_id <> ? LIMIT 1`,
+        [slug, me],
+      )) as unknown as [RowDataPacket[]];
+      if (taken) throw new HttpError(409, "errors.slugTaken");
+      const tz = String(b.timezone || cur.timezone);
+      if (!isValidTimeZone(tz))
+        throw new HttpError(400, "validation.invalidField");
+      const kind = (APPOINTMENT_KINDS as readonly string[]).includes(
+        String(b.kind),
+      )
+        ? String(b.kind)
+        : cur.kind;
+      const flag = (k: keyof SchedulerConfig) =>
+        b[k] === undefined ? (cur[k] ? 1 : 0) : b[k] === true ? 1 : 0;
+      await pool.execute(
+        `UPDATE scheduler_settings SET is_enabled = ?, slug = ?, title_en = ?, title_es = ?, description_en = ?, description_es = ?, kind = ?,
+           duration_minutes = ?, buffer_minutes = ?, advance_days = ?, min_notice_hours = ?, timezone = ?,
+           allow_phone = ?, allow_video = ?, allow_office = ?, allow_onsite = ?, video_url = ? WHERE admin_id = ?`,
+        [
+          flag("is_enabled"),
+          slug,
+          String(b.title_en ?? cur.title_en)
+            .trim()
+            .slice(0, 200) || cur.title_en,
+          String(b.title_es ?? cur.title_es)
+            .trim()
+            .slice(0, 200) || cur.title_es,
+          String(b.description_en ?? cur.description_en ?? "")
+            .trim()
+            .slice(0, 2000) || null,
+          String(b.description_es ?? cur.description_es ?? "")
+            .trim()
+            .slice(0, 2000) || null,
+          kind,
+          int(b.duration_minutes, 15, 240, cur.duration_minutes),
+          int(b.buffer_minutes, 0, 120, cur.buffer_minutes),
+          int(b.advance_days, 1, 180, cur.advance_days),
+          int(b.min_notice_hours, 0, 168, cur.min_notice_hours),
+          tz,
+          flag("allow_phone"),
+          flag("allow_video"),
+          flag("allow_office"),
+          flag("allow_onsite"),
+          String(b.video_url ?? cur.video_url ?? "")
+            .trim()
+            .slice(0, 500) || null,
+          me,
+        ],
+      );
+      if (Array.isArray(b.availability)) {
+        const rows = (b.availability as any[]).slice(0, 50).map((w) => ({
+          d: Number(w.day_of_week),
+          s: String(w.start_time || ""),
+          e: String(w.end_time || ""),
+        }));
+        if (
+          rows.some(
+            (w) =>
+              !(w.d >= 0 && w.d <= 6) ||
+              !/^\d{2}:\d{2}$/.test(w.s) ||
+              !/^\d{2}:\d{2}$/.test(w.e) ||
+              w.s >= w.e,
+          )
+        ) {
+          throw new HttpError(400, "validation.availability");
+        }
+        await withTx(async (conn) => {
+          await conn.execute(
+            `DELETE FROM scheduler_availability WHERE admin_id = ?`,
+            [me],
+          );
+          for (const w of rows) {
+            await conn.execute(
+              `INSERT INTO scheduler_availability (admin_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?)`,
+              [me, w.d, w.s, w.e],
+            );
+          }
+        });
+      }
+      res.json({
+        ok: true,
+        settings: await loadSchedulerConfig({ adminId: me }),
+        booking_url: `${APP_URL}/book/${slug}`,
+      });
+    }),
+  );
+  app.post(
+    "/api/admin/scheduler/blocked",
+    requireAdmin(),
+    route(async (req, res) => {
+      const me = portalUser(res).id;
+      const cfg = (await loadSchedulerConfig({ adminId: me }, true))!;
+      const from = String(req.body?.from_date || "");
+      const to = String(req.body?.to_date || from);
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(from) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(to) ||
+        to < from
+      )
+        throw new HttpError(400, "validation.invalidField");
+      const start = zonedTimeToUtc(
+        from,
+        String(req.body?.from_time || "00:00"),
+        cfg.timezone,
+      );
+      const end = zonedTimeToUtc(
+        to,
+        String(req.body?.to_time || "23:59"),
+        cfg.timezone,
+      );
+      await pool.execute(
+        `INSERT INTO scheduler_blocked_ranges (admin_id, starts_at, ends_at, label) VALUES (?, ?, ?, ?)`,
+        [
+          me,
+          start,
+          end,
+          String(req.body?.label || "")
+            .trim()
+            .slice(0, 200) || null,
+        ],
+      );
+      res.status(201).json({ ok: true });
+    }),
+  );
+  app.delete(
+    "/api/admin/scheduler/blocked/:id",
+    requireAdmin(),
+    route(async (req, res) => {
+      await pool.execute(
+        `DELETE FROM scheduler_blocked_ranges WHERE id = ? AND admin_id = ?`,
+        [parseId(req.params.id), portalUser(res).id],
+      );
+      res.json({ ok: true });
+    }),
+  );
+
+  // ── Public booking ──
+  const publicCfg = async (slug: string) => {
+    const cfg = await loadSchedulerConfig({ slug });
+    if (!cfg || !cfg.is_enabled) throw new HttpError(404, "errors.notFound");
+    const [[adm]] = (await pool.query<RowDataPacket[]>(
+      `SELECT first_name, last_name, avatar_url, status FROM admins WHERE id = ? LIMIT 1`,
+      [cfg.admin_id],
+    )) as unknown as [RowDataPacket[]];
+    if (!adm || adm.status !== "active")
+      throw new HttpError(404, "errors.notFound");
+    return {
+      cfg,
+      host: {
+        name: `${adm.first_name} ${adm.last_name}`.trim(),
+        avatar_url: adm.avatar_url ? String(adm.avatar_url) : null,
+      },
+    };
+  };
+  const locationTypes = (cfg: SchedulerConfig) =>
+    (["onsite", "phone", "video", "office"] as const).filter(
+      (k) => cfg[`allow_${k}` as keyof SchedulerConfig],
+    );
+  app.get(
+    "/api/public/book/:slug",
+    readLimiter,
+    route(async (req, res) => {
+      const { cfg, host } = await publicCfg(String(req.params.slug));
+      const l = asLang(req.query.lang);
+      res.json({
+        ok: true,
+        host,
+        title: l === "es" ? cfg.title_es : cfg.title_en,
+        description:
+          l === "es"
+            ? cfg.description_es || cfg.description_en
+            : cfg.description_en,
+        duration_minutes: cfg.duration_minutes,
+        timezone: cfg.timezone,
+        advance_days: cfg.advance_days,
+        location_types: locationTypes(cfg),
+        days: [...new Set(cfg.availability.map((w) => w.day_of_week))],
+      });
+    }),
+  );
+  app.get(
+    "/api/public/book/:slug/slots",
+    readLimiter,
+    route(async (req, res) => {
+      const { cfg } = await publicCfg(String(req.params.slug));
+      res.json({
+        ok: true,
+        date: String(req.query.date),
+        slots: await bookingSlots(cfg, String(req.query.date || "")),
+      });
+    }),
+  );
+  app.post(
+    "/api/public/book/:slug",
+    bookLimiter,
+    route(async (req, res) => {
+      const { cfg } = await publicCfg(String(req.params.slug));
+      const b = req.body || {};
+      const name = String(b.name || "")
+        .trim()
+        .slice(0, 200);
+      const email = normalizeEmail(b.email);
+      const phone = String(b.phone || "")
+        .trim()
+        .slice(0, 40);
+      if (name.length < 2) throw new HttpError(400, "validation.nameRequired");
+      if (!isValidEmail(email))
+        throw new HttpError(400, "validation.emailInvalid");
+      if (phone.replace(/\D/g, "").length < 10)
+        throw new HttpError(400, "validation.phoneMin");
+      const locationType = locationTypes(cfg).includes(b.location_type)
+        ? String(b.location_type)
+        : locationTypes(cfg)[0] || "phone";
+      const address =
+        String(b.address || "")
+          .trim()
+          .slice(0, 500) || null;
+      if (locationType === "onsite" && !address)
+        throw new HttpError(400, "validation.addressRequired");
+      const date = String(b.date || "");
+      const time = String(b.time || "");
+      // Re-check the slot right before booking (another visitor may have taken it).
+      if (!(await bookingSlots(cfg, date)).includes(time))
+        throw new HttpError(409, "errors.slotTaken");
+      const lang = asLang(b.lang);
+      const person = await bookingPerson({ name, email, phone, address, lang });
+      const out = await createAppointment(
+        {
+          title: `${lang === "es" ? cfg.title_es : cfg.title_en} · ${name}`,
+          kind: cfg.kind,
+          date,
+          start: time,
+          duration_minutes: cfg.duration_minutes,
+          timezone: cfg.timezone,
+          location_type: locationType,
+          location: locationType === "onsite" ? address : null,
+          video_url: locationType === "video" ? cfg.video_url : null,
+          description:
+            String(b.notes || "")
+              .trim()
+              .slice(0, 2000) || null,
+          client_id: person.client_id,
+          lead_id: person.lead_id,
+          owner_admin_id: cfg.admin_id,
+          notify_homeowner: true,
+        },
+        {
+          adminId: cfg.admin_id,
+          source: "booking",
+          attendees: [{ kind: "admin", admin_id: cfg.admin_id }],
+        },
+      );
+      // Leads booked without a matching record still show up for the team.
+      res.status(201).json({ ok: true, appointment_id: out.id });
+    }),
+  );
+  app.get(
+    "/api/public/appointments/:token",
+    readLimiter,
+    route(async (req, res) => {
+      const full = await loadAppointmentByToken(String(req.params.token));
+      if (!full) throw new HttpError(404, "errors.notFound");
+      const { a } = full;
+      const cfg = a.owner_admin_id
+        ? await loadSchedulerConfig({ adminId: Number(a.owner_admin_id) })
+        : null;
+      res.json({
+        ok: true,
+        appointment: {
+          title: String(a.title),
+          kind: String(a.kind),
+          starts_at: isoDate(a.starts_at),
+          ends_at: isoDate(a.ends_at),
+          timezone: String(a.timezone),
+          location_type: String(a.location_type),
+          location: a.location ? String(a.location) : null,
+          video_url: a.video_url ? String(a.video_url) : null,
+          status: String(a.status),
+          host: a.owner_name ? String(a.owner_name).trim() : null,
+        },
+        // Self-reschedule only when the host has an active booking link.
+        reschedule_slug: cfg?.is_enabled ? cfg.slug : null,
+      });
+    }),
+  );
+  app.post(
+    "/api/public/appointments/:token/cancel",
+    bookLimiter,
+    route(async (req, res) => {
+      const full = await loadAppointmentByToken(String(req.params.token));
+      if (!full) throw new HttpError(404, "errors.notFound");
+      if (new Date(full.a.starts_at).getTime() < Date.now())
+        throw new HttpError(409, "errors.appointmentPast");
+      await cancelAppointment(
+        Number(full.a.id),
+        String(req.body?.reason || "")
+          .trim()
+          .slice(0, 300) || "Cancelled by the homeowner",
+      );
+      res.json({ ok: true });
+    }),
+  );
+  app.post(
+    "/api/public/appointments/:token/reschedule",
+    bookLimiter,
+    route(async (req, res) => {
+      const full = await loadAppointmentByToken(String(req.params.token));
+      if (!full) throw new HttpError(404, "errors.notFound");
+      const { a } = full;
+      if (String(a.status) !== "scheduled")
+        throw new HttpError(409, "errors.appointmentCancelled");
+      const cfg = a.owner_admin_id
+        ? await loadSchedulerConfig({ adminId: Number(a.owner_admin_id) })
+        : null;
+      if (!cfg?.is_enabled)
+        throw new HttpError(409, "errors.rescheduleUnavailable");
+      const date = String(req.body?.date || "");
+      const time = String(req.body?.time || "");
+      // Free the current slot for the check (it's theirs).
+      const slots = await bookingSlots(
+        { ...cfg, buffer_minutes: cfg.buffer_minutes },
+        date,
+      ).catch(() => []);
+      const own = utcToZoned(new Date(a.starts_at), cfg.timezone);
+      if (!slots.includes(time) && !(own.date === date && own.time === time))
+        throw new HttpError(409, "errors.slotTaken");
+      await updateAppointment(
+        Number(a.id),
+        {
+          date,
+          start: time,
+          duration_minutes: Math.round(
+            (new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) /
+              60000,
+          ),
+          timezone: cfg.timezone,
+        },
+        Number(a.owner_admin_id),
+      );
+      res.json({ ok: true });
+    }),
+  );
+
+  // ── Vercel Cron: reminders (every 15 min) ──
+  const remindersCron = async (req: Request, res: Response) => {
+    try {
+      const secret = String(process.env.CRON_SECRET || "").trim();
+      if (
+        !secret ||
+        String(req.headers.authorization || "") !== `Bearer ${secret}`
+      ) {
+        return res.status(401).json({ error: "errors.unauthorized" });
+      }
+      res.json({ ok: true, ...(await runAppointmentReminders()) });
+    } catch (e: any) {
+      console.error("[cron.appointment-reminders] failed:", e?.message ?? e);
+      res.status(500).json({ error: "errors.server" });
+    }
+  };
+  app.get("/api/cron/appointment-reminders", remindersCron);
+  app.post("/api/cron/appointment-reminders", remindersCron);
+}
+
+// ─── Staff edit panel: email (sign-in identity) changes ─────────────────────
+
+/**
+ * After staff change a person's email: security notice to the old and the new
+ * address (sign-in codes now go to the new one), billing record updated for
+ * affiliates, and an audit row (people_dedupe_log action=email_change).
+ */
+async function afterIdentityEmailChange(opts: {
+  entity: "client" | "affiliate";
+  id: number;
+  oldEmail: string | null;
+  newEmail: string | null;
+  firstName: string;
+  lang: Lang;
+  adminId: number;
+}): Promise<void> {
+  const before = opts.oldEmail ? normalizeEmail(opts.oldEmail) : null;
+  const after = opts.newEmail ? normalizeEmail(opts.newEmail) : null;
+  if (before === after) return;
+  const l = opts.lang;
+  const portal =
+    opts.entity === "affiliate" ? "/affiliate/login" : "/client/login";
+  const notice = (to: string, isNew: boolean) =>
+    safeSend(
+      to,
+      tplPortalNotice({
+        lang: l,
+        subject: tr(
+          l,
+          "Your Groundwork sign-in email was changed",
+          "Se cambió tu correo de acceso a Groundwork",
+        ),
+        headline: tr(
+          l,
+          "Sign-in email updated",
+          "Correo de acceso actualizado",
+        ),
+        paragraphs: [
+          tr(
+            l,
+            `Hi ${opts.firstName}, our team updated the email on your account${after ? ` to ${after}` : ""}.`,
+            `Hola ${opts.firstName}, nuestro equipo actualizó el correo de tu cuenta${after ? ` a ${after}` : ""}.`,
+          ),
+          isNew
+            ? tr(
+                l,
+                "From now on, your one-time sign-in codes come to this address.",
+                "A partir de ahora, tus códigos de acceso llegarán a este correo.",
+              )
+            : tr(
+                l,
+                "If you didn't ask for this, reply to this email or call us right away.",
+                "Si no lo solicitaste, responde a este correo o llámanos de inmediato.",
+              ),
+        ],
+        ...(isNew
+          ? {
+              cta: {
+                url: `${APP_URL}${portal}`,
+                label: tr(l, "Sign in", "Iniciar sesión"),
+              },
+            }
+          : {}),
+      }),
+    );
+  if (before) await notice(before, false);
+  if (after) await notice(after, true);
+  if (opts.entity === "affiliate" && after && billingConfigured()) {
+    const [[a]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT billing_customer_id FROM affiliates WHERE id = ? LIMIT 1`,
+      [opts.id],
+    )) as unknown as [RowDataPacket[]];
+    if (a?.billing_customer_id) {
+      await billingApi()
+        .customers.update(String(a.billing_customer_id), { email: after })
+        .catch((e: any) =>
+          console.warn(
+            "[email-change] billing customer update failed:",
+            e?.message ?? e,
+          ),
+        );
+    }
+  }
+  await logDedupe({
+    action: "email_change",
+    entity: opts.entity,
+    recordId: opts.id,
+    adminId: opts.adminId,
+    reason: `${before || "—"} → ${after || "—"}`,
+    snapshot: { old_email: before, new_email: after },
+  });
+}
+
+// ─── Affiliate welcome: secure onboarding link, card on file, FAQ, assistant ─
+
+const ONBOARDING_TOKEN_HEADER = "x-onboarding-token";
+const ONBOARDING_LINK_TTL_DAYS = 30;
+
+async function affiliateSettingNumber(
+  key: string,
+  fallback: number,
+): Promise<number> {
+  const n = Number(await getSystemSettingValue(key));
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** Single-purpose link from the welcome email / text (agreement, W-9, card) — works while pending. */
+async function issueAffiliateOnboardingLink(
+  affiliateId: number,
+): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  await pool.execute(
+    `INSERT INTO affiliate_onboarding_links (affiliate_id, token_hash, expires_at)
+     VALUES (?, ?, NOW() + INTERVAL ${ONBOARDING_LINK_TTL_DAYS} DAY)`,
+    [affiliateId, sha256(token)],
+  );
+  return `${APP_URL}/affiliate/welcome/${token}`;
+}
+
+async function loadOnboardingTokenUser(
+  req: Request,
+): Promise<PortalAuthUser | null> {
+  // Header for API calls; `?ot=` only on GET (signed-PDF download links can't send headers).
+  const token = String(
+    req.get(ONBOARDING_TOKEN_HEADER) ||
+      (req.method === "GET" ? req.query.ot : "") ||
+      "",
+  ).trim();
+  if (!/^[a-f0-9]{64}$/.test(token)) return null;
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT a.*, l.id AS link_id FROM affiliate_onboarding_links l
+     JOIN affiliates a ON a.id = l.affiliate_id
+     WHERE l.token_hash = ? AND l.revoked_at IS NULL AND l.expires_at > NOW()
+       AND a.status IN ('pending', 'active')
+     LIMIT 1`,
+    [sha256(token)],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  await pool.execute(
+    `UPDATE affiliate_onboarding_links SET last_used_at = NOW() WHERE id = ?`,
+    [row.link_id],
+  );
+  return toPortalUser("affiliate", row);
+}
+
+/** Logged-in affiliate, or a valid onboarding link (pending affiliates included). */
+function requireAffiliateOrOnboarding() {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user =
+        (await loadPortalUser("affiliate", req)) ??
+        (await loadOnboardingTokenUser(req));
+      if (!user) return res.status(401).json({ error: "errors.unauthorized" });
+      res.locals.portalUser = user;
+      return next();
+    } catch (e: any) {
+      console.error("[affiliate-onboarding] auth failed:", e?.message ?? e);
+      return res.status(500).json({ error: "errors.server" });
+    }
+  };
+}
+
+/**
+ * Welcome email + text on signup (Daniel): the program presentation and the
+ * secure link to sign the agreement, submit the W-9 and add the card (first
+ * 90 days free). New affiliates get the default monthly price automatically.
+ */
+async function sendAffiliateWelcome(
+  affiliateId: number,
+): Promise<{ link: string }> {
+  const [[a]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT id, email, phone, first_name, preferred_language, subscription_price_cents FROM affiliates WHERE id = ? LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) throw new HttpError(404, "errors.notFound");
+  if (a.subscription_price_cents == null) {
+    const price = await affiliateSettingNumber(
+      "affiliate_default_price_cents",
+      1999,
+    );
+    await pool.execute(
+      `UPDATE affiliates SET subscription_price_cents = ? WHERE id = ? AND subscription_price_cents IS NULL`,
+      [price, affiliateId],
+    );
+  }
+  const link = await issueAffiliateOnboardingLink(affiliateId);
+  const deck =
+    (await getSystemSettingValue("affiliate_presentation_url")) || "";
+  const trialDays = await billingTrialDays("affiliate");
+  const l = asLang(a.preferred_language);
+  const first = String(a.first_name || "").trim();
+  await safeSend(
+    String(a.email),
+    tplPortalNotice({
+      lang: l,
+      subject: tr(
+        l,
+        "Welcome to the Groundwork affiliate program",
+        "Bienvenido al programa de afiliados de Groundwork",
+      ),
+      headline: tr(l, `Welcome, ${first}!`, `¡Bienvenido, ${first}!`),
+      paragraphs: [
+        tr(
+          l,
+          "Earn $10 per square foot on every ADU you refer.",
+          "Gana $10 por pie cuadrado en cada ADU que refieras.",
+        ),
+        ...(deck
+          ? [
+              {
+                before: tr(l, "Start with our program presentation ", "Empieza con la presentación del programa "),
+                link: { url: deck, label: tr(l, "HERE", "AQUÍ") },
+                after: ".",
+              },
+            ]
+          : []),
+        tr(
+          l,
+          `Then finish your setup in a few minutes: sign your affiliate agreement, submit your W-9 and add a card. Nothing is charged today. Your ${trialDays} free days start once we approve you.`,
+          `Después completa tu registro en unos minutos: firma tu acuerdo de afiliado, envía tu W-9 y agrega una tarjeta. Hoy no se cobra nada. Tus ${trialDays} días gratis empiezan cuando te aprobemos.`,
+        ),
+        tr(
+          l,
+          "This link is personal. Please don't share it.",
+          "Este enlace es personal. Por favor no lo compartas.",
+        ),
+      ],
+      cta: {
+        url: link,
+        label: tr(l, "Finish my setup", "Completar mi registro"),
+      },
+    }),
+  );
+  const from = await resolveCampaignSmsFrom();
+  if (from && a.phone) {
+    const sms = tr(
+      l,
+      `Groundwork Capital: welcome ${first}! Watch the program presentation${deck ? ` ${deck}` : ""} and finish your setup (agreement, W-9, card · ${trialDays} days free from approval): ${link}`,
+      `Groundwork Capital: ¡bienvenido ${first}! Mira la presentación del programa${deck ? ` ${deck}` : ""} y completa tu registro (acuerdo, W-9, tarjeta · ${trialDays} días gratis desde la aprobación): ${link}`,
+    );
+    try {
+      await sendSms({ to: String(a.phone), from, body: sms });
+    } catch (e: any) {
+      console.warn("[affiliate-welcome] SMS failed:", e?.message ?? e);
+    }
+  }
+  return { link };
+}
+
+// ── Billing (card on file → free period → monthly). Provider stays internal. ──
+
+let billingClient: Stripe | null = null;
+function billingApi(): Stripe {
+  if (billingClient) return billingClient;
+  // Vitest never reaches the real provider: suites inject a fake via __testSetBillingApi.
+  if (process.env.VITEST)
+    throw new HttpError(503, "errors.billingNotConfigured");
+  const key = String(process.env.STRIPE_SECRET_KEY || "").trim();
+  if (!key) throw new HttpError(503, "errors.billingNotConfigured");
+  billingClient = new Stripe(key);
+  return billingClient;
+}
+function billingConfigured(): boolean {
+  if (billingClient != null) return true;
+  if (process.env.VITEST) return false;
+  return Boolean(String(process.env.STRIPE_SECRET_KEY || "").trim());
+}
+/** Test hook: swap the billing client (Vitest never calls the real provider). */
+export function __testSetBillingApi(api: unknown): void {
+  billingClient = api as Stripe | null;
+}
+
+const BILLING_STATUS_MAP: Record<
+  string,
+  "trialing" | "active" | "past_due" | "canceled" | "incomplete"
+> = {
+  trialing: "trialing",
+  active: "active",
+  past_due: "past_due",
+  unpaid: "past_due",
+  paused: "past_due",
+  canceled: "canceled",
+  incomplete: "incomplete",
+  incomplete_expired: "canceled",
+};
+
+/**
+ * One billing engine for every paying role. The card is saved first (during the
+ * affiliate onboarding / contractor application); the subscription — and its
+ * free period — starts only once the person is approved (status = 'active').
+ */
+type BillingRole = "affiliate" | "contractor";
+const BILLING_ROLES: Record<
+  BillingRole,
+  {
+    table: "affiliates" | "contractors";
+    metaKey: string;
+    priceKey: string;
+    priceDefault: number;
+    trialKey: string;
+    trialDefault: number;
+    product: string;
+  }
+> = {
+  affiliate: {
+    table: "affiliates",
+    metaKey: "affiliate_id",
+    priceKey: "affiliate_default_price_cents",
+    priceDefault: 1999,
+    trialKey: "affiliate_trial_days",
+    trialDefault: 90,
+    product: "Groundwork affiliate platform",
+  },
+  contractor: {
+    table: "contractors",
+    metaKey: "contractor_id",
+    priceKey: "contractor_default_price_cents",
+    priceDefault: 9990,
+    trialKey: "contractor_trial_days",
+    trialDefault: 30,
+    product: "Groundwork contractor platform",
+  },
+};
+
+const billingTrialDays = (role: BillingRole) =>
+  affiliateSettingNumber(
+    BILLING_ROLES[role].trialKey,
+    BILLING_ROLES[role].trialDefault,
+  );
+
+const billingPriceCache = new Map<string, string>();
+/** Monthly recurring price for a role + amount (looked up by key, created once). */
+async function ensurePlanPrice(
+  role: BillingRole,
+  cents: number,
+): Promise<string> {
+  // Affiliates keep their original lookup keys so live prices are reused.
+  const lookupKey = `gw_${role}_platform_usd_${cents}`;
+  const hit = billingPriceCache.get(lookupKey);
+  if (hit) return hit;
+  const api = billingApi();
+  const found = await api.prices.list({
+    lookup_keys: [lookupKey],
+    active: true,
+    limit: 1,
+  });
+  const id =
+    found.data[0]?.id ??
+    (
+      await api.prices.create(
+        {
+          currency: "usd",
+          unit_amount: cents,
+          recurring: { interval: "month" },
+          lookup_key: lookupKey,
+          product_data: {
+            name: BILLING_ROLES[role].product,
+            metadata: { gw_key: `${role}_platform` },
+          },
+        },
+        { idempotencyKey: `gw-price-${lookupKey}` },
+      )
+    ).id;
+  billingPriceCache.set(lookupKey, id);
+  return id;
+}
+
+async function ensureBillingCustomer(
+  role: BillingRole,
+  id: number,
+): Promise<string> {
+  const { table, metaKey } = BILLING_ROLES[role];
+  const [[a]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT id, email, phone, first_name, last_name, billing_customer_id FROM ${table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) throw new HttpError(404, "errors.notFound");
+  if (a.billing_customer_id) {
+    // Deleted on the processor's side (e.g. from the dashboard)? Start over with a fresh customer.
+    try {
+      const existing = await billingApi().customers.retrieve(
+        String(a.billing_customer_id),
+      );
+      if (!(existing as Stripe.DeletedCustomer).deleted)
+        return String(a.billing_customer_id);
+    } catch (e: any) {
+      if (e?.code !== "resource_missing") throw e;
+    }
+    await pool.execute(
+      `UPDATE ${table} SET billing_customer_id = NULL, billing_subscription_id = NULL, billing_payment_method_id = NULL,
+         billing_status = 'none', billing_card_brand = NULL, billing_card_last4 = NULL, billing_card_exp = NULL WHERE id = ?`,
+      [id],
+    );
+  }
+  const customer = await billingApi().customers.create(
+    {
+      email: String(a.email),
+      name: `${a.first_name || ""} ${a.last_name || ""}`.trim(),
+      phone: a.phone ? String(a.phone) : undefined,
+      metadata: { [metaKey]: String(id), app: "groundwork" },
+    },
+    {
+      idempotencyKey: `gw-${role === "affiliate" ? "aff" : "ctr"}-customer-${id}-${a.billing_customer_id || "first"}`,
+    },
+  );
+  await pool.execute(
+    `UPDATE ${table} SET billing_customer_id = ? WHERE id = ? AND billing_customer_id IS NULL`,
+    [customer.id, id],
+  );
+  return customer.id;
+}
+
+/** Mirror a subscription onto its owner's row (status, trial end, next charge). */
+async function syncBillingSubscription(
+  sub: Stripe.Subscription,
+): Promise<{ role: BillingRole; id: number } | null> {
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+  let owner: { role: BillingRole; id: number } | null = null;
+  for (const role of ["affiliate", "contractor"] as const) {
+    const fromMeta = Number(sub.metadata?.[BILLING_ROLES[role].metaKey]);
+    if (fromMeta) {
+      owner = { role, id: fromMeta };
+      break;
+    }
+  }
+  if (!owner) {
+    for (const role of ["affiliate", "contractor"] as const) {
+      const [[r]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT id FROM ${BILLING_ROLES[role].table} WHERE billing_subscription_id = ? OR billing_customer_id = ? LIMIT 1`,
+        [sub.id, customerId ?? ""],
+      )) as unknown as [RowDataPacket[]];
+      if (r) {
+        owner = { role, id: Number(r.id) };
+        break;
+      }
+    }
+  }
+  if (!owner) return null;
+  const status = BILLING_STATUS_MAP[sub.status] ?? "incomplete";
+  const periodEnd = sub.items?.data?.[0]?.current_period_end;
+  await pool.execute(
+    `UPDATE ${BILLING_ROLES[owner.role].table} SET billing_subscription_id = ?, billing_status = ?, billing_trial_ends_at = ?,
+       billing_current_period_end = ?, billing_cancel_at_period_end = ?, billing_updated_at = NOW() WHERE id = ?`,
+    [
+      sub.id,
+      status,
+      sub.trial_end ? new Date(sub.trial_end * 1000) : null,
+      periodEnd ? new Date(periodEnd * 1000) : null,
+      sub.cancel_at_period_end ? 1 : 0,
+      owner.id,
+    ],
+  );
+  return owner;
+}
+
+async function storeBillingCard(
+  role: BillingRole,
+  id: number,
+  paymentMethodId: string,
+): Promise<void> {
+  const pm = await billingApi().paymentMethods.retrieve(paymentMethodId);
+  const card = pm.card;
+  await pool.execute(
+    `UPDATE ${BILLING_ROLES[role].table} SET billing_payment_method_id = ?, billing_card_brand = ?, billing_card_last4 = ?,
+       billing_card_exp = ?, billing_updated_at = NOW() WHERE id = ?`,
+    [
+      paymentMethodId,
+      card?.brand ?? null,
+      card?.last4 ?? null,
+      card
+        ? `${String(card.exp_month).padStart(2, "0")}/${card.exp_year}`
+        : null,
+      id,
+    ],
+  );
+}
+
+/** Monthly price for this person: affiliates = signed agreement → row; contractors = override → default. */
+async function billingPriceFor(
+  role: BillingRole,
+  id: number,
+): Promise<number | null> {
+  if (role === "affiliate") {
+    const [[a]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT a.subscription_price_cents, a.billing_price_override_cents,
+              (SELECT ag.subscription_price_cents FROM affiliate_agreements ag
+               WHERE ag.affiliate_id = a.id AND ag.status = 'signed' ORDER BY ag.id DESC LIMIT 1) AS signed_price
+       FROM affiliates a WHERE a.id = ? LIMIT 1`,
+      [id],
+    )) as unknown as [RowDataPacket[]];
+    // Staff override (custom / waived) wins over the agreement price.
+    const price =
+      a?.billing_price_override_cents ??
+      a?.signed_price ??
+      a?.subscription_price_cents;
+    return price == null ? null : Number(price);
+  }
+  const [[k]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT subscription_price_cents FROM contractors WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!k) return null;
+  return k.subscription_price_cents == null
+    ? await affiliateSettingNumber(
+        BILLING_ROLES.contractor.priceKey,
+        BILLING_ROLES.contractor.priceDefault,
+      )
+    : Number(k.subscription_price_cents);
+}
+
+/**
+ * Start the plan when both conditions hold: approved (status active) and a
+ * card on file. The free period is granted once — a returning member is
+ * billed right away. Safe to call any time (no-op otherwise).
+ */
+async function startBillingIfReady(
+  role: BillingRole,
+  id: number,
+  opts: { trialDays?: number | null } = {},
+): Promise<boolean> {
+  if (!billingConfigured()) return false;
+  const { table, metaKey } = BILLING_ROLES[role];
+  const [[row]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT status, billing_payment_method_id, billing_subscription_id, billing_status, billing_trial_used_at FROM ${table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!row || String(row.status) !== "active" || !row.billing_payment_method_id)
+    return false;
+  if (row.billing_subscription_id && row.billing_status !== "canceled")
+    return false;
+  const price = await billingPriceFor(role, id);
+  if (!price) return false; // no price yet, or waived
+  const pm = String(row.billing_payment_method_id);
+  // The free period is granted once per person (kept even if the processor customer is reset).
+  const trialDays =
+    opts.trialDays != null
+      ? opts.trialDays // staff-set free days (card link)
+      : row.billing_subscription_id || row.billing_trial_used_at
+        ? 0
+        : await billingTrialDays(role);
+  const customer = await ensureBillingCustomer(role, id);
+  const sub = await billingApi().subscriptions.create(
+    {
+      customer,
+      items: [{ price: await ensurePlanPrice(role, price) }],
+      default_payment_method: pm,
+      ...(trialDays > 0 ? { trial_period_days: trialDays } : {}),
+      payment_settings: { save_default_payment_method: "on_subscription" },
+      metadata: { [metaKey]: String(id), app: "groundwork" },
+    },
+    {
+      idempotencyKey: `gw-${role === "affiliate" ? "aff" : "ctr"}-sub-${id}-${pm}-${row.billing_subscription_id || "first"}`,
+    },
+  );
+  await syncBillingSubscription(sub);
+  if (trialDays > 0) {
+    await pool.execute(
+      `UPDATE ${table} SET billing_trial_used_at = COALESCE(billing_trial_used_at, NOW()) WHERE id = ?`,
+      [id],
+    );
+  }
+  return true;
+}
+
+/** Approval hook (never blocks the approval itself — staff see billing on the record). */
+async function startBillingOnApproval(
+  role: BillingRole,
+  id: number,
+): Promise<void> {
+  try {
+    await startBillingIfReady(role, id);
+  } catch (e: any) {
+    console.error(
+      `[billing] start on approval failed (${role} ${id}):`,
+      e?.message ?? e,
+    );
+  }
+}
+
+/**
+ * Save a card the browser just confirmed: make it the default, then update
+ * the live plan or start one (if approved). Shared by every role.
+ */
+async function activateBillingCard(
+  role: BillingRole,
+  id: number,
+  setupId: string,
+  opts: { trialDays?: number | null } = {},
+): Promise<void> {
+  if (!/^seti_[A-Za-z0-9]+$/.test(setupId))
+    throw new HttpError(400, "validation.invalidField");
+  const api = billingApi();
+  const customer = await ensureBillingCustomer(role, id);
+  const intent = await api.setupIntents.retrieve(setupId);
+  const intentCustomer =
+    typeof intent.customer === "string" ? intent.customer : intent.customer?.id;
+  if (
+    intentCustomer !== customer ||
+    intent.status !== "succeeded" ||
+    !intent.payment_method
+  ) {
+    throw new HttpError(409, "errors.cardNotConfirmed");
+  }
+  const pm =
+    typeof intent.payment_method === "string"
+      ? intent.payment_method
+      : intent.payment_method.id;
+  const [[row]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT billing_subscription_id, billing_status, billing_payment_method_id FROM ${BILLING_ROLES[role].table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  const previous = row?.billing_payment_method_id
+    ? String(row.billing_payment_method_id)
+    : null;
+  await api.customers.update(customer, {
+    invoice_settings: { default_payment_method: pm },
+  });
+  await storeBillingCard(role, id, pm);
+  await pool.execute(
+    `UPDATE ${BILLING_ROLES[role].table} SET billing_expiry_notice = NULL WHERE id = ?`,
+    [id],
+  );
+  // One card on file: the replaced card is removed so nothing can charge it again.
+  const dropPrevious = async () => {
+    if (!previous || previous === pm) return;
+    try {
+      await api.paymentMethods.detach(previous);
+    } catch (e: any) {
+      console.warn(
+        `[billing] detach replaced card failed (${role} ${id}):`,
+        e?.code ?? e?.message ?? e,
+      );
+    }
+  };
+  if (row?.billing_subscription_id && row.billing_status !== "canceled") {
+    const subId = String(row.billing_subscription_id);
+    const sub = await api.subscriptions.update(subId, {
+      default_payment_method: pm,
+    });
+    await syncBillingSubscription(sub);
+    await dropPrevious();
+    // Behind on payment: charge the open invoice with the new card now (don't wait for the next retry).
+    if (
+      sub.status === "past_due" ||
+      sub.status === "unpaid" ||
+      sub.status === "incomplete"
+    ) {
+      const open = await api.invoices.list({
+        subscription: subId,
+        status: "open",
+        limit: 3,
+      });
+      try {
+        for (const inv of open.data)
+          await api.invoices.pay(String(inv.id), {
+            payment_method: pm,
+            off_session: true,
+          });
+      } catch (e: any) {
+        // Declined / needs authentication: the plan stays behind and the member is told.
+        console.warn(
+          `[billing] retry with new card failed (${role} ${id}):`,
+          e?.code ?? e?.message ?? e,
+        );
+        throw new HttpError(402, "errors.cardChargeFailed");
+      } finally {
+        await syncBillingSubscription(await api.subscriptions.retrieve(subId));
+      }
+    }
+    return;
+  }
+  await dropPrevious();
+  await startBillingIfReady(role, id, opts);
+}
+
+/** One-time setup secret for the card form. */
+async function createBillingSetup(
+  role: BillingRole,
+  id: number,
+): Promise<string | null> {
+  const customer = await ensureBillingCustomer(role, id);
+  const intent = await billingApi().setupIntents.create({
+    customer,
+    usage: "off_session",
+    metadata: { [BILLING_ROLES[role].metaKey]: String(id) },
+  });
+  return intent.client_secret;
+}
+
+/** Cancel (or resume) at the end of the paid month. */
+async function setBillingCancel(
+  role: BillingRole,
+  id: number,
+  resume: boolean,
+): Promise<void> {
+  const [[row]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT billing_subscription_id FROM ${BILLING_ROLES[role].table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!row?.billing_subscription_id)
+    throw new HttpError(404, "errors.notFound");
+  await syncBillingSubscription(
+    await billingApi().subscriptions.update(
+      String(row.billing_subscription_id),
+      { cancel_at_period_end: !resume },
+    ),
+  );
+}
+
+/** Denied application: forget the saved card (nothing was ever charged). */
+async function releaseBillingCard(
+  role: BillingRole,
+  id: number,
+): Promise<void> {
+  const { table } = BILLING_ROLES[role];
+  const [[row]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT billing_payment_method_id, billing_subscription_id FROM ${table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!row?.billing_payment_method_id || row.billing_subscription_id) return;
+  try {
+    if (billingConfigured())
+      await billingApi().paymentMethods.detach(
+        String(row.billing_payment_method_id),
+      );
+  } catch (e: any) {
+    console.warn(`[billing] detach failed (${role} ${id}):`, e?.message ?? e);
+  }
+  await pool.execute(
+    `UPDATE ${table} SET billing_payment_method_id = NULL, billing_card_brand = NULL, billing_card_last4 = NULL,
+       billing_card_exp = NULL, billing_updated_at = NOW() WHERE id = ?`,
+    [id],
+  );
+}
+
+type BillingView = {
+  configured: boolean;
+  status:
+    "none" | "trialing" | "active" | "past_due" | "canceled" | "incomplete";
+  price_cents: number | null;
+  trial_days: number;
+  trial_ends_at: string | null;
+  current_period_end: string | null;
+  card: { brand: string | null; last4: string; exp: string | null } | null;
+  cancel_at_period_end: boolean;
+  /** Card saved; the plan (and its free period) starts when the person is approved. */
+  awaiting_approval: boolean;
+  /** Staff waived the fee (price 0). */
+  waived: boolean;
+  /** Approved (status active): saving a card starts the plan right away. */
+  approved: boolean;
+  /** Billing is in good standing (or not required) — used by portal locks. */
+  in_good_standing: boolean;
+  /** The card on file expires within 30 days (end of its expiry month). */
+  card_expiring: boolean;
+};
+
+/** Days until the end of a card's expiry month ("MM/YYYY"); null when unknown. */
+function cardDaysLeft(exp: unknown, now = new Date()): number | null {
+  const m = /^(\d{2})\/(\d{4})$/.exec(String(exp || ""));
+  if (!m) return null;
+  const end = Date.UTC(Number(m[2]), Number(m[1]), 1); // first day of the next month
+  return Math.floor((end - now.getTime()) / 86_400_000);
+}
+type AffiliateBillingView = BillingView;
+
+/** Pure: a member row's billing columns + its price → the view portals / admin use. */
+function billingViewFromRow(
+  a: RowDataPacket | undefined,
+  price: number | null,
+  trialDays: number,
+): BillingView {
+  const status = (a?.billing_status as BillingView["status"]) || "none";
+  const configured = billingConfigured();
+  const waived = price === 0;
+  const live = status === "trialing" || status === "active";
+  const days = cardDaysLeft(a?.billing_card_exp);
+  return {
+    configured,
+    status,
+    price_cents: price,
+    trial_days: trialDays,
+    trial_ends_at: isoDate(a?.billing_trial_ends_at),
+    current_period_end: isoDate(a?.billing_current_period_end),
+    card: a?.billing_card_last4
+      ? {
+          brand: a.billing_card_brand ? String(a.billing_card_brand) : null,
+          last4: String(a.billing_card_last4),
+          exp: a.billing_card_exp ? String(a.billing_card_exp) : null,
+        }
+      : null,
+    cancel_at_period_end: Number(a?.billing_cancel_at_period_end || 0) === 1,
+    awaiting_approval:
+      Boolean(a?.billing_payment_method_id) &&
+      !a?.billing_subscription_id &&
+      String(a?.status) !== "active",
+    waived,
+    approved: String(a?.status) === "active",
+    in_good_standing: !configured || waived || live,
+    card_expiring: days != null && days <= 30 && !waived,
+  };
+}
+
+async function loadBilling(
+  role: BillingRole,
+  id: number,
+): Promise<BillingView> {
+  const [[a]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT status, billing_status, billing_trial_ends_at, billing_current_period_end, billing_card_brand,
+            billing_card_last4, billing_card_exp, billing_cancel_at_period_end, billing_payment_method_id,
+            billing_subscription_id
+     FROM ${BILLING_ROLES[role].table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  return billingViewFromRow(
+    a,
+    await billingPriceFor(role, id),
+    await billingTrialDays(role),
+  );
+}
+
+const loadAffiliateBilling = (affiliateId: number) =>
+  loadBilling("affiliate", affiliateId);
+
+/** Webhook / re-fetch: only provider-confirmed events change billing state. */
+async function handleBillingEvent(event: Stripe.Event): Promise<void> {
+  const [ins] = await pool.execute<ResultSetHeader>(
+    `INSERT IGNORE INTO billing_webhook_events (event_id, event_type) VALUES (?, ?)`,
+    [event.id, event.type],
+  );
+  if (!ins.affectedRows) return; // already processed
+  const api = billingApi();
+  const obj = event.data.object as any;
+  if (event.type.startsWith("customer.subscription.")) {
+    await syncBillingSubscription(
+      await api.subscriptions.retrieve(String(obj.id)),
+    );
+    return;
+  }
+  // The bank issued a new number / expiry and the card network updated the saved card.
+  if (
+    event.type === "payment_method.automatically_updated" ||
+    event.type === "payment_method.updated"
+  ) {
+    for (const role of ["affiliate", "contractor"] as const) {
+      const [[r]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT id FROM ${BILLING_ROLES[role].table} WHERE billing_payment_method_id = ? LIMIT 1`,
+        [String(obj.id)],
+      )) as unknown as [RowDataPacket[]];
+      if (r) {
+        await storeBillingCard(role, Number(r.id), String(obj.id));
+        await pool.execute(
+          `UPDATE ${BILLING_ROLES[role].table} SET billing_expiry_notice = NULL WHERE id = ?`,
+          [r.id],
+        );
+      }
+    }
+    return;
+  }
+  if (
+    event.type === "invoice.paid" ||
+    event.type === "invoice.payment_failed" ||
+    event.type === "invoice.payment_action_required"
+  ) {
+    const subId =
+      obj.parent?.subscription_details?.subscription ??
+      obj.subscription ??
+      null;
+    if (!subId) return;
+    const owner = await syncBillingSubscription(
+      await api.subscriptions.retrieve(String(subId)),
+    );
+    // A renewal the bank wants authenticated can't finish off-session: ask for a card the same way.
+    if (owner && event.type !== "invoice.paid")
+      await notifyBillingPaymentFailed(owner.role, owner.id);
+  }
+}
+
+/** Card declined: tell the member (with what stops working) and the team. */
+async function notifyBillingPaymentFailed(
+  role: BillingRole,
+  id: number,
+): Promise<void> {
+  const [[a]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT email, first_name, last_name, preferred_language FROM ${BILLING_ROLES[role].table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) return;
+  const l = asLang(a.preferred_language);
+  const isAff = role === "affiliate";
+  await safeSend(
+    String(a.email),
+    tplPortalNotice({
+      lang: l,
+      subject: tr(
+        l,
+        "We couldn't process your platform payment",
+        "No pudimos procesar el pago de tu plataforma",
+      ),
+      headline: tr(
+        l,
+        "Please update your card",
+        "Por favor actualiza tu tarjeta",
+      ),
+      paragraphs: [
+        isAff
+          ? tr(
+              l,
+              "Your monthly platform payment didn't go through. Update your card in the portal to keep registering clients.",
+              "Tu pago mensual de la plataforma no se procesó. Actualiza tu tarjeta en el portal para seguir registrando clientes.",
+            )
+          : tr(
+              l,
+              "Your monthly platform membership payment didn't go through. Your contractor portal is paused until you update your card. It takes a minute.",
+              "Tu pago mensual de membresía no se procesó. Tu portal de contratista está en pausa hasta que actualices tu tarjeta. Toma un minuto.",
+            ),
+      ],
+      cta: isAff
+        ? {
+            url: `${APP_URL}/affiliate/agreement`,
+            label: tr(l, "Update my card", "Actualizar mi tarjeta"),
+          }
+        : {
+            url: `${APP_URL}/contractor`,
+            label: tr(l, "Update my card", "Actualizar mi tarjeta"),
+          },
+    }),
+  );
+  const name = `${a.first_name || ""} ${a.last_name || ""}`.trim();
+  await notifyStaff(
+    isAff ? "affiliate_onboarding" : "contractor_compliance_alert",
+    (sl) => ({
+      subject: isAff
+        ? tr(
+            sl,
+            `Affiliate payment failed: ${name}`,
+            `Pago de afiliado fallido: ${name}`,
+          )
+        : tr(
+            sl,
+            `Contractor payment failed: ${name}`,
+            `Pago de contratista fallido: ${name}`,
+          ),
+      headline: isAff
+        ? tr(sl, "Affiliate payment failed", "Pago de afiliado fallido")
+        : tr(sl, "Contractor payment failed", "Pago de contratista fallido"),
+      paragraphs: [
+        tr(
+          sl,
+          `${name}'s monthly platform payment failed.`,
+          `El pago mensual de ${name} falló.`,
+        ),
+      ],
+      cta: isAff
+        ? {
+            url: `${APP_URL}/admin/affiliates/${id}`,
+            label: tr(sl, "Open affiliate", "Abrir afiliado"),
+          }
+        : {
+            url: `${APP_URL}/admin/contractors/${id}`,
+            label: tr(sl, "Open contractor", "Abrir contratista"),
+          },
+    }),
+  );
+}
+
+// ── Assistant (answers only from the agreement + FAQ) ─────────────────────────
+
+let assistantClient: Pick<Anthropic, "beta"> | null = null;
+function assistantApi(): Pick<Anthropic, "beta"> {
+  if (assistantClient) return assistantClient;
+  if (!String(process.env.ANTHROPIC_API_KEY || "").trim())
+    throw new HttpError(503, "errors.assistantNotConfigured");
+  assistantClient = new Anthropic();
+  return assistantClient;
+}
+/** Test hook: swap the assistant client (Vitest never calls the real API). */
+export function __testSetAssistantApi(api: unknown): void {
+  assistantClient = api as Pick<Anthropic, "beta"> | null;
+}
+
+const ASSISTANT_DAILY_LIMIT = 40;
+const ASSISTANT_HANDOFF = "[HANDOFF]";
+
+async function loadAffiliateFaqs(activeOnly = true) {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id, question_en, answer_en, question_es, answer_es, sort_order, is_active, updated_at
+     FROM affiliate_faqs ${activeOnly ? "WHERE is_active = 1" : ""} ORDER BY sort_order ASC, id ASC`,
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    question_en: String(r.question_en),
+    answer_en: String(r.answer_en),
+    question_es: r.question_es ? String(r.question_es) : null,
+    answer_es: r.answer_es ? String(r.answer_es) : null,
+    sort_order: Number(r.sort_order),
+    is_active: Number(r.is_active) === 1,
+    updated_at: isoDate(r.updated_at),
+  }));
+}
+
+/** The agreement this affiliate signed (or would sign today), in English. */
+async function affiliateAgreementTextFor(affiliateId: number): Promise<string> {
+  const tpl = await loadAffiliateAgreementTemplate();
+  const [[aff]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT email, first_name, last_name, subscription_price_cents FROM affiliates WHERE id = ? LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  // TiDB: no subqueries in JOIN … ON — read the latest signed agreement separately.
+  const [[ag]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT legal_name, business_name, address, phone AS ag_phone, signed_at, subscription_price_cents AS ag_price
+     FROM affiliate_agreements WHERE affiliate_id = ? AND status = 'signed' ORDER BY id DESC LIMIT 1`,
+    [affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  const a = { ...(aff || {}), ...(ag || {}) } as RowDataPacket;
+  return renderAffiliateAgreement(tpl.body_en, {
+    effective_date: pacificLongDate(
+      a?.signed_at ? new Date(a.signed_at) : new Date(),
+      "en",
+    ),
+    party: {
+      legal_name: String(
+        a?.legal_name || `${a?.first_name || ""} ${a?.last_name || ""}`.trim(),
+      ),
+      business_name: a?.business_name ? String(a.business_name) : null,
+      address: String(a?.address || ""),
+      phone: a?.ag_phone ? String(a.ag_phone) : null,
+      email: String(a?.email || ""),
+    },
+    subscription_price_cents: Number(
+      a?.ag_price ?? a?.subscription_price_cents ?? 1999,
+    ),
+  });
+}
+
+export async function askAffiliateAssistant(opts: {
+  affiliateId: number;
+  message: string;
+  lang: Lang;
+}): Promise<{ reply: string; handoff: boolean }> {
+  const message = String(opts.message || "")
+    .trim()
+    .slice(0, 1500);
+  if (message.length < 2)
+    throw new HttpError(400, "validation.messageRequired");
+  const [[cnt]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT COUNT(*) n FROM affiliate_assistant_messages WHERE affiliate_id = ? AND role = 'user' AND created_at > NOW() - INTERVAL 1 DAY`,
+    [opts.affiliateId],
+  )) as unknown as [RowDataPacket[]];
+  if (Number(cnt?.n || 0) >= ASSISTANT_DAILY_LIMIT)
+    throw new HttpError(429, "errors.assistantDailyLimit");
+
+  const agreement = await affiliateAgreementTextFor(opts.affiliateId);
+  const faqs = await loadAffiliateFaqs(true);
+  const faqText = faqs
+    .map((f) => `Q: ${f.question_en}\nA: ${f.answer_en}`)
+    .join("\n\n");
+  const system = [
+    "You are the Groundwork Capital affiliate assistant. You answer affiliates' questions about the affiliate program.",
+    'Answer ONLY from the affiliate agreement and the FAQ below. Quote or name the agreement section you rely on (for example "Section 7").',
+    "If the answer is not clearly covered by them, or the question needs a human decision (a specific payment, a dispute, an exception, an account change), say you will pass it to the Groundwork team and end your reply with the exact token " +
+      ASSISTANT_HANDOFF +
+      ".",
+    "Never give legal, tax or financial advice, never promise income, approvals or payments, and never invent numbers, dates or policies.",
+    "Reply in the same language the affiliate writes in (English or Spanish). Keep answers short: 2-5 sentences, plain words.",
+    "",
+    "<affiliate_agreement>",
+    agreement,
+    "</affiliate_agreement>",
+    "",
+    "<faq>",
+    faqText,
+    "</faq>",
+  ].join("\n");
+
+  const [hist] = await pool.execute<RowDataPacket[]>(
+    `SELECT role, content FROM affiliate_assistant_messages WHERE affiliate_id = ? ORDER BY id DESC LIMIT 10`,
+    [opts.affiliateId],
+  );
+  const history: Anthropic.Beta.BetaMessageParam[] = hist
+    .reverse()
+    .map((h) => ({
+      role: h.role === "assistant" ? ("assistant" as const) : ("user" as const),
+      content: String(h.content),
+    }));
+  while (history.length && history[0].role !== "user") history.shift();
+
+  await pool.execute(
+    `INSERT INTO affiliate_assistant_messages (affiliate_id, role, content) VALUES (?, 'user', ?)`,
+    [opts.affiliateId, message],
+  );
+
+  let reply = "";
+  let handoff = false;
+  let usage: { input_tokens?: number; output_tokens?: number } = {};
+  try {
+    const response = await assistantApi().beta.messages.create({
+      model:
+        String(process.env.ANTHROPIC_MODEL || "").trim() || "claude-opus-5-5",
+      max_tokens: 2000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "low" },
+      system: [
+        { type: "text", text: system, cache_control: { type: "ephemeral" } },
+      ],
+      messages: [...history, { role: "user", content: message }],
+    } as Anthropic.Beta.MessageCreateParamsNonStreaming);
+    usage = response.usage ?? {};
+    if (response.stop_reason === "refusal") {
+      handoff = true;
+    } else {
+      reply = response.content
+        .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("")
+        .trim();
+    }
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    if (e instanceof Anthropic.RateLimitError)
+      throw new HttpError(429, "errors.assistantBusy");
+    console.error(
+      "[affiliate-assistant] request failed:",
+      (e as Error)?.message ?? e,
+    );
+    throw new HttpError(502, "errors.assistantUnavailable");
+  }
+  if (reply.includes(ASSISTANT_HANDOFF)) handoff = true;
+  reply = reply.split(ASSISTANT_HANDOFF).join("").trim();
+  if (!reply) {
+    reply = tr(
+      opts.lang,
+      "I'll pass this question to the Groundwork team. They'll get back to you.",
+      "Voy a pasar esta pregunta al equipo de Groundwork. Te responderán pronto.",
+    );
+    handoff = true;
+  }
+  await pool.execute(
+    `INSERT INTO affiliate_assistant_messages (affiliate_id, role, content, handoff, input_tokens, output_tokens)
+     VALUES (?, 'assistant', ?, ?, ?, ?)`,
+    [
+      opts.affiliateId,
+      reply,
+      handoff ? 1 : 0,
+      usage.input_tokens ?? null,
+      usage.output_tokens ?? null,
+    ],
+  );
+  if (handoff) {
+    const [[a]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT first_name, last_name FROM affiliates WHERE id = ? LIMIT 1`,
+      [opts.affiliateId],
+    )) as unknown as [RowDataPacket[]];
+    const name = `${a?.first_name || ""} ${a?.last_name || ""}`.trim();
+    await notifyStaff("affiliate_onboarding", (l) => ({
+      subject: tr(
+        l,
+        `Affiliate question needs a person: ${name}`,
+        `Pregunta de afiliado para el equipo: ${name}`,
+      ),
+      headline: tr(
+        l,
+        "The assistant passed a question to the team",
+        "El asistente pasó una pregunta al equipo",
+      ),
+      paragraphs: [message.slice(0, 400)],
+      cta: {
+        url: `${APP_URL}/admin/affiliates/${opts.affiliateId}`,
+        label: tr(l, "Open affiliate", "Abrir afiliado"),
+      },
+    }));
+  }
+  return { reply, handoff };
+}
+
+function registerAffiliateWelcomeRoutes(app: Express) {
+  const gate = requireAffiliateOrOnboarding();
+  const billingLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  const assistantLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 8,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const requireSignedAgreement = async (affiliateId: number) => {
+    const [[ag]] = (await pool.execute<RowDataPacket[]>(
+      `SELECT subscription_price_cents FROM affiliate_agreements WHERE affiliate_id = ? AND status = 'signed' ORDER BY id DESC LIMIT 1`,
+      [affiliateId],
+    )) as unknown as [RowDataPacket[]];
+    if (!ag) throw new HttpError(409, "errors.agreementRequiredFirst");
+    return Number(ag.subscription_price_cents);
+  };
+
+  app.get(
+    "/api/affiliate/onboarding/billing",
+    gate,
+    route(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        ok: true,
+        billing: await loadAffiliateBilling(portalUser(res).id),
+      });
+    }),
+  );
+
+  // Step 1 of saving a card: a one-time setup secret for the card form.
+  app.post(
+    "/api/affiliate/onboarding/billing/setup",
+    gate,
+    billingLimiter,
+    route(async (_req, res) => {
+      const user = portalUser(res);
+      await requireSignedAgreement(user.id);
+      const clientSecret = await createBillingSetup("affiliate", user.id);
+      res.json({ ok: true, client_secret: clientSecret });
+    }),
+  );
+
+  // Step 2: the card was confirmed in the browser → make it the default and start (or update) the plan.
+  app.post(
+    "/api/affiliate/onboarding/billing/activate",
+    gate,
+    billingLimiter,
+    route(async (req, res) => {
+      const user = portalUser(res);
+      await requireSignedAgreement(user.id);
+      // Pending affiliates: the card is saved now; the free period starts on approval.
+      await activateBillingCard(
+        "affiliate",
+        user.id,
+        String(req.body?.setup_intent_id || ""),
+      );
+      res.json({ ok: true, billing: await loadAffiliateBilling(user.id) });
+    }),
+  );
+
+  // Portal: membership + whether the portal is paused for a failed payment.
+  app.get(
+    "/api/affiliate/billing/status",
+    requirePortal("affiliate"),
+    route(async (_req, res) => {
+      const id = portalUser(res).id;
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        ok: true,
+        billing: await loadAffiliateBilling(id),
+        locked: await affiliateBillingLocked(id),
+      });
+    }),
+  );
+
+  // Cancel at the end of the paid month (Section 3) — logged-in affiliates only.
+  app.post(
+    "/api/affiliate/billing/cancel",
+    requirePortal("affiliate"),
+    route(async (req, res) => {
+      const user = portalUser(res);
+      await setBillingCancel("affiliate", user.id, req.body?.resume === true);
+      res.json({ ok: true, billing: await loadAffiliateBilling(user.id) });
+    }),
+  );
+
+  // Provider webhook: verified by signature when the raw body is available,
+  // otherwise re-fetched from the provider (only real events are trusted).
+  app.post("/api/webhooks/billing", async (req, res) => {
+    try {
+      if (!billingConfigured())
+        return res.status(503).json({ error: "errors.billingNotConfigured" });
+      const api = billingApi();
+      const secret = String(process.env.STRIPE_WEBHOOK_SECRET || "").trim();
+      const raw = (req as any).rawBody as Buffer | undefined;
+      const sig = req.get("stripe-signature");
+      let event: Stripe.Event;
+      if (raw && secret && sig) {
+        try {
+          event = api.webhooks.constructEvent(raw, sig, secret);
+        } catch {
+          return res.status(400).json({ error: "errors.invalidSignature" });
+        }
+      } else {
+        const id = String(req.body?.id || "");
+        if (!/^evt_[A-Za-z0-9]+$/.test(id))
+          return res.status(400).json({ error: "validation.invalidField" });
+        event = await api.events.retrieve(id);
+      }
+      await handleBillingEvent(event);
+      return res.json({ received: true });
+    } catch (e: any) {
+      console.error("[billing:webhook]", e?.message ?? e);
+      return res.status(500).json({ error: "errors.server" });
+    }
+  });
+
+  // ── FAQ ──
+  app.get(
+    "/api/affiliate/faqs",
+    gate,
+    route(async (_req, res) => {
+      res.json({ ok: true, faqs: await loadAffiliateFaqs(true) });
+    }),
+  );
+
+  app.get(
+    "/api/admin/affiliate-faqs",
+    requireAdmin("people.read"),
+    route(async (_req, res) => {
+      res.json({ ok: true, faqs: await loadAffiliateFaqs(false) });
+    }),
+  );
+
+  const faqBody = (b: any) => {
+    const qEn = String(b?.question_en || "")
+      .trim()
+      .slice(0, 300);
+    const aEn = String(b?.answer_en || "")
+      .trim()
+      .slice(0, 4000);
+    if (qEn.length < 3 || aEn.length < 3)
+      throw new HttpError(400, "validation.faqRequired");
+    return {
+      question_en: qEn,
+      answer_en: aEn,
+      question_es:
+        String(b?.question_es || "")
+          .trim()
+          .slice(0, 300) || null,
+      answer_es:
+        String(b?.answer_es || "")
+          .trim()
+          .slice(0, 4000) || null,
+      sort_order: Number.isFinite(Number(b?.sort_order))
+        ? Math.trunc(Number(b.sort_order))
+        : 100,
+      is_active: b?.is_active === false ? 0 : 1,
+    };
+  };
+
+  app.post(
+    "/api/admin/affiliate-faqs",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const f = faqBody(req.body);
+      await pool.execute(
+        `INSERT INTO affiliate_faqs (question_en, answer_en, question_es, answer_es, sort_order, is_active, created_by_admin_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          f.question_en,
+          f.answer_en,
+          f.question_es,
+          f.answer_es,
+          f.sort_order,
+          f.is_active,
+          portalUser(res).id,
+        ],
+      );
+      res.status(201).json({ ok: true, faqs: await loadAffiliateFaqs(false) });
+    }),
+  );
+
+  app.put(
+    "/api/admin/affiliate-faqs/:id",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const f = faqBody(req.body);
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE affiliate_faqs SET question_en = ?, answer_en = ?, question_es = ?, answer_es = ?, sort_order = ?, is_active = ? WHERE id = ?`,
+        [
+          f.question_en,
+          f.answer_en,
+          f.question_es,
+          f.answer_es,
+          f.sort_order,
+          f.is_active,
+          parseId(req.params.id),
+        ],
+      );
+      if (!r.affectedRows) throw new HttpError(404, "errors.notFound");
+      res.json({ ok: true, faqs: await loadAffiliateFaqs(false) });
+    }),
+  );
+
+  app.delete(
+    "/api/admin/affiliate-faqs/:id",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      await pool.execute(`DELETE FROM affiliate_faqs WHERE id = ?`, [
+        parseId(req.params.id),
+      ]);
+      res.json({ ok: true, faqs: await loadAffiliateFaqs(false) });
+    }),
+  );
+
+  // ── Assistant ──
+  app.get(
+    "/api/affiliate/assistant",
+    gate,
+    route(async (_req, res) => {
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, role, content, handoff, created_at FROM affiliate_assistant_messages
+         WHERE affiliate_id = ? ORDER BY id DESC LIMIT 40`,
+        [portalUser(res).id],
+      );
+      res.json({
+        ok: true,
+        enabled:
+          Boolean(assistantClient) ||
+          Boolean(String(process.env.ANTHROPIC_API_KEY || "").trim()),
+        messages: rows
+          .reverse()
+          .map((r) => ({
+            id: Number(r.id),
+            role: r.role,
+            content: String(r.content),
+            handoff: Number(r.handoff) === 1,
+            created_at: isoDate(r.created_at),
+          })),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/affiliate/assistant",
+    gate,
+    assistantLimiter,
+    route(async (req, res) => {
+      const out = await askAffiliateAssistant({
+        affiliateId: portalUser(res).id,
+        message: String(req.body?.message || ""),
+        lang: asLang(req.body?.lang),
+      });
+      res.json({ ok: true, ...out });
+    }),
+  );
+
+  app.get(
+    "/api/admin/affiliates/:id/assistant",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, role, content, handoff, created_at FROM affiliate_assistant_messages
+         WHERE affiliate_id = ? ORDER BY id DESC LIMIT 200`,
+        [parseId(req.params.id)],
+      );
+      res.json({
+        ok: true,
+        messages: rows
+          .reverse()
+          .map((r) => ({
+            id: Number(r.id),
+            role: r.role,
+            content: String(r.content),
+            handoff: Number(r.handoff) === 1,
+            created_at: isoDate(r.created_at),
+          })),
+      });
+    }),
+  );
+
+  // Staff: re-send the welcome (new secure link) and see billing.
+  app.post(
+    "/api/admin/affiliates/:id/welcome",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      await pool.execute(
+        `UPDATE affiliate_onboarding_links SET revoked_at = NOW() WHERE affiliate_id = ? AND revoked_at IS NULL`,
+        [id],
+      );
+      await sendAffiliateWelcome(id);
+      res.json({ ok: true });
+    }),
+  );
+
+  app.get(
+    "/api/admin/affiliates/:id/billing",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      res.json({
+        ok: true,
+        billing: await loadAffiliateBilling(parseId(req.params.id)),
+      });
+    }),
+  );
+}
+
+/**
+ * Daily: remind members whose card expires soon (30 and 7 days before the end
+ * of the expiry month) by email + text, once per card per threshold. Staff
+ * see "Expiring" on the record. Exported for tests (`now` is injectable).
+ */
+export async function runCardExpiryReminders(
+  now = new Date(),
+): Promise<{ sent: number }> {
+  if (!billingConfigured()) return { sent: 0 };
+  let sent = 0;
+  const from = await resolveCampaignSmsFrom();
+  for (const role of ["affiliate", "contractor"] as const) {
+    const { table } = BILLING_ROLES[role];
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT id, email, phone, first_name, preferred_language, billing_card_brand, billing_card_last4, billing_card_exp, billing_expiry_notice
+       FROM ${table}
+       WHERE status = 'active' AND billing_card_exp IS NOT NULL AND billing_payment_method_id IS NOT NULL
+         AND billing_status IN ('trialing', 'active', 'past_due')`,
+    );
+    for (const r of rows) {
+      const days = cardDaysLeft(r.billing_card_exp, now);
+      if (days == null || days < 0 || days > 30) continue;
+      const threshold = days <= 7 ? 7 : 30;
+      const marker = `${r.billing_card_exp}:${threshold}`;
+      if (r.billing_expiry_notice === marker) continue;
+      // Already sent the 7-day notice for this card → never go back to 30.
+      if (
+        threshold === 30 &&
+        String(r.billing_expiry_notice || "") === `${r.billing_card_exp}:7`
+      )
+        continue;
+      if ((await billingPriceFor(role, Number(r.id))) === 0) continue;
+      const l = asLang(r.preferred_language);
+      const card = `${String(r.billing_card_brand || "").toUpperCase() || tr(l, "Card", "Tarjeta")} •••• ${r.billing_card_last4}`;
+      const url =
+        role === "affiliate"
+          ? `${APP_URL}/affiliate/agreement`
+          : `${APP_URL}/contractor`;
+      await safeSend(
+        String(r.email),
+        tplPortalNotice({
+          lang: l,
+          subject: tr(
+            l,
+            "Your card on file expires soon",
+            "Tu tarjeta registrada vence pronto",
+          ),
+          headline: tr(l, "Update your card", "Actualiza tu tarjeta"),
+          paragraphs: [
+            tr(
+              l,
+              `Hi ${r.first_name}, your ${card} expires at the end of ${r.billing_card_exp}. Update it now so your platform membership keeps running without interruption.`,
+              `Hola ${r.first_name}, tu ${card} vence al final de ${r.billing_card_exp}. Actualízala ahora para que tu membresía de la plataforma siga activa sin interrupciones.`,
+            ),
+          ],
+          cta: { url, label: tr(l, "Update my card", "Actualizar mi tarjeta") },
+        }),
+      );
+      if (from && r.phone) {
+        try {
+          await sendSms({
+            to: String(r.phone),
+            from,
+            body: tr(
+              l,
+              `Groundwork Capital: your ${card} expires ${r.billing_card_exp}. Update it to keep your membership active: ${url}`,
+              `Groundwork Capital: tu ${card} vence ${r.billing_card_exp}. Actualízala para mantener tu membresía activa: ${url}`,
+            ),
+          });
+        } catch (e: any) {
+          console.warn("[billing-expiry] SMS failed:", e?.message ?? e);
+        }
+      }
+      await pool.execute(
+        `UPDATE ${table} SET billing_expiry_notice = ? WHERE id = ?`,
+        [marker, r.id],
+      );
+      sent++;
+    }
+  }
+  return { sent };
+}
+
+function registerContractorBillingRoutes(app: Express) {
+  const ctr = requirePortal("contractor");
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  const payload = async (id: number) => ({
+    ok: true as const,
+    billing: await loadBilling("contractor", id),
+    locked: await contractorBillingLocked(id),
+  });
+
+  app.get(
+    "/api/contractor/billing",
+    ctr,
+    route(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await payload(portalUser(res).id));
+    }),
+  );
+
+  app.post(
+    "/api/contractor/billing/setup",
+    ctr,
+    limiter,
+    route(async (_req, res) => {
+      res.json({
+        ok: true,
+        client_secret: await createBillingSetup(
+          "contractor",
+          portalUser(res).id,
+        ),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/contractor/billing/activate",
+    ctr,
+    limiter,
+    route(async (req, res) => {
+      const id = portalUser(res).id;
+      await activateBillingCard(
+        "contractor",
+        id,
+        String(req.body?.setup_intent_id || ""),
+      );
+      res.json(await payload(id));
+    }),
+  );
+
+  app.post(
+    "/api/contractor/billing/cancel",
+    ctr,
+    route(async (req, res) => {
+      const id = portalUser(res).id;
+      await setBillingCancel("contractor", id, req.body?.resume === true);
+      res.json(await payload(id));
+    }),
+  );
+
+  app.get(
+    "/api/admin/contractors/:id/billing",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      res.json(await payload(id));
+    }),
+  );
+
+  // ── Vercel Cron: card-expiry reminders (daily) ──
+  const expiryCron = async (req: Request, res: Response) => {
+    try {
+      const secret = String(process.env.CRON_SECRET || "").trim();
+      if (
+        !secret ||
+        String(req.headers.authorization || "") !== `Bearer ${secret}`
+      ) {
+        return res.status(401).json({ error: "errors.unauthorized" });
+      }
+      res.json({ ok: true, ...(await runCardExpiryReminders()) });
+    } catch (e: any) {
+      console.error("[cron.billing-card-expiry] failed:", e?.message ?? e);
+      res.status(500).json({ error: "errors.server" });
+    }
+  };
+  app.get("/api/cron/billing-card-expiry", expiryCron);
+  app.post("/api/cron/billing-card-expiry", expiryCron);
+
+  // Per-contractor price: null = default, 0 = waived. A live plan moves to the new price next cycle.
+  app.patch(
+    "/api/admin/contractors/:id/billing",
+    requireAdmin("finance.write"),
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      const price = parseBillingPrice(req.body?.price_cents);
+      await setMemberPrice("contractor", id, price);
+      await logBillingAction(
+        "contractor",
+        id,
+        portalUser(res).id,
+        "price",
+        req.body?.reason,
+        {
+          price_cents: price,
+          price:
+            price == null ? "default" : price === 0 ? "waived" : money2(price),
+        },
+      );
+      res.json(await payload(id));
+    }),
+  );
+}
+
+// ─── Admin billing: overview, member detail, actions, card links ─────────────
+
+const BILLING_LINK_TTL_DAYS = 14;
+
+function parseBillingPrice(raw: unknown): number | null {
+  const price =
+    raw === null || raw === "" || raw === undefined ? null : Number(raw);
+  if (
+    price !== null &&
+    (!Number.isInteger(price) || price < 0 || price > 1_000_000)
+  ) {
+    throw new HttpError(400, "validation.invalidField");
+  }
+  return price;
+}
+
+function parseBillingRole(raw: unknown): BillingRole {
+  if (raw !== "affiliate" && raw !== "contractor")
+    throw new HttpError(404, "errors.notFound");
+  return raw;
+}
+
+async function logBillingAction(
+  role: BillingRole,
+  id: number,
+  adminId: number | null,
+  action: string,
+  reason: unknown,
+  detail: Record<string, unknown> = {},
+) {
+  await pool.execute(
+    `INSERT INTO billing_admin_actions (member_role, member_id, admin_id, action, reason, detail_json) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      role,
+      id,
+      adminId,
+      action,
+      reason ? String(reason).trim().slice(0, 2000) || null : null,
+      JSON.stringify(detail),
+    ],
+  );
+}
+
+/**
+ * Member price: contractors = subscription_price_cents (NULL = default);
+ * affiliates = billing_price_override_cents (NULL = agreement price). 0 = waived.
+ * A live plan moves to the new price at its next cycle (no proration); waiving cancels it.
+ */
+async function setMemberPrice(
+  role: BillingRole,
+  id: number,
+  price: number | null,
+): Promise<void> {
+  const { table } = BILLING_ROLES[role];
+  const col =
+    role === "contractor"
+      ? "subscription_price_cents"
+      : "billing_price_override_cents";
+  const [[k]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT id, billing_subscription_id, billing_status FROM ${table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!k) throw new HttpError(404, "errors.notFound");
+  await pool.execute(`UPDATE ${table} SET ${col} = ? WHERE id = ?`, [
+    price,
+    id,
+  ]);
+  const live =
+    k.billing_subscription_id && String(k.billing_status) !== "canceled";
+  if (live && billingConfigured()) {
+    const api = billingApi();
+    const effective = await billingPriceFor(role, id);
+    if (!effective) {
+      await syncBillingSubscription(
+        await api.subscriptions.cancel(String(k.billing_subscription_id)),
+      );
+    } else {
+      const sub = await api.subscriptions.retrieve(
+        String(k.billing_subscription_id),
+      );
+      const item = sub.items.data[0];
+      await syncBillingSubscription(
+        await api.subscriptions.update(sub.id, {
+          items: [
+            { id: item.id, price: await ensurePlanPrice(role, effective) },
+          ],
+          proration_behavior: "none",
+        }),
+      );
+    }
+  } else {
+    await startBillingOnApproval(role, id);
+  }
+}
+
+const memberLocked = (role: BillingRole, id: number) =>
+  role === "contractor"
+    ? contractorBillingLocked(id)
+    : affiliateBillingLocked(id);
+
+async function loadBillingMember(role: BillingRole, id: number) {
+  const [[m]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT id, email, phone, first_name, last_name, company, status, preferred_language, billing_subscription_id, billing_customer_id
+     FROM ${BILLING_ROLES[role].table} WHERE id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!m) throw new HttpError(404, "errors.notFound");
+  return m;
+}
+
+/** Tell the member what staff changed (email; never for silent price edits before a plan exists). */
+async function notifyMemberBilling(
+  role: BillingRole,
+  id: number,
+  en: { subject: string; body: string },
+  es: { subject: string; body: string },
+) {
+  const m = await loadBillingMember(role, id);
+  const l = asLang(m.preferred_language);
+  await safeSend(
+    String(m.email),
+    tplPortalNotice({
+      lang: l,
+      subject: tr(l, en.subject, es.subject),
+      headline: tr(l, en.subject, es.subject),
+      paragraphs: [
+        tr(
+          l,
+          `Hi ${m.first_name}, ${en.body}`,
+          `Hola ${m.first_name}, ${es.body}`,
+        ),
+      ],
+      cta: {
+        url:
+          role === "affiliate"
+            ? `${APP_URL}/affiliate/agreement`
+            : `${APP_URL}/contractor`,
+        label: tr(l, "Open my portal", "Abrir mi portal"),
+      },
+    }),
+  );
+}
+
+const money2 = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+async function billingInvoices(customerId: string | null) {
+  if (!customerId || !billingConfigured()) return [];
+  const api = billingApi();
+  const list = await api.invoices.list({ customer: customerId, limit: 12 });
+  return Promise.all(
+    list.data
+      .filter((inv) => inv.status !== "draft")
+      .map(async (inv) => {
+        let refunded = 0;
+        let receipt: string | null = null;
+        let paymentIntent: string | null = null;
+        if (inv.status === "paid" && inv.amount_paid > 0) {
+          try {
+            const pays = await api.invoicePayments.list({
+              invoice: String(inv.id),
+              status: "paid",
+              limit: 1,
+            });
+            const pi = pays.data[0]?.payment?.payment_intent;
+            paymentIntent = typeof pi === "string" ? pi : (pi?.id ?? null);
+            if (paymentIntent) {
+              const intent = await api.paymentIntents.retrieve(paymentIntent, {
+                expand: ["latest_charge"],
+              });
+              const charge = intent.latest_charge as Stripe.Charge | null;
+              refunded = charge?.amount_refunded ?? 0;
+              receipt = charge?.receipt_url ?? null;
+            }
+          } catch (e: any) {
+            console.warn(
+              "[billing] invoice payment lookup failed:",
+              e?.message ?? e,
+            );
+          }
+        }
+        return {
+          id: String(inv.id),
+          number: inv.number ?? null,
+          created: new Date(inv.created * 1000).toISOString(),
+          period_start: inv.period_start
+            ? new Date(inv.period_start * 1000).toISOString()
+            : null,
+          period_end: inv.period_end
+            ? new Date(inv.period_end * 1000).toISOString()
+            : null,
+          status: String(inv.status),
+          amount_due: inv.amount_due,
+          amount_paid: inv.amount_paid,
+          amount_refunded: refunded,
+          refundable: Boolean(paymentIntent) && inv.amount_paid - refunded > 0,
+          hosted_url: inv.hosted_invoice_url ?? null,
+          pdf_url: inv.invoice_pdf ?? null,
+          receipt_url: receipt,
+        };
+      }),
+  );
+}
+
+async function issueBillingCardLink(
+  role: BillingRole,
+  id: number,
+  adminId: number,
+  opts: {
+    price_cents: number | null;
+    free_days: number | null;
+    note: string | null;
+  },
+): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  // One live link per member: older ones stop working.
+  await pool.execute(
+    `UPDATE billing_card_links SET revoked_at = NOW() WHERE member_role = ? AND member_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
+    [role, id],
+  );
+  await pool.execute(
+    `INSERT INTO billing_card_links (member_role, member_id, token_hash, price_cents, free_days, note, created_by_admin_id, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NOW() + INTERVAL ${BILLING_LINK_TTL_DAYS} DAY)`,
+    [
+      role,
+      id,
+      sha256(token),
+      opts.price_cents,
+      opts.free_days,
+      opts.note,
+      adminId,
+    ],
+  );
+  return `${APP_URL}/billing/card/${token}`;
+}
+
+async function loadBillingCardLink(raw: unknown) {
+  const t = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(t))
+    throw new HttpError(404, "errors.billingLinkInvalid");
+  const [[l]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT * FROM billing_card_links WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW() LIMIT 1`,
+    [sha256(t)],
+  )) as unknown as [RowDataPacket[]];
+  if (!l) throw new HttpError(404, "errors.billingLinkInvalid");
+  return {
+    id: Number(l.id),
+    role: l.member_role as BillingRole,
+    member_id: Number(l.member_id),
+    price_cents: l.price_cents == null ? null : Number(l.price_cents),
+    free_days: l.free_days == null ? null : Number(l.free_days),
+    expires_at: l.expires_at as Date,
+  };
+}
+
+/** Totals + every contractor / affiliate membership (Admin → Billing, MCP list_memberships). */
+async function buildBillingOverview() {
+  const rows: any[] = [];
+  const configured = billingConfigured();
+  const ctrDefault = await affiliateSettingNumber(
+    BILLING_ROLES.contractor.priceKey,
+    BILLING_ROLES.contractor.priceDefault,
+  );
+  const BILLING_COLS = `id, email, first_name, last_name, company, status, billing_status, billing_trial_ends_at,
+    billing_current_period_end, billing_card_brand, billing_card_last4, billing_card_exp, billing_cancel_at_period_end,
+    billing_payment_method_id, billing_subscription_id`;
+  // One query per role (no per-member round trips): prices resolved in SQL, views computed in memory.
+  const [ctrs] = await pool.execute<RowDataPacket[]>(
+    `SELECT ${BILLING_COLS}, subscription_price_cents AS price_override
+     FROM contractors
+     WHERE billing_subscription_id IS NOT NULL OR billing_payment_method_id IS NOT NULL OR status = 'active'
+     ORDER BY id DESC LIMIT 1000`,
+  );
+  const [affs] = await pool.execute<RowDataPacket[]>(
+    `SELECT ${BILLING_COLS}, billing_price_override_cents AS price_override, subscription_price_cents AS base_price,
+            (SELECT ag.subscription_price_cents FROM affiliate_agreements ag
+             WHERE ag.affiliate_id = affiliates.id AND ag.status = 'signed' ORDER BY ag.id DESC LIMIT 1) AS signed_price
+     FROM affiliates
+     WHERE billing_subscription_id IS NOT NULL OR billing_payment_method_id IS NOT NULL
+     ORDER BY id DESC LIMIT 1000`,
+  );
+  const trial = {
+    contractor: await billingTrialDays("contractor"),
+    affiliate: await billingTrialDays("affiliate"),
+  };
+  for (const [role, list] of [
+    ["contractor", ctrs],
+    ["affiliate", affs],
+  ] as const) {
+    for (const r of list) {
+      const price =
+        role === "contractor"
+          ? r.price_override == null
+            ? ctrDefault
+            : Number(r.price_override)
+          : (r.price_override ?? r.signed_price ?? r.base_price) == null
+            ? null
+            : Number(r.price_override ?? r.signed_price ?? r.base_price);
+      const billing = billingViewFromRow(r, price, trial[role]);
+      const live = billing.status === "trialing" || billing.status === "active";
+      const locked =
+        configured &&
+        String(r.status) === "active" &&
+        Boolean(price) &&
+        (role === "contractor"
+          ? !live
+          : ["past_due", "incomplete"].includes(billing.status));
+      rows.push({
+        role,
+        id: Number(r.id),
+        name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
+        email: String(r.email),
+        company: r.company ? String(r.company) : null,
+        member_status: String(r.status),
+        billing,
+        locked,
+      });
+    }
+  }
+  const soonMs = Date.now() + 7 * 86_400_000;
+  const monthly = rows.filter(
+    (r) => r.billing.status === "active" || r.billing.status === "past_due",
+  );
+  return {
+    ok: true as const,
+    configured: billingConfigured(),
+    totals: {
+      mrr_cents: monthly.reduce(
+        (sum, r) => sum + (r.billing.price_cents || 0),
+        0,
+      ),
+      active: rows.filter((r) => r.billing.status === "active").length,
+      trialing: rows.filter((r) => r.billing.status === "trialing").length,
+      past_due: rows.filter(
+        (r) =>
+          r.billing.status === "past_due" || r.billing.status === "incomplete",
+      ).length,
+      paused: rows.filter((r) => r.locked).length,
+      trials_ending_7d: rows.filter(
+        (r) =>
+          r.billing.status === "trialing" &&
+          r.billing.trial_ends_at &&
+          new Date(r.billing.trial_ends_at).getTime() <= soonMs,
+      ).length,
+      awaiting_approval: rows.filter((r) => r.billing.awaiting_approval).length,
+      canceling: rows.filter((r) => r.billing.cancel_at_period_end).length,
+    },
+    members: rows,
+  };
+}
+
+function registerAdminBillingRoutes(app: Express) {
+  const read = requireAdmin("people.read");
+  const write = requireAdmin("finance.write");
+  const linkLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Totals + every membership (both roles), newest first.
+  app.get(
+    "/api/admin/billing/overview",
+    read,
+    route(async (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await buildBillingOverview());
+    }),
+  );
+
+  // One membership: plan, card, invoices (with refunds + receipts), staff action log, open card link.
+  app.get(
+    "/api/admin/billing/:role/:id",
+    read,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const m = await loadBillingMember(role, id);
+      const [actions] = await pool.execute<RowDataPacket[]>(
+        `SELECT b.id, b.action, b.reason, b.detail_json, b.created_at, a.first_name AS admin_first, a.last_name AS admin_last
+         FROM billing_admin_actions b LEFT JOIN admins a ON a.id = b.admin_id
+         WHERE b.member_role = ? AND b.member_id = ? ORDER BY b.id DESC LIMIT 50`,
+        [role, id],
+      );
+      const [[link]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT price_cents, free_days, expires_at, created_at FROM billing_card_links
+         WHERE member_role = ? AND member_id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
+         ORDER BY id DESC LIMIT 1`,
+        [role, id],
+      )) as unknown as [RowDataPacket[]];
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        ok: true,
+        member: {
+          role,
+          id,
+          name: `${m.first_name || ""} ${m.last_name || ""}`.trim(),
+          email: String(m.email),
+          phone: m.phone ? String(m.phone) : null,
+          company: m.company ? String(m.company) : null,
+          status: String(m.status),
+        },
+        billing: await loadBilling(role, id),
+        locked: await memberLocked(role, id),
+        invoices: await billingInvoices(
+          m.billing_customer_id ? String(m.billing_customer_id) : null,
+        ),
+        actions: actions.map((r) => ({
+          id: Number(r.id),
+          action: String(r.action),
+          reason: r.reason ? String(r.reason) : null,
+          detail:
+            typeof r.detail_json === "string"
+              ? JSON.parse(r.detail_json)
+              : (r.detail_json ?? {}),
+          created_at: isoDate(r.created_at),
+          admin_name: r.admin_first
+            ? `${r.admin_first} ${r.admin_last || ""}`.trim()
+            : null,
+        })),
+        open_link: link
+          ? {
+              price_cents:
+                link.price_cents == null ? null : Number(link.price_cents),
+              free_days: link.free_days == null ? null : Number(link.free_days),
+              expires_at: isoDate(link.expires_at),
+              created_at: isoDate(link.created_at),
+            }
+          : null,
+      });
+    }),
+  );
+
+  const requireReason = (raw: unknown) => {
+    const reason = String(raw || "").trim();
+    if (reason.length < 3)
+      throw new HttpError(400, "validation.billingReasonRequired");
+    return reason.slice(0, 2000);
+  };
+  const liveSub = async (role: BillingRole, id: number) => {
+    const m = await loadBillingMember(role, id);
+    if (!m.billing_subscription_id)
+      throw new HttpError(409, "errors.billingNoPlan");
+    return String(m.billing_subscription_id);
+  };
+
+  app.post(
+    "/api/admin/billing/:role/:id/cancel",
+    write,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const reason = requireReason(req.body?.reason);
+      const when = req.body?.when === "now" ? "now" : "period_end";
+      const subId = await liveSub(role, id);
+      const api = billingApi();
+      if (when === "now") {
+        await syncBillingSubscription(await api.subscriptions.cancel(subId));
+      } else {
+        await syncBillingSubscription(
+          await api.subscriptions.update(subId, { cancel_at_period_end: true }),
+        );
+      }
+      await logBillingAction(
+        role,
+        id,
+        portalUser(res).id,
+        when === "now" ? "cancel_now" : "cancel_period_end",
+        reason,
+      );
+      const b = await loadBilling(role, id);
+      await notifyMemberBilling(
+        role,
+        id,
+        {
+          subject: "Your platform membership was canceled",
+          body:
+            when === "now"
+              ? "our team canceled your platform membership today. Reply to this email if you have questions."
+              : `our team set your platform membership to end on ${b.current_period_end ? pacificLongDate(new Date(b.current_period_end), "en") : "the end of the paid month"}. You keep access until then.`,
+        },
+        {
+          subject: "Tu membresía de la plataforma fue cancelada",
+          body:
+            when === "now"
+              ? "nuestro equipo canceló hoy tu membresía de la plataforma. Responde este correo si tienes preguntas."
+              : `nuestro equipo programó el fin de tu membresía para el ${b.current_period_end ? pacificLongDate(new Date(b.current_period_end), "es") : "final del mes pagado"}. Mantienes el acceso hasta entonces.`,
+        },
+      );
+      res.json({ ok: true, billing: b, locked: await memberLocked(role, id) });
+    }),
+  );
+
+  app.post(
+    "/api/admin/billing/:role/:id/resume",
+    write,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const subId = await liveSub(role, id);
+      const sub = await billingApi().subscriptions.retrieve(subId);
+      if (sub.status === "canceled")
+        throw new HttpError(409, "errors.billingAlreadyEnded");
+      await syncBillingSubscription(
+        await billingApi().subscriptions.update(subId, {
+          cancel_at_period_end: false,
+        }),
+      );
+      await logBillingAction(
+        role,
+        id,
+        portalUser(res).id,
+        "resume",
+        req.body?.reason,
+      );
+      res.json({
+        ok: true,
+        billing: await loadBilling(role, id),
+        locked: await memberLocked(role, id),
+      });
+    }),
+  );
+
+  // Courtesy free days: no charge until the new date (trial end moves; nothing prorated).
+  app.post(
+    "/api/admin/billing/:role/:id/extend",
+    write,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const days = Number(req.body?.days);
+      if (!Number.isInteger(days) || days < 1 || days > 365)
+        throw new HttpError(400, "validation.invalidField");
+      const reason = requireReason(req.body?.reason);
+      const subId = await liveSub(role, id);
+      const api = billingApi();
+      const sub = await api.subscriptions.retrieve(subId);
+      if (sub.status === "canceled")
+        throw new HttpError(409, "errors.billingAlreadyEnded");
+      const base = Math.max(
+        sub.trial_end ?? 0,
+        sub.items.data[0]?.current_period_end ?? 0,
+        Math.floor(Date.now() / 1000),
+      );
+      const until = base + days * 86400;
+      await syncBillingSubscription(
+        await api.subscriptions.update(subId, {
+          trial_end: until,
+          proration_behavior: "none",
+        }),
+      );
+      await logBillingAction(role, id, portalUser(res).id, "extend", reason, {
+        days,
+        until: new Date(until * 1000).toISOString(),
+      });
+      await notifyMemberBilling(
+        role,
+        id,
+        {
+          subject: `${days} free days added to your membership`,
+          body: `our team added ${days} free days to your platform membership. Your next charge is on ${pacificLongDate(new Date(until * 1000), "en")}.`,
+        },
+        {
+          subject: `${days} días gratis agregados a tu membresía`,
+          body: `nuestro equipo agregó ${days} días gratis a tu membresía. Tu próximo cobro será el ${pacificLongDate(new Date(until * 1000), "es")}.`,
+        },
+      );
+      res.json({
+        ok: true,
+        billing: await loadBilling(role, id),
+        locked: await memberLocked(role, id),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/admin/billing/:role/:id/refund",
+    write,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const reason = requireReason(req.body?.reason);
+      const invoiceId = String(req.body?.invoice_id || "");
+      if (!/^in_[A-Za-z0-9]+$/.test(invoiceId))
+        throw new HttpError(400, "validation.invalidField");
+      const m = await loadBillingMember(role, id);
+      const api = billingApi();
+      const inv = await api.invoices.retrieve(invoiceId);
+      const invCustomer =
+        typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
+      if (
+        !m.billing_customer_id ||
+        invCustomer !== String(m.billing_customer_id)
+      )
+        throw new HttpError(404, "errors.notFound");
+      const pays = await api.invoicePayments.list({
+        invoice: invoiceId,
+        status: "paid",
+        limit: 1,
+      });
+      const pi = pays.data[0]?.payment?.payment_intent;
+      const paymentIntent = typeof pi === "string" ? pi : pi?.id;
+      if (!paymentIntent)
+        throw new HttpError(409, "errors.billingNothingToRefund");
+      const intent = await api.paymentIntents.retrieve(paymentIntent, {
+        expand: ["latest_charge"],
+      });
+      const charge = intent.latest_charge as Stripe.Charge | null;
+      const left = (charge?.amount ?? 0) - (charge?.amount_refunded ?? 0);
+      const amount =
+        req.body?.amount_cents == null || req.body?.amount_cents === ""
+          ? left
+          : Number(req.body.amount_cents);
+      if (!Number.isInteger(amount) || amount < 1 || amount > left)
+        throw new HttpError(400, "validation.refundAmount");
+      const refund = await api.refunds.create(
+        {
+          payment_intent: paymentIntent,
+          amount,
+          reason: "requested_by_customer",
+          metadata: {
+            app: "groundwork",
+            invoice: invoiceId,
+            by_admin: String(portalUser(res).id),
+          },
+        },
+        { idempotencyKey: `gw-refund-${invoiceId}-${amount}-${left}` },
+      );
+      await logBillingAction(role, id, portalUser(res).id, "refund", reason, {
+        invoice_id: invoiceId,
+        number: inv.number,
+        amount_cents: amount,
+        amount: money2(amount),
+        refund_id: refund.id,
+      });
+      await notifyMemberBilling(
+        role,
+        id,
+        {
+          subject: `Refund of ${money2(amount)} on its way`,
+          body: `we refunded ${money2(amount)} to your card for invoice ${inv.number || invoiceId}. It usually shows up in 5–10 business days.`,
+        },
+        {
+          subject: `Reembolso de ${money2(amount)} en camino`,
+          body: `reembolsamos ${money2(amount)} a tu tarjeta por la factura ${inv.number || invoiceId}. Normalmente aparece en 5 a 10 días hábiles.`,
+        },
+      );
+      res.json({
+        ok: true,
+        refund: { id: refund.id, amount_cents: amount, status: refund.status },
+      });
+    }),
+  );
+
+  app.patch(
+    "/api/admin/billing/:role/:id/price",
+    write,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const price = parseBillingPrice(req.body?.price_cents);
+      await setMemberPrice(role, id, price);
+      await logBillingAction(
+        role,
+        id,
+        portalUser(res).id,
+        "price",
+        req.body?.reason,
+        {
+          price_cents: price,
+          price:
+            price == null ? "default" : price === 0 ? "waived" : money2(price),
+        },
+      );
+      res.json({
+        ok: true,
+        billing: await loadBilling(role, id),
+        locked: await memberLocked(role, id),
+      });
+    }),
+  );
+
+  // Manual start: a secure link for the member to add their card (staff never handle card data).
+  app.post(
+    "/api/admin/billing/:role/:id/card-link",
+    write,
+    route(async (req, res) => {
+      const role = parseBillingRole(req.params.role);
+      const id = parseId(req.params.id);
+      const m = await loadBillingMember(role, id);
+      if (String(m.status) !== "active")
+        throw new HttpError(409, "errors.billingNotApproved");
+      const b = await loadBilling(role, id);
+      if (b.status === "trialing" || b.status === "active")
+        throw new HttpError(409, "errors.billingAlreadyActive");
+      const price =
+        req.body?.price_cents == null || req.body?.price_cents === ""
+          ? null
+          : parseBillingPrice(req.body.price_cents);
+      if (price === 0) throw new HttpError(400, "validation.invalidField"); // waive is a price action
+      const freeDaysRaw = req.body?.free_days;
+      const freeDays =
+        freeDaysRaw == null || freeDaysRaw === "" ? null : Number(freeDaysRaw);
+      if (
+        freeDays !== null &&
+        (!Number.isInteger(freeDays) || freeDays < 0 || freeDays > 365)
+      )
+        throw new HttpError(400, "validation.invalidField");
+      const note =
+        String(req.body?.note || "")
+          .trim()
+          .slice(0, 500) || null;
+      const link = await issueBillingCardLink(role, id, portalUser(res).id, {
+        price_cents: price,
+        free_days: freeDays,
+        note,
+      });
+      const l = asLang(m.preferred_language);
+      const effective = price ?? b.price_cents;
+      const days = freeDays ?? (b.status === "none" ? b.trial_days : 0);
+      const terms = effective
+        ? days > 0
+          ? tr(
+              l,
+              `${days} days free, then ${money2(effective)}/month.`,
+              `${days} días gratis y luego ${money2(effective)}/mes.`,
+            )
+          : tr(l, `${money2(effective)}/month.`, `${money2(effective)}/mes.`)
+        : "";
+      await safeSend(
+        String(m.email),
+        tplPortalNotice({
+          lang: l,
+          subject: tr(
+            l,
+            "Add your card to start your Groundwork membership",
+            "Agrega tu tarjeta para iniciar tu membresía de Groundwork",
+          ),
+          headline: tr(
+            l,
+            "Start your platform membership",
+            "Inicia tu membresía de la plataforma",
+          ),
+          paragraphs: [
+            tr(
+              l,
+              `Hi ${m.first_name}, our team set up your platform membership. ${terms}`,
+              `Hola ${m.first_name}, nuestro equipo preparó tu membresía de la plataforma. ${terms}`,
+            ),
+            ...(note ? [note] : []),
+            tr(
+              l,
+              `This secure link works for ${BILLING_LINK_TTL_DAYS} days and only for you.`,
+              `Este enlace seguro funciona por ${BILLING_LINK_TTL_DAYS} días y solo para ti.`,
+            ),
+          ],
+          cta: { url: link, label: tr(l, "Add my card", "Agregar mi tarjeta") },
+        }),
+      );
+      const from = await resolveCampaignSmsFrom();
+      if (from && m.phone) {
+        try {
+          await sendSms({
+            to: String(m.phone),
+            from,
+            body: tr(
+              l,
+              `Groundwork Capital: add your card to start your membership (${terms}) ${link}`,
+              `Groundwork Capital: agrega tu tarjeta para iniciar tu membresía (${terms}) ${link}`,
+            ),
+          });
+        } catch (e: any) {
+          console.warn("[billing-link] SMS failed:", e?.message ?? e);
+        }
+      }
+      await logBillingAction(role, id, portalUser(res).id, "card_link", note, {
+        price_cents: price,
+        free_days: freeDays,
+        price: price ? money2(price) : "default",
+      });
+      res.status(201).json({ ok: true, sent: true });
+    }),
+  );
+
+  // ── Public: the member's secure card link ──
+  app.get(
+    "/api/public/billing-link/:token",
+    linkLimiter,
+    route(async (req, res) => {
+      const link = await loadBillingCardLink(req.params.token);
+      const m = await loadBillingMember(link.role, link.member_id);
+      const b = await loadBilling(link.role, link.member_id);
+      const price =
+        link.price_cents == null ? b.price_cents : Number(link.price_cents);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        ok: true,
+        member: {
+          first_name: String(m.first_name || ""),
+          last_name: String(m.last_name || ""),
+          email: String(m.email),
+          role: link.role,
+        },
+        billing: {
+          ...b,
+          price_cents: price,
+          // Staff-set free days, else the standard rule (once per person).
+          trial_days:
+            link.free_days ?? (b.status === "none" ? b.trial_days : 0),
+          approved: true,
+          awaiting_approval: false,
+          card: null,
+        },
+        expires_at: isoDate(link.expires_at),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/public/billing-link/:token/setup",
+    linkLimiter,
+    route(async (req, res) => {
+      const link = await loadBillingCardLink(req.params.token);
+      res.json({
+        ok: true,
+        client_secret: await createBillingSetup(link.role, link.member_id),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/public/billing-link/:token/activate",
+    linkLimiter,
+    route(async (req, res) => {
+      const link = await loadBillingCardLink(req.params.token);
+      // Staff terms first (price), then save the card and start with the staff free days.
+      if (link.price_cents != null)
+        await setMemberPrice(
+          link.role,
+          link.member_id,
+          Number(link.price_cents),
+        );
+      await activateBillingCard(
+        link.role,
+        link.member_id,
+        String(req.body?.setup_intent_id || ""),
+        {
+          trialDays: link.free_days == null ? null : Number(link.free_days),
+        },
+      );
+      await pool.execute(
+        `UPDATE billing_card_links SET used_at = NOW() WHERE id = ?`,
+        [link.id],
+      );
+      res.json({
+        ok: true,
+        billing: await loadBilling(link.role, link.member_id),
+      });
+    }),
+  );
+}
+
+// ─── Erase a person completely (client / affiliate / contractor) ─────────────
+
+type ErasableEntity = "client" | "affiliate" | "contractor";
+const ERASE_TABLE: Record<ErasableEntity, "clients" | "affiliates" | "contractors"> = {
+  client: "clients",
+  affiliate: "affiliates",
+  contractor: "contractors",
+};
+
+/** What erasing removes (shown in the confirm modal) + the files / processor objects to clean up after. */
+async function erasePlan(entity: ErasableEntity, id: number) {
+  const table = ERASE_TABLE[entity];
+  const [[p]] = (await pool.execute<RowDataPacket[]>(`SELECT * FROM ${table} WHERE id = ? LIMIT 1`, [id])) as unknown as [RowDataPacket[]];
+  if (!p) throw new HttpError(404, "errors.notFound");
+  const n = async (sql: string, params: unknown[]) => Number(((await pool.query<RowDataPacket[]>(sql, params as any[])) as any)[0][0]?.n ?? 0);
+  const list = async (sql: string, params: unknown[]) => ((await pool.query<RowDataPacket[]>(sql, params as any[])) as any)[0] as RowDataPacket[];
+  const counts: Record<string, number> = {};
+  const publicFiles: string[] = [];
+  const privateFiles: string[] = [];
+  const kept: Record<string, number> = {};
+  let projectIds: number[] = [];
+  let leadIds: number[] = [];
+
+  if (entity === "client") {
+    projectIds = (await list(`SELECT id FROM projects WHERE client_id = ?`, [id])).map((r) => Number(r.id));
+    const pids = projectIds.length ? projectIds : [0];
+    counts.projects = projectIds.length;
+    counts.photos = await n(`SELECT COUNT(*) n FROM project_photos WHERE project_id IN (?)`, [pids]);
+    counts.draws = await n(`SELECT COUNT(*) n FROM draw_requests WHERE project_id IN (?)`, [pids]);
+    counts.contracts = await n(`SELECT COUNT(*) n FROM project_contracts WHERE project_id IN (?)`, [pids]);
+    counts.commissions = await n(`SELECT COUNT(*) n FROM affiliate_commissions WHERE project_id IN (?) OR client_id = ?`, [pids, id]);
+    counts.appointments = await n(`SELECT COUNT(*) n FROM appointments WHERE client_id = ? OR project_id IN (?)`, [id, pids]);
+    counts.conversations = await n(`SELECT COUNT(*) n FROM conversations WHERE client_id = ?`, [id]);
+    for (const r of await list(`SELECT storage_url FROM project_photos WHERE project_id IN (?) UNION ALL SELECT storage_url FROM project_contracts WHERE project_id IN (?)`, [pids, pids])) {
+      if (r.storage_url) publicFiles.push(String(r.storage_url));
+    }
+    leadIds = (await list(`SELECT id FROM leads WHERE client_id = ? OR id = ?`, [id, p.lead_id ?? 0])).map((r) => Number(r.id));
+  } else if (entity === "affiliate") {
+    counts.commissions = await n(`SELECT COUNT(*) n FROM affiliate_commissions WHERE affiliate_id = ?`, [id]);
+    counts.agreements = await n(`SELECT COUNT(*) n FROM affiliate_agreements WHERE affiliate_id = ?`, [id]);
+    counts.w9s = await n(`SELECT COUNT(*) n FROM affiliate_w9s WHERE affiliate_id = ?`, [id]);
+    counts.link_clicks = await n(`SELECT COUNT(*) n FROM affiliate_link_clicks WHERE affiliate_id = ?`, [id]);
+    for (const r of await list(`SELECT pdf_blob_pathname f FROM affiliate_agreements WHERE affiliate_id = ? UNION ALL SELECT pdf_blob_pathname FROM affiliate_w9s WHERE affiliate_id = ?`, [id, id])) {
+      if (r.f) privateFiles.push(String(r.f));
+    }
+    leadIds = (await list(`SELECT id FROM leads WHERE converted_affiliate_id = ?`, [id])).map((r) => Number(r.id));
+    kept.referred_clients = await n(`SELECT COUNT(*) n FROM clients WHERE affiliate_id = ?`, [id]);
+    kept.sub_affiliates = await n(`SELECT COUNT(*) n FROM affiliates WHERE parent_affiliate_id = ?`, [id]);
+  } else {
+    counts.draws = await n(`SELECT COUNT(*) n FROM draw_requests WHERE contractor_id = ?`, [id]);
+    counts.application_documents = await n(
+      `SELECT COUNT(*) n FROM contractor_application_documents d JOIN contractor_applications a ON a.id = d.application_id WHERE a.contractor_id = ?`,
+      [id],
+    );
+    for (const r of await list(
+      `SELECT d.blob_pathname f FROM contractor_application_documents d JOIN contractor_applications a ON a.id = d.application_id WHERE a.contractor_id = ?`,
+      [id],
+    )) {
+      if (r.f) privateFiles.push(String(r.f));
+    }
+    leadIds = (await list(`SELECT id FROM leads WHERE converted_contractor_id = ?`, [id])).map((r) => Number(r.id));
+    kept.assigned_projects = await n(`SELECT COUNT(*) n FROM projects WHERE contractor_id = ?`, [id]);
+  }
+  counts.leads = leadIds.length;
+  if (entity === "contractor") {
+    counts.appointment_invites = await n(`SELECT COUNT(*) n FROM appointment_attendees WHERE contractor_id = ?`, [id]);
+  }
+  const subscription = entity !== "client" && Boolean(p.billing_subscription_id) && !["none", "canceled"].includes(String(p.billing_status));
+  return {
+    person: { entity, id, name: `${p.first_name || ""} ${p.last_name || ""}`.trim(), email: p.email ? String(p.email) : null, status: String(p.status) },
+    counts: Object.fromEntries(Object.entries(counts).filter(([, v]) => v > 0)),
+    kept: Object.fromEntries(Object.entries(kept).filter(([, v]) => v > 0)),
+    subscription,
+    card_on_file: entity !== "client" && Boolean(p.billing_card_last4),
+    files: publicFiles.length + privateFiles.length,
+    _internal: { projectIds, leadIds, publicFiles, privateFiles, customerId: p.billing_customer_id ? String(p.billing_customer_id) : null, subscriptionId: p.billing_subscription_id ? String(p.billing_subscription_id) : null },
+  };
+}
+
+/**
+ * Erase everything about a person: their record, sign-in access, projects (clients), commissions,
+ * agreements / W-9 (affiliates), application documents and draws (contractors), their source lead,
+ * appointments, conversations, stored files, and their payment-processor customer. Other people they
+ * are linked to (referred homeowners, sub-affiliates, assigned projects) are kept and unlinked.
+ */
+async function erasePerson(entity: ErasableEntity, id: number, adminId: number, reason: string | null) {
+  const plan = await erasePlan(entity, id);
+  const { projectIds, leadIds, publicFiles, privateFiles, customerId, subscriptionId } = plan._internal;
+  // Stop billing first (never charge someone we no longer have a record of).
+  if (entity !== "client" && billingConfigured() && (subscriptionId || customerId)) {
+    const api = billingApi();
+    if (subscriptionId) await api.subscriptions.cancel(subscriptionId).catch((e: any) => { if (e?.code !== "resource_missing") throw e; });
+    if (customerId) await api.customers.del(customerId).catch((e: any) => { if (e?.code !== "resource_missing") throw e; });
+  }
+  await withTx(async (conn) => {
+    const pids = projectIds.length ? projectIds : [0];
+    if (entity === "client") {
+      await conn.query(`DELETE FROM appointments WHERE client_id = ? OR project_id IN (?)`, [id, pids]);
+      await conn.query(`DELETE FROM projects WHERE client_id = ?`, [id]); // photos, draws, contracts, commissions, milestones cascade
+    }
+    if (leadIds.length) {
+      await conn.query(`DELETE FROM appointments WHERE lead_id IN (?)`, [leadIds]);
+      await conn.query(`DELETE FROM leads WHERE id IN (?)`, [leadIds]);
+    }
+    if (entity !== "client") {
+      for (const t of ["billing_admin_actions", "billing_card_links"]) {
+        await conn.query(`DELETE FROM ${t} WHERE member_role = ? AND member_id = ?`, [entity, id]);
+      }
+    }
+    await conn.query(`DELETE FROM ${ERASE_TABLE[entity]} WHERE id = ?`, [id]);
+    await logDedupe({
+      action: "delete",
+      entity,
+      recordId: id,
+      adminId,
+      reason,
+      snapshot: { name: plan.person.name, email: plan.person.email, removed: plan.counts, unlinked: plan.kept, files: plan.files },
+      exec: conn,
+    });
+  });
+  // Stored files last (best effort — the records are already gone).
+  if (publicFiles.length && process.env.BLOB_READ_WRITE_TOKEN) {
+    await delBlob(publicFiles, { token: String(process.env.BLOB_READ_WRITE_TOKEN) }).catch((e: any) => console.warn("[erase] public files:", e?.message ?? e));
+  }
+  if (privateFiles.length && process.env.BLOB_PRIVATE_READ_WRITE_TOKEN) {
+    await delBlob(privateFiles, { token: String(process.env.BLOB_PRIVATE_READ_WRITE_TOKEN) }).catch((e: any) => console.warn("[erase] private files:", e?.message ?? e));
+  }
+  const { _internal: _drop, ...summary } = plan;
+  return summary;
+}
+
+/** Staff search across clients, leads and projects (appointment "who is this for", future pickers). */
+async function searchRecords(q: string, role: AdminRole, limit = 6) {
+  const term = q.trim().slice(0, 100);
+  const out = { clients: [] as any[], leads: [] as any[], projects: [] as any[] };
+  if (term.length < 2) return out;
+  const like = `%${term.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
+  const digits = term.replace(/\D/g, "");
+  const phoneLike = digits.length >= 3 ? `%${digits}%` : "__no_phone__";
+  if (adminCan(role, "people.read")) {
+    const [r] = await pool.query<RowDataPacket[]>(
+      `SELECT id, first_name, last_name, email, phone, city, status FROM clients
+       WHERE CONCAT_WS(' ', first_name, last_name) LIKE ? OR email LIKE ? OR REPLACE(REPLACE(REPLACE(REPLACE(phone,'-',''),' ',''),'(',''),')','') LIKE ? OR address_line1 LIKE ?
+       ORDER BY updated_at DESC LIMIT ?`,
+      [like, like, phoneLike, like, limit],
+    );
+    out.clients = r.map((x) => ({ id: Number(x.id), name: `${x.first_name || ""} ${x.last_name || ""}`.trim(), email: x.email ?? null, phone: x.phone ?? null, city: x.city ?? null, status: String(x.status) }));
+  }
+  if (adminCan(role, "leads")) {
+    const [r] = await pool.query<RowDataPacket[]>(
+      `SELECT id, full_name, email, phone, property_address, status FROM leads
+       WHERE client_id IS NULL AND status <> 'spam' AND (full_name LIKE ? OR email LIKE ? OR REPLACE(REPLACE(REPLACE(REPLACE(phone,'-',''),' ',''),'(',''),')','') LIKE ? OR property_address LIKE ?)
+       ORDER BY id DESC LIMIT ?`,
+      [like, like, phoneLike, like, limit],
+    );
+    out.leads = r.map((x) => ({ id: Number(x.id), name: String(x.full_name || ""), email: x.email ?? null, phone: x.phone ?? null, address: x.property_address ?? null, status: String(x.status) }));
+  }
+  if (adminCan(role, "projects.read")) {
+    const [r] = await pool.query<RowDataPacket[]>(
+      `SELECT p.id, p.public_id, p.milestone, p.property_address, p.property_city, p.client_id, c.first_name, c.last_name
+       FROM projects p LEFT JOIN clients c ON c.id = p.client_id
+       WHERE p.public_id LIKE ? OR p.property_address LIKE ? OR CONCAT_WS(' ', c.first_name, c.last_name) LIKE ?
+       ORDER BY p.updated_at DESC LIMIT ?`,
+      [like, like, like, limit],
+    );
+    out.projects = r.map((x) => ({
+      id: Number(x.id),
+      public_id: String(x.public_id),
+      client_id: x.client_id != null ? Number(x.client_id) : null,
+      client_name: `${x.first_name || ""} ${x.last_name || ""}`.trim(),
+      address: [x.property_address, x.property_city].filter(Boolean).join(", ") || null,
+      milestone: String(x.milestone),
+    }));
+  }
+  return out;
+}
+
+/** Affiliates whose latest signed agreement is older than the published one. */
+async function outdatedAgreementAffiliates() {
+  const [[cur]] = (await pool.execute<RowDataPacket[]>(
+    `SELECT MAX(version) v FROM affiliate_agreement_templates WHERE published_at IS NOT NULL`,
+  )) as unknown as [RowDataPacket[]];
+  const current = cur?.v != null ? Number(cur.v) : null;
+  if (current == null) return { current, rows: [] as RowDataPacket[] };
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT a.id, a.email, a.first_name, a.preferred_language, MAX(ag.template_version) signed_version
+     FROM affiliates a JOIN affiliate_agreements ag ON ag.affiliate_id = a.id AND ag.status = 'signed'
+     WHERE a.status IN ('active', 'pending')
+     GROUP BY a.id, a.email, a.first_name, a.preferred_language
+     HAVING MAX(ag.template_version) < ?`,
+    [current],
+  );
+  return { current, rows };
+}
+
+function registerEraseRoutes(app: Express) {
+  const parseEntity = (raw: unknown): ErasableEntity => {
+    if (raw !== "client" && raw !== "affiliate" && raw !== "contractor") throw new HttpError(404, "errors.notFound");
+    return raw;
+  };
+  // Record pages: latest text + call with one phone number.
+  app.get(
+    "/api/admin/last-touch",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const [row] = await withLastTouches([{ phone: String(req.query.phone || "") }]);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ok: true, last_sms: row.last_sms, last_call: row.last_call });
+    }),
+  );
+  app.get(
+    "/api/admin/affiliate-agreement/outdated",
+    requireAdmin("approvals"),
+    route(async (_req, res) => {
+      const { current, rows } = await outdatedAgreementAffiliates();
+      res.json({ ok: true, current_version: current, count: rows.length });
+    }),
+  );
+
+  // Staff-triggered: ask everyone on an older version to review and sign the current one.
+  app.post(
+    "/api/admin/affiliate-agreement/resign-notice",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      if (req.body?.confirm !== true) throw new HttpError(400, "validation.confirmRequired");
+      const { current, rows } = await outdatedAgreementAffiliates();
+      for (const r of rows) {
+        const l = asLang(r.preferred_language);
+        await safeSend(String(r.email), tplPortalNotice({
+          lang: l,
+          subject: tr(l, "Updated affiliate agreement: please review and sign", "Acuerdo de afiliado actualizado: revísalo y fírmalo"),
+          headline: tr(l, "We updated your affiliate agreement", "Actualizamos tu acuerdo de afiliado"),
+          paragraphs: [
+            tr(
+              l,
+              `Hi ${r.first_name}, good news: we now pay your fees within 5 business days after the loan funds (it was 15). Please review and sign version ${current} of the agreement in your portal. It takes a minute.`,
+              `Hola ${r.first_name}, buenas noticias: ahora pagamos tus comisiones dentro de 5 días hábiles después de que se fondea el préstamo (antes eran 15). Revisa y firma la versión ${current} del acuerdo en tu portal. Toma un minuto.`,
+            ),
+            tr(l, "Until you sign, the agreement you already signed stays in effect.", "Hasta que firmes, el acuerdo que ya firmaste sigue vigente."),
+          ],
+          cta: { url: `${APP_URL}/affiliate/agreement`, label: tr(l, "Review and sign", "Revisar y firmar") },
+        }));
+      }
+      res.json({ ok: true, current_version: current, sent: rows.length });
+    }),
+  );
+
+  app.get(
+    "/api/admin/search/records",
+    requirePortal("admin"),
+    route(async (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ok: true, ...(await searchRecords(String(req.query.q || ""), portalUser(res).role as AdminRole)) });
+    }),
+  );
+  app.get(
+    "/api/admin/people/:entity/:id/erase-preview",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const { _internal: _drop, ...plan } = await erasePlan(parseEntity(req.params.entity), parseId(req.params.id));
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ok: true, ...plan });
+    }),
+  );
+  app.delete(
+    "/api/admin/people/:entity/:id",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      if (req.body?.confirm !== true) throw new HttpError(400, "validation.confirmRequired");
+      const reason = String(req.body?.reason || "").trim().slice(0, 500) || null;
+      const summary = await erasePerson(parseEntity(req.params.entity), parseId(req.params.id), portalUser(res).id, reason);
+      res.json({ ok: true, ...summary });
+    }),
+  );
+}
+
+// ─── Staff command center (dashboard): inbox, money, activity, trends — by role ─
+
+type InboxItem = {
+  key: string;
+  count: number;
+  to: string;
+  tone: "alert" | "warn" | "info";
+  amount_cents?: number;
+};
+
+/**
+ * One payload for the staff dashboard. Every section is filtered by the
+ * viewer's permissions; `mine` narrows assignable items (appointments,
+ * conversations) to the signed-in staff member.
+ */
+async function buildCommandCenter(user: PortalAuthUser, mine: boolean) {
+  const role = user.role as AdminRole;
+  const can = (perm: AdminPerm) => adminCan(role, perm);
+  const one = async (sql: string, params: unknown[] = []) =>
+    Number(
+      ((await pool.execute<RowDataPacket[]>(sql, params as any[])) as any)[0][0]
+        ?.n ?? 0,
+    );
+  const inbox: InboxItem[] = [];
+  const push = (item: InboxItem) => {
+    if (item.count > 0) inbox.push(item);
+  };
+
+  // Billing totals feed both the inbox and money — fetch once, in parallel with everything else.
+  const billingP = can("finance.read")
+    ? buildBillingOverview().then((o) => o.totals)
+    : Promise.resolve(null);
+
+  // Sections run concurrently (each is a handful of indexed queries).
+  const inboxTask = (async () => {
+    if (can("leads"))
+      push({
+        key: "leads_new",
+        count: await one(`SELECT COUNT(*) n FROM leads WHERE status = 'new'`),
+        to: "/admin/leads",
+        tone: "alert",
+      });
+    if (can("approvals")) {
+      push({
+        key: "affiliates_pending",
+        count: await one(
+          `SELECT COUNT(*) n FROM affiliates WHERE status = 'pending'`,
+        ),
+        to: "/admin/affiliates?status=pending",
+        tone: "alert",
+      });
+      push({
+        key: "applications_review",
+        count: await one(
+          `SELECT COUNT(*) n FROM contractor_applications WHERE status IN ('submitted','in_review')`,
+        ),
+        to: "/admin/contractors?status=pending",
+        tone: "alert",
+      });
+      push({
+        key: "clients_pending",
+        count: await one(
+          `SELECT COUNT(*) n FROM clients WHERE status = 'pending'`,
+        ),
+        to: "/admin/clients?status=pending",
+        tone: "warn",
+      });
+    }
+    if (can("projects.read")) {
+      const [[d]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT COUNT(*) n, COALESCE(SUM(amount_cents), 0) cents FROM draw_requests WHERE status = 'submitted'`,
+      )) as unknown as [RowDataPacket[]];
+      push({
+        key: "draws_submitted",
+        count: Number(d?.n || 0),
+        amount_cents: Number(d?.cents || 0),
+        to: "/admin/draws",
+        tone: "warn",
+      });
+    }
+    if (await adminHasConversationsAccess(user.id)) {
+      push({
+        key: "texts_unread",
+        count: await one(
+          `SELECT COUNT(*) n FROM conversations WHERE status = 'open' AND unread_count > 0 ${mine ? "AND assigned_admin_id = ?" : "AND (assigned_admin_id = ? OR assigned_admin_id IS NULL)"}`,
+          [user.id],
+        ),
+        to: "/admin/conversations",
+        tone: "alert",
+      });
+    }
+    if (can("events")) {
+      push({
+        key: "events_upcoming",
+        count: await one(
+          `SELECT COUNT(*) n FROM marketing_events WHERE status = 'published' AND starts_at BETWEEN NOW() AND NOW() + INTERVAL 14 DAY`,
+        ),
+        to: "/admin/events",
+        tone: "info",
+      });
+    }
+    if (can("campaigns")) {
+      push({
+        key: "campaigns_scheduled",
+        count: await one(
+          `SELECT COUNT(*) n FROM campaigns WHERE status = 'scheduled'`,
+        ),
+        to: "/admin/campaigns",
+        tone: "info",
+      });
+    }
+    const billingTotals = await billingP;
+    if (billingTotals) {
+      push({
+        key: "billing_past_due",
+        count: billingTotals.past_due,
+        to: "/admin/billing",
+        tone: "alert",
+      });
+      push({
+        key: "billing_paused",
+        count: billingTotals.paused,
+        to: "/admin/billing",
+        tone: "warn",
+      });
+      push({
+        key: "trials_ending",
+        count: billingTotals.trials_ending_7d,
+        to: "/admin/billing",
+        tone: "info",
+      });
+      push({
+        key: "commissions_to_approve",
+        count: await one(
+          `SELECT COUNT(*) n FROM affiliate_commissions WHERE status = 'pending'`,
+        ),
+        to: "/admin/commissions",
+        tone: "info",
+      });
+    }
+  })();
+
+  // ── Today's appointments (Pacific day) ──
+  let appointments: {
+    id: number;
+    title: string;
+    starts_at: string | null;
+    kind: string;
+    location_type: string;
+    owner: string | null;
+  }[] = [];
+  const apptTask = (async () => {
+    if (can("projects.read")) {
+      const tz = "America/Los_Angeles";
+      const today = utcToZoned(new Date(), tz).date;
+      const start = zonedTimeToUtc(today, "00:00", tz);
+      const end = new Date(start.getTime() + 86_400_000);
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT ap.id, ap.title, ap.starts_at, ap.kind, ap.location_type, a.first_name, a.last_name
+       FROM appointments ap LEFT JOIN admins a ON a.id = ap.owner_admin_id
+       WHERE ap.status = 'scheduled' AND ap.starts_at >= ? AND ap.starts_at < ? ${mine ? "AND ap.owner_admin_id = ?" : ""}
+       ORDER BY ap.starts_at LIMIT 12`,
+        mine ? [start, end, user.id] : [start, end],
+      );
+      appointments = rows.map((r) => ({
+        id: Number(r.id),
+        title: String(r.title),
+        starts_at: isoDate(r.starts_at),
+        kind: String(r.kind),
+        location_type: String(r.location_type),
+        owner: r.first_name
+          ? `${r.first_name} ${r.last_name || ""}`.trim()
+          : null,
+      }));
+    }
+  })();
+
+  // ── Money ──
+  let money: null | {
+    mrr_cents: number;
+    commissions: { pending: number; approved: number; paid: number };
+    pipeline: { milestone: string; count: number; value_cents: number }[];
+    closed: { count: number; net_cents: number };
+  } = null;
+  const moneyTask = (async () => {
+    if (can("finance.read")) {
+      const [com] = await pool.execute<RowDataPacket[]>(
+        `SELECT status, COALESCE(SUM(amount_cents), 0) cents FROM affiliate_commissions GROUP BY status`,
+      );
+      const c = Object.fromEntries(
+        com.map((r) => [String(r.status), Number(r.cents)]),
+      );
+      const [pipe] = await pool.execute<RowDataPacket[]>(
+        `SELECT milestone, COUNT(*) n, COALESCE(SUM(sale_price_cents), 0) v FROM projects WHERE milestone <> 'cancelled' GROUP BY milestone`,
+      );
+      const order = ["lead", "financing", "contracted", "in_build", "closed"];
+      const [[closed]] = (await pool.execute<RowDataPacket[]>(
+        `SELECT COUNT(*) n, COALESCE(SUM(net_profit_cents), 0) net FROM projects WHERE milestone = 'closed'`,
+      )) as unknown as [RowDataPacket[]];
+      const billingTotals = await billingP;
+      money = {
+        mrr_cents: billingTotals?.mrr_cents ?? 0,
+        commissions: {
+          pending: c.pending ?? 0,
+          approved: c.approved ?? 0,
+          paid: c.paid ?? 0,
+        },
+        pipeline: order.map((m) => {
+          const r = pipe.find((x) => String(x.milestone) === m);
+          return {
+            milestone: m,
+            count: Number(r?.n || 0),
+            value_cents: Number(r?.v || 0),
+          };
+        }),
+        closed: {
+          count: Number(closed?.n || 0),
+          net_cents: Number(closed?.net || 0),
+        },
+      };
+    }
+  })();
+
+  // ── Activity (last 14 days, newest first) ──
+  type Act = {
+    kind: string;
+    at: string;
+    title: string;
+    detail?: string | null;
+    to?: string | null;
+  };
+  const acts: Act[] = [];
+  const since = new Date(Date.now() - 14 * 86_400_000);
+  const actTask = (async () => {
+    if (can("leads")) {
+      const [r] = await pool.execute<RowDataPacket[]>(
+        `SELECT id, first_name, last_name, source, audience_tag, created_at FROM leads WHERE created_at >= ? AND status <> 'spam' ORDER BY id DESC LIMIT 12`,
+        [since],
+      );
+      for (const x of r)
+        acts.push({
+          kind: "lead",
+          at: isoDate(x.created_at)!,
+          title: `${x.first_name || ""} ${x.last_name || ""}`.trim(),
+          detail: x.source || x.audience_tag || null,
+          to: "/admin/leads",
+        });
+    }
+    if (can("people.read")) {
+      for (const [kind, table, to] of [
+        ["client", "clients", "/admin/clients/"],
+        ["affiliate", "affiliates", "/admin/affiliates/"],
+        ["contractor", "contractors", "/admin/contractors/"],
+      ] as const) {
+        const [r] = await pool.execute<RowDataPacket[]>(
+          `SELECT id, first_name, last_name, created_at FROM ${table} WHERE created_at >= ? ORDER BY id DESC LIMIT 8`,
+          [since],
+        );
+        for (const x of r)
+          acts.push({
+            kind,
+            at: isoDate(x.created_at)!,
+            title: `${x.first_name || ""} ${x.last_name || ""}`.trim(),
+            to: `${to}${x.id}`,
+          });
+      }
+    }
+    if (can("approvals")) {
+      const [r] = await pool.execute<RowDataPacket[]>(
+        `SELECT e.kind, e.created_at, a.contractor_id, k.first_name, k.last_name FROM contractor_application_events e
+       JOIN contractor_applications a ON a.id = e.application_id JOIN contractors k ON k.id = a.contractor_id
+       WHERE e.created_at >= ? AND e.kind IN ('submitted','approved','denied') ORDER BY e.id DESC LIMIT 8`,
+        [since],
+      );
+      for (const x of r)
+        acts.push({
+          kind: `application_${x.kind}`,
+          at: isoDate(x.created_at)!,
+          title: `${x.first_name || ""} ${x.last_name || ""}`.trim(),
+          to: `/admin/contractors/${x.contractor_id}`,
+        });
+    }
+    if (can("projects.read")) {
+      const [r] = await pool.execute<RowDataPacket[]>(
+        `SELECT e.to_milestone, e.created_at, p.public_id FROM project_milestone_events e JOIN projects p ON p.id = e.project_id
+       WHERE e.created_at >= ? ORDER BY e.id DESC LIMIT 10`,
+        [since],
+      );
+      for (const x of r)
+        acts.push({
+          kind: "milestone",
+          at: isoDate(x.created_at)!,
+          title: String(x.public_id),
+          detail: String(x.to_milestone),
+          to: `/admin/projects/${x.public_id}`,
+        });
+      const [d] = await pool.execute<RowDataPacket[]>(
+        `SELECT d.amount_cents, d.updated_at, d.status, p.public_id FROM draw_requests d JOIN projects p ON p.id = d.project_id
+       WHERE d.updated_at >= ? AND d.status <> 'draft' ORDER BY d.updated_at DESC LIMIT 6`,
+        [since],
+      );
+      for (const x of d)
+        acts.push({
+          kind: `draw_${x.status}`,
+          at: isoDate(x.updated_at)!,
+          title: String(x.public_id),
+          detail: `$${(Number(x.amount_cents) / 100).toFixed(2)}`,
+          to: "/admin/draws",
+        });
+    }
+    if (can("finance.read")) {
+      const [r] = await pool.execute<RowDataPacket[]>(
+        `SELECT b.action, b.member_role, b.member_id, b.created_at, a.first_name FROM billing_admin_actions b LEFT JOIN admins a ON a.id = b.admin_id
+       WHERE b.created_at >= ? ORDER BY b.id DESC LIMIT 6`,
+        [since],
+      );
+      for (const x of r)
+        acts.push({
+          kind: `billing_${x.action}`,
+          at: isoDate(x.created_at)!,
+          title: `${x.member_role} #${x.member_id}`,
+          detail: x.first_name ? String(x.first_name) : null,
+          to: "/admin/billing",
+        });
+    }
+  })();
+
+  // ── Trends (12 weeks) + 90-day funnel + lead sources + events ──
+  let trends: null | {
+    weeks: {
+      start: string;
+      leads: number;
+      clients: number;
+      contracted: number;
+      closed: number;
+      affiliates: number;
+      contractors: number;
+    }[];
+    funnel: {
+      leads: number;
+      clients: number;
+      contracted: number;
+      closed: number;
+    };
+    sources: { source: string; count: number }[];
+    events: {
+      id: number;
+      title: string;
+      starts_at: string | null;
+      rsvps: number;
+    }[];
+  } = null;
+  const trendsTask = (async () => {
+    if (can("leads") || can("projects.read")) {
+      const weeks = 12;
+      const now = new Date();
+      const monday = new Date(
+        Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate() - ((now.getUTCDay() + 6) % 7),
+        ),
+      );
+      const first = new Date(monday.getTime() - (weeks - 1) * 7 * 86_400_000);
+      const buckets = Array.from({ length: weeks }, (_, i) => ({
+        start: new Date(first.getTime() + i * 7 * 86_400_000)
+          .toISOString()
+          .slice(0, 10),
+        leads: 0,
+        clients: 0,
+        contracted: 0,
+        closed: 0,
+        affiliates: 0,
+        contractors: 0,
+      }));
+      const bump = async (key: keyof (typeof buckets)[number], sql: string) => {
+        const [r] = await pool.execute<RowDataPacket[]>(sql, [first]);
+        for (const x of r) {
+          const i = Math.floor(
+            (new Date(x.d).getTime() - first.getTime()) / (7 * 86_400_000),
+          );
+          if (i >= 0 && i < weeks) (buckets[i][key] as number) += Number(x.n);
+        }
+      };
+      await bump(
+        "leads",
+        `SELECT DATE(created_at) d, COUNT(*) n FROM leads WHERE created_at >= ? AND status <> 'spam' GROUP BY DATE(created_at)`,
+      );
+      await bump(
+        "clients",
+        `SELECT DATE(created_at) d, COUNT(*) n FROM clients WHERE created_at >= ? GROUP BY DATE(created_at)`,
+      );
+      await bump(
+        "contracted",
+        `SELECT DATE(created_at) d, COUNT(*) n FROM project_milestone_events WHERE created_at >= ? AND to_milestone = 'contracted' GROUP BY DATE(created_at)`,
+      );
+      await bump(
+        "closed",
+        `SELECT DATE(created_at) d, COUNT(*) n FROM project_milestone_events WHERE created_at >= ? AND to_milestone = 'closed' GROUP BY DATE(created_at)`,
+      );
+      await bump(
+        "affiliates",
+        `SELECT DATE(created_at) d, COUNT(*) n FROM affiliates WHERE created_at >= ? GROUP BY DATE(created_at)`,
+      );
+      await bump(
+        "contractors",
+        `SELECT DATE(created_at) d, COUNT(*) n FROM contractors WHERE created_at >= ? GROUP BY DATE(created_at)`,
+      );
+      const d90 = new Date(Date.now() - 90 * 86_400_000);
+      const [srcs] = await pool.execute<RowDataPacket[]>(
+        `SELECT COALESCE(NULLIF(source, ''), audience_tag, 'website') s, COUNT(*) n FROM leads WHERE created_at >= ? AND status <> 'spam' GROUP BY s ORDER BY n DESC LIMIT 6`,
+        [d90],
+      );
+      const [ev] = await pool.execute<RowDataPacket[]>(
+        `SELECT e.id, e.title_en, e.starts_at, (SELECT COUNT(*) FROM leads l WHERE l.event_id = e.id) rsvps
+       FROM marketing_events e WHERE e.starts_at >= ? AND e.status = 'published' ORDER BY e.starts_at DESC LIMIT 5`,
+        [d90],
+      );
+      trends = {
+        weeks: buckets,
+        funnel: {
+          leads: await one(
+            `SELECT COUNT(*) n FROM leads WHERE created_at >= ? AND status <> 'spam'`,
+            [d90],
+          ),
+          clients: await one(
+            `SELECT COUNT(*) n FROM clients WHERE created_at >= ?`,
+            [d90],
+          ),
+          contracted: await one(
+            `SELECT COUNT(DISTINCT project_id) n FROM project_milestone_events WHERE created_at >= ? AND to_milestone = 'contracted'`,
+            [d90],
+          ),
+          closed: await one(
+            `SELECT COUNT(DISTINCT project_id) n FROM project_milestone_events WHERE created_at >= ? AND to_milestone = 'closed'`,
+            [d90],
+          ),
+        },
+        sources: srcs.map((r) => ({ source: String(r.s), count: Number(r.n) })),
+        events: ev.map((r) => ({
+          id: Number(r.id),
+          title: String(r.title_en),
+          starts_at: isoDate(r.starts_at),
+          rsvps: Number(r.rsvps),
+        })),
+      };
+    }
+  })();
+
+  await Promise.all([inboxTask, apptTask, moneyTask, actTask, trendsTask]);
+  acts.sort((a, b) => b.at.localeCompare(a.at));
+
+  const order = { alert: 0, warn: 1, info: 2 } as const;
+  inbox.sort((a, b) => order[a.tone] - order[b.tone] || b.count - a.count);
+  return {
+    ok: true as const,
+    role,
+    generated_at: new Date().toISOString(),
+    inbox,
+    appointments,
+    money,
+    activity: acts.slice(0, 30),
+    trends,
+  };
+}
+
+function registerCommandCenterRoutes(app: Express) {
+  app.get(
+    "/api/admin/command-center",
+    requirePortal("admin"),
+    route(async (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.json(
+        await buildCommandCenter(portalUser(res), req.query.mine === "1"),
+      );
+    }),
+  );
+}
 
 function buildApp(): Express {
   const app = express();
@@ -19474,7 +31798,16 @@ function buildApp(): Express {
       credentials: true,
     }),
   );
-  app.use(express.json({ limit: "1mb" }));
+  app.use(
+    express.json({
+      limit: "1mb",
+      // Billing webhook signatures are computed over the exact raw bytes.
+      verify: (req, _res, buf) => {
+        if ((req as Request).url?.startsWith("/api/webhooks/billing"))
+          (req as any).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(express.urlencoded({ extended: true }));
   app.use(csrfOriginGuard);
 
@@ -19707,7 +32040,8 @@ function buildApp(): Express {
     app.get(`${base}/me`, async (req, res) => {
       try {
         const user = await loadPortalUser(actor, req);
-        if (!user) return res.status(401).json({ error: "errors.unauthorized" });
+        if (!user)
+          return res.status(401).json({ error: "errors.unauthorized" });
         if (actor === "admin") {
           const enriched = await enrichAdminAuthUser(user);
           return res.json({ ok: true, actor, user: enriched });
@@ -19752,7 +32086,8 @@ function buildApp(): Express {
           (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
           req.socket.remoteAddress ||
           null;
-        const ua = String(req.headers["user-agent"] || "").slice(0, 500) || null;
+        const ua =
+          String(req.headers["user-agent"] || "").slice(0, 500) || null;
         const nameParts = data.full_name.trim().split(/\s+/);
         const firstName = nameParts[0] || data.full_name;
         const lastName = nameParts.slice(1).join(" ") || "";
@@ -19792,9 +32127,13 @@ function buildApp(): Express {
             }
           }
         }
-        const eventCity = eventRow ? String(eventRow.city) : data.event_city || null;
+        const eventCity = eventRow
+          ? String(eventRow.city)
+          : data.event_city || null;
 
-        const affiliateRef = await findActiveAffiliateByCode(req.body?.referral_code);
+        const affiliateRef = await findActiveAffiliateByCode(
+          req.body?.referral_code,
+        );
         let leadId: number;
         if (eventRow) {
           // Event RSVPs stay one row per event (attendee list); duplicates already 409 above.
@@ -19861,7 +32200,9 @@ function buildApp(): Express {
               leadLang,
               eventRow.location_label_en,
               eventRow.location_label_es,
-            ) || eventRow.venue_name || eventRow.city
+            ) ||
+            eventRow.venue_name ||
+            eventRow.city
           : null;
 
         const confirm = tplLeadConfirmation({
@@ -19910,7 +32251,7 @@ function buildApp(): Express {
               ? registrationStatus === "waitlisted"
                 ? "You're on the waitlist. Check your email for details."
                 : "You're on the list. Check your email for confirmation."
-              : "Thanks — we got your request. Check your email for confirmation.",
+              : "Thanks. We got your request. Check your email for confirmation.",
           ...(data.mode === "event"
             ? {
                 event_registration_status: registrationStatus,
@@ -19930,9 +32271,108 @@ function buildApp(): Express {
 
   // ── Public marketing events ──────────────────────────────────────────────
   const publicEventView = async (row: RowDataPacket, lang: Lang) => {
-    const confirmed = await countEventRegistrations(Number(row.id), "confirmed");
-    return toPublicEventView(mapMarketingEventRow(row), lang, confirmed);
+    const id = Number(row.id);
+    const [confirmed, summaries] = await Promise.all([
+      countEventRegistrations(id, "confirmed"),
+      loadEventMediaSummaries([id]),
+    ]);
+    return toPublicEventView(
+      mapMarketingEventRow(row),
+      lang,
+      confirmed,
+      summaries.get(id),
+    );
   };
+
+  app.get("/api/public/events", async (req: Request, res: Response) => {
+    try {
+      const tab = req.query.tab === "past" ? "past" : "upcoming";
+      const lang = asLang(req.query.lang);
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        `SELECT * FROM marketing_events WHERE status = 'published'
+         ORDER BY starts_at ${tab === "past" ? "DESC" : "ASC"}, id ASC LIMIT 200`,
+      );
+      const picked = rows.filter((r) => isEventPast(r) === (tab === "past"));
+      const summaries = await loadEventMediaSummaries(
+        picked.map((r) => Number(r.id)),
+      );
+      const counts = await Promise.all(
+        picked.map((r) =>
+          tab === "past"
+            ? Promise.resolve(0)
+            : countEventRegistrations(Number(r.id), "confirmed"),
+        ),
+      );
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        ok: true,
+        tab,
+        events: picked.map((r, i) =>
+          toPublicEventView(
+            mapMarketingEventRow(r),
+            lang,
+            counts[i],
+            summaries.get(Number(r.id)),
+          ),
+        ),
+      });
+    } catch (e: any) {
+      console.error("[events] list failed:", e?.message ?? e);
+      return res.status(500).json({ error: "errors.server" });
+    }
+  });
+
+  // Flyer QR codes encode `/e/<slug>`; the SPA calls this to count the scan and
+  // learn where to land. Once the event is over (or registration closed) the
+  // scan forwards to the next open event, else back to the scanned event page.
+  app.post(
+    "/api/public/events/:slug/qr-scan",
+    referralLimiter,
+    route(async (req, res) => {
+      const slug = String(req.params.slug || "")
+        .toLowerCase()
+        .slice(0, 80);
+      const row = slug ? await loadMarketingEventBySlug(slug) : null;
+      res.setHeader("Cache-Control", "no-store");
+      if (!row || row.status !== "published") {
+        const live = await loadLiveEventRow();
+        return res.json({
+          ok: true,
+          slug: live ? String(live.slug) : null,
+          register: Boolean(live),
+          event_id: live ? Number(live.id) : null,
+        } satisfies EventQrScanResponse);
+      }
+      await pool.execute(
+        `UPDATE marketing_events SET qr_scan_count = qr_scan_count + 1, qr_last_scanned_at = NOW() WHERE id = ?`,
+        [row.id],
+      );
+      if (eventRegistrationOpen(row)) {
+        return res.json({
+          ok: true,
+          slug,
+          register: true,
+          event_id: Number(row.id),
+        } satisfies EventQrScanResponse);
+      }
+      const live = await loadLiveEventRow();
+      return res.json(
+        (live
+          ? {
+              ok: true,
+              slug: String(live.slug),
+              register: true,
+              event_id: Number(live.id),
+            }
+          : {
+              ok: true,
+              slug,
+              register: false,
+              event_id: null,
+            }) satisfies EventQrScanResponse,
+      );
+    }),
+  );
 
   app.get("/api/public/events/live", async (req: Request, res: Response) => {
     try {
@@ -19950,16 +32390,31 @@ function buildApp(): Express {
 
   app.get("/api/public/events/:slug", async (req: Request, res: Response) => {
     try {
-      const slug = String(req.params.slug || "").toLowerCase().slice(0, 80);
+      const slug = String(req.params.slug || "")
+        .toLowerCase()
+        .slice(0, 80);
       const row = slug ? await loadMarketingEventBySlug(slug) : null;
       if (!row || row.status !== "published") {
         return res.status(404).json({ error: "errors.eventNotFound" });
       }
+      const lang = asLang(req.query.lang);
+      const view = await publicEventView(row, lang);
+      view.media = (
+        view.is_past ? await loadEventMediaRows(Number(row.id)) : []
+      ).map((m) => ({
+        id: Number(m.id),
+        kind: String(m.kind) as EventMediaKind,
+        url: String(m.url),
+        embed_provider:
+          m.embed_provider == null
+            ? null
+            : (String(m.embed_provider) as EventEmbedProvider),
+        caption: pickLangField(lang, m.caption_en, m.caption_es),
+        is_cover: Number(m.is_cover) === 1,
+        is_highlight: Number(m.is_highlight) === 1,
+      }));
       res.setHeader("Cache-Control", "no-store");
-      return res.json({
-        ok: true,
-        event: await publicEventView(row, asLang(req.query.lang)),
-      });
+      return res.json({ ok: true, event: view });
     } catch (e: any) {
       console.error("[events] detail failed:", e?.message ?? e);
       return res.status(500).json({ error: "errors.server" });
@@ -19989,11 +32444,14 @@ function buildApp(): Express {
           (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
           req.socket.remoteAddress ||
           null;
-        const ua = String(req.headers["user-agent"] || "").slice(0, 500) || null;
+        const ua =
+          String(req.headers["user-agent"] || "").slice(0, 500) || null;
         const mfsnUrl = MFSN_FREE_SNAPSHOT_URL;
         const shortUrl = `${APP_URL}/go/free-score`;
 
-        const affiliateRef = await findActiveAffiliateByCode(req.body?.referral_code);
+        const affiliateRef = await findActiveAffiliateByCode(
+          req.body?.referral_code,
+        );
         // One standard lead per person — repeat submissions merge (email OR phone).
         const { id: leadId } = await upsertStandardLead({
           first_name: data.first_name,
@@ -20048,7 +32506,7 @@ function buildApp(): Express {
           short_url: shortUrl,
           email_sent: Boolean(emailResult.ok && !emailResult.dryRun),
           message:
-            "Thanks — check your email for your free credit report link.",
+            "Thanks. Check your email for your free credit report link.",
         };
         return res.status(201).json(payload);
       } catch (e: any) {
@@ -20091,7 +32549,7 @@ function buildApp(): Express {
               ok: true,
               affiliate_id: created.affiliate_id,
               kind: "partner_affiliate",
-              message: "Application received — pending review.",
+              message: "Application received. Pending review.",
             });
           } catch (e) {
             if (e instanceof HttpError) {
@@ -20105,7 +32563,8 @@ function buildApp(): Express {
           (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
           req.socket.remoteAddress ||
           null;
-        const ua = String(req.headers["user-agent"] || "").slice(0, 500) || null;
+        const ua =
+          String(req.headers["user-agent"] || "").slice(0, 500) || null;
         const nameParts = data.full_name.trim().split(/\s+/);
         const firstName = nameParts[0] || data.full_name;
         const lastName = nameParts.slice(1).join(" ") || "";
@@ -20166,7 +32625,7 @@ function buildApp(): Express {
         const payload: SubmitSimpleLeadResponse = {
           ok: true,
           lead_id: leadId,
-          message: "Thanks — we got your message.",
+          message: "Thanks. We got your message.",
         };
         return res.status(201).json(payload);
       } catch (e: any) {
@@ -20199,7 +32658,7 @@ function buildApp(): Express {
         const payload: SubmitPartnerReferralResponse = {
           ok: true,
           affiliate_id: created.affiliate_id,
-          message: "Application received — pending review.",
+          message: "Application received. Pending review.",
         };
         return res.status(201).json(payload);
       } catch (e: any) {
@@ -20215,6 +32674,13 @@ function buildApp(): Express {
   registerFeatureRoutes(app, { lead: leadLimiter, referral: referralLimiter });
   registerContractorApplicationRoutes(app, { lead: leadLimiter });
   registerDuplicatesRoutes(app);
+  registerAffiliateWelcomeRoutes(app);
+  registerContractorBillingRoutes(app);
+  registerAdminBillingRoutes(app);
+  registerCommandCenterRoutes(app);
+  registerEraseRoutes(app);
+  registerSchedulerRoutes(app);
+  registerAffiliateLinkRoutes(app);
 
   /** Vercel Cron: sync all Anchor-linked projects. Auth: Bearer CRON_SECRET. */
   app.post("/api/cron/anchor-sync", async (req, res) => {
@@ -20225,7 +32691,9 @@ function buildApp(): Express {
         return res.status(401).json({ error: "errors.unauthorized" });
       }
       if (!anchorConfig()) {
-        return res.status(503).json({ error: "errors.anchorNotConfigured", synced: 0 });
+        return res
+          .status(503)
+          .json({ error: "errors.anchorNotConfigured", synced: 0 });
       }
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT id, public_id FROM projects
@@ -20233,8 +32701,12 @@ function buildApp(): Express {
            AND TRIM(anchor_external_id) <> ''
          ORDER BY id ASC LIMIT 200`,
       );
-      const results: Array<{ public_id: string; ok: boolean; loan_status?: string; error?: string }> =
-        [];
+      const results: Array<{
+        public_id: string;
+        ok: boolean;
+        loan_status?: string;
+        error?: string;
+      }> = [];
       for (const row of rows) {
         try {
           const sync = await syncProjectAnchor(Number(row.id), null);
@@ -20282,7 +32754,8 @@ function buildApp(): Express {
     },
     confirm_phrase: {
       type: "string",
-      description: 'Required with confirm=true. Must be exactly the string CONFIRM.',
+      description:
+        "Required with confirm=true. Must be exactly the string CONFIRM.",
     },
   };
 
@@ -20295,7 +32768,9 @@ function buildApp(): Express {
         ? { ...(tool.inputSchema.properties as Record<string, unknown>) }
         : {};
     const already = props.confirm != null && props.confirm_phrase != null;
-    const mergedProps = already ? props : { ...props, ...MCP_CONFIRM_PROPERTIES };
+    const mergedProps = already
+      ? props
+      : { ...props, ...MCP_CONFIRM_PROPERTIES };
     const description = /confirm_phrase|confirm=true/i.test(tool.description)
       ? tool.description
       : `${tool.description} ALWAYS dry-run first (omit confirm or confirm=false); show the preview to the user; then re-call with confirm=true and confirm_phrase=CONFIRM to execute.`;
@@ -20310,7 +32785,9 @@ function buildApp(): Express {
     };
   }
 
-  function sanitizeMcpArgsForLog(args: Record<string, unknown>): Record<string, unknown> {
+  function sanitizeMcpArgsForLog(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
     const out: Record<string, unknown> = { ...args };
     for (const k of Object.keys(out)) {
       if (typeof out[k] === "string" && String(out[k]).length > 800) {
@@ -20330,7 +32807,9 @@ function buildApp(): Express {
         ? (inputSchema.properties as Record<string, Record<string, unknown>>)
         : {};
     const required = new Set(
-      Array.isArray(inputSchema.required) ? inputSchema.required.map(String) : [],
+      Array.isArray(inputSchema.required)
+        ? inputSchema.required.map(String)
+        : [],
     );
     const shape: Record<string, z.ZodTypeAny> = {};
     for (const [key, prop] of Object.entries(props)) {
@@ -20346,7 +32825,8 @@ function buildApp(): Express {
       } else if (p.type === "boolean") {
         base = z.preprocess((v) => {
           if (v === true || v === "true" || v === 1 || v === "1") return true;
-          if (v === false || v === "false" || v === 0 || v === "0") return false;
+          if (v === false || v === "false" || v === 0 || v === "0")
+            return false;
           return v;
         }, z.boolean());
       } else if (p.type === "array") {
@@ -20375,17 +32855,22 @@ function buildApp(): Express {
     },
     {
       name: "search_leads",
-      description: "Search ADU financing leads by name/email/phone/status.",
+      description:
+        "Search ADU financing leads by name/email/phone/status. view=active (not yet a client/affiliate/contractor, not spam. The Leads work queue), converted, or all (default). Each lead includes last_sms / last_call.",
       readOnly: true,
       inputSchema: {
         type: "object",
         properties: {
           q: { type: "string", description: "Search query" },
+          view: { type: "string", enum: ["active", "converted", "all"] },
           status: {
             type: "string",
             enum: ["new", "contacted", "qualified", "closed", "spam"],
           },
-          limit: { type: "integer", description: "Max rows (default 25, max 100)" },
+          limit: {
+            type: "integer",
+            description: "Max rows (default 25, max 100)",
+          },
         },
       },
     },
@@ -20427,7 +32912,8 @@ function buildApp(): Express {
     },
     {
       name: "search_projects",
-      description: "Search ADU projects by public_id, address, milestone, or client name.",
+      description:
+        "Search ADU projects by public_id, address, milestone, or client name.",
       readOnly: true,
       inputSchema: {
         type: "object",
@@ -20435,7 +32921,14 @@ function buildApp(): Express {
           q: { type: "string" },
           milestone: {
             type: "string",
-            enum: ["lead", "financing", "contracted", "in_build", "closed", "cancelled"],
+            enum: [
+              "lead",
+              "financing",
+              "contracted",
+              "in_build",
+              "closed",
+              "cancelled",
+            ],
           },
           limit: { type: "integer" },
         },
@@ -20523,7 +33016,8 @@ function buildApp(): Express {
     },
     {
       name: "list_commissions",
-      description: "List affiliate commissions.",
+      description:
+        "List affiliate commissions with role (direct | closer=referring | parent=sponsor | grandparent=senior sponsor) and payout_ready (signed agreement + W-9 on file).",
       readOnly: true,
       inputSchema: {
         type: "object",
@@ -20532,7 +33026,344 @@ function buildApp(): Express {
             type: "string",
             enum: ["pending", "approved", "paid", "void"],
           },
+          role: {
+            type: "string",
+            enum: ["direct", "closer", "parent", "grandparent"],
+          },
+          affiliate_id: { type: "integer" },
           limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "list_deal_statuses",
+      description:
+        "List deal statuses (Credit repair, Not enough equity, …). Separate from portal account status.",
+      readOnly: true,
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "set_client_deal_status",
+      readOnly: false,
+      description:
+        "Set a client's deal status (shown on the pipeline and to the referring affiliate). By default texts + emails the affiliate and posts to their portal (notify_affiliate=false to skip). Pass deal_status_id, deal_status (label), or clear=true.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          client_id: { type: "integer" },
+          deal_status_id: { type: "integer" },
+          deal_status: {
+            type: "string",
+            description:
+              "Label in English or Spanish, e.g. 'Not enough equity'",
+          },
+          clear: { type: "boolean" },
+          note: { type: "string" },
+          notify_affiliate: { type: "boolean" },
+        },
+        required: ["client_id"],
+      },
+    },
+    {
+      name: "add_client_update",
+      readOnly: false,
+      description:
+        "Add a note to a client's updates feed. Internal by default; share_with_affiliate=true posts it to the referring affiliate's portal and texts + emails them.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          client_id: { type: "integer" },
+          body: { type: "string" },
+          share_with_affiliate: { type: "boolean" },
+        },
+        required: ["client_id", "body"],
+      },
+    },
+    {
+      name: "set_affiliate_subscription_price",
+      readOnly: false,
+      description:
+        "Set the monthly platform price printed in the affiliate's agreement (Section 3), after the onboarding call. The first price emails the affiliate that the agreement is ready. Locked once signed.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          affiliate_id: { type: "integer" },
+          price_cents: {
+            type: "integer",
+            description: "e.g. 4900 = $49.00; null clears (pending)",
+          },
+        },
+        required: ["affiliate_id"],
+      },
+    },
+    {
+      name: "list_appointments",
+      readOnly: true,
+      description:
+        "Appointments in a date range (default: next 14 days) with tagged people. Filters: client_id, project_id, lead_id, admin_id (owner or tagged), include_cancelled. Times are UTC ISO + the appointment timezone.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          from: { type: "string", description: "ISO date/time (default now)" },
+          to: {
+            type: "string",
+            description: "ISO date/time (default +14 days, max 120 days)",
+          },
+          client_id: { type: "integer" },
+          project_id: { type: "integer" },
+          lead_id: { type: "integer" },
+          admin_id: { type: "integer" },
+          include_cancelled: { type: "boolean" },
+        },
+      },
+    },
+    {
+      name: "create_appointment",
+      readOnly: false,
+      description:
+        "Schedule an appointment (e.g. property inspection) on a client / lead / project and tag people. Everyone tagged + the homeowner (notify_homeowner) gets an email with a calendar invite and a text. Onsite defaults to the property address. kind: property_inspection | site_visit | lender_meeting | consultation | call | other. location_type: onsite | office | phone | video. attendees: [{kind:'contractor',contractor_id}, {kind:'lender',lender_id}, {kind:'admin',admin_id}, {kind:'guest',name,email,phone}]. Dry-run first.",
+      inputSchema: {
+        type: "object",
+        required: ["kind", "date", "start"],
+        properties: {
+          kind: {
+            type: "string",
+            enum: [
+              "property_inspection",
+              "site_visit",
+              "lender_meeting",
+              "consultation",
+              "call",
+              "other",
+            ],
+          },
+          date: {
+            type: "string",
+            description: "YYYY-MM-DD (local to timezone)",
+          },
+          start: { type: "string", description: "HH:mm (local)" },
+          duration_minutes: { type: "integer", description: "Default 60" },
+          timezone: {
+            type: "string",
+            description: "IANA, default America/Los_Angeles",
+          },
+          title: { type: "string" },
+          location_type: {
+            type: "string",
+            enum: ["onsite", "office", "phone", "video"],
+          },
+          location: { type: "string" },
+          video_url: { type: "string" },
+          description: { type: "string", description: "Shared with attendees" },
+          notes: { type: "string", description: "Internal only" },
+          client_id: { type: "integer" },
+          lead_id: { type: "integer" },
+          project_id: { type: "integer" },
+          owner_admin_id: { type: "integer" },
+          notify_homeowner: { type: "boolean" },
+          attendees: { type: "array", items: { type: "object" } },
+        },
+      },
+    },
+    {
+      name: "reschedule_appointment",
+      readOnly: false,
+      description:
+        "Change an appointment's date/time/duration/place or tagged people. Everyone gets an updated invite; untagged people get a cancellation. Dry-run first.",
+      inputSchema: {
+        type: "object",
+        required: ["appointment_id"],
+        properties: {
+          appointment_id: { type: "integer" },
+          date: { type: "string" },
+          start: { type: "string" },
+          duration_minutes: { type: "integer" },
+          location_type: {
+            type: "string",
+            enum: ["onsite", "office", "phone", "video"],
+          },
+          location: { type: "string" },
+          notes: { type: "string" },
+          attendees: { type: "array", items: { type: "object" } },
+        },
+      },
+    },
+    {
+      name: "cancel_appointment",
+      readOnly: false,
+      description:
+        "Cancel an appointment; everyone tagged gets a cancellation invite. Dry-run first.",
+      inputSchema: {
+        type: "object",
+        required: ["appointment_id"],
+        properties: {
+          appointment_id: { type: "integer" },
+          reason: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "list_lenders",
+      readOnly: true,
+      description:
+        "Lenders directory (company, contact, email, phone, linked project count). Use lender ids to tag lenders on appointments or link projects (update via projects lender_id).",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "upsert_lender",
+      readOnly: false,
+      description: "Add (no id) or edit (with id) a lender in the directory.",
+      inputSchema: {
+        type: "object",
+        required: ["company"],
+        properties: {
+          id: { type: "integer" },
+          company: { type: "string" },
+          contact_name: { type: "string" },
+          email: { type: "string" },
+          phone: { type: "string" },
+          preferred_language: { type: "string", enum: ["en", "es"] },
+          notes: { type: "string" },
+          is_active: { type: "boolean" },
+        },
+      },
+    },
+    {
+      name: "get_affiliate_billing",
+      readOnly: true,
+      description:
+        "An affiliate's platform subscription: status (none | trialing = free period | active | past_due | canceled | incomplete), price, free-period end, next charge date and card on file (brand + last 4 only).",
+      inputSchema: {
+        type: "object",
+        properties: { affiliate_id: { type: "integer" } },
+        required: ["affiliate_id"],
+      },
+    },
+    {
+      name: "list_memberships",
+      readOnly: true,
+      description:
+        "Every contractor + affiliate platform membership with totals (monthly revenue, paying, free period, past due, paused, free periods ending in 7 days). Optional filter: role (contractor | affiliate), status (active | trialing | past_due | canceled | none | paused).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          role: { type: "string", enum: ["contractor", "affiliate"] },
+          status: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "get_contractor_billing",
+      readOnly: true,
+      description:
+        "A contractor's platform membership ($99.90/mo default, 30 days free from approval): status (none | trialing | active | past_due | canceled | incomplete), price (0 = waived), card on file (brand + last 4), awaiting_approval, and locked (portal paused until they pay).",
+      inputSchema: {
+        type: "object",
+        properties: { contractor_id: { type: "integer" } },
+        required: ["contractor_id"],
+      },
+    },
+    {
+      name: "resend_affiliate_welcome",
+      readOnly: false,
+      description:
+        "Re-send the affiliate welcome email + text: program presentation and a new secure link to sign the agreement, submit the W-9 and add a card (older links stop working).",
+      inputSchema: {
+        type: "object",
+        properties: { affiliate_id: { type: "integer" } },
+        required: ["affiliate_id"],
+      },
+    },
+    {
+      name: "list_affiliate_faqs",
+      readOnly: true,
+      description:
+        "List the affiliate FAQ (EN/ES) shown in the affiliate portal and used by the affiliate assistant. include_inactive=true also lists hidden entries.",
+      inputSchema: {
+        type: "object",
+        properties: { include_inactive: { type: "boolean" } },
+      },
+    },
+    {
+      name: "upsert_affiliate_faq",
+      readOnly: false,
+      description:
+        "Add (no id) or edit (with id) an affiliate FAQ entry. English question + answer are required; Spanish is optional. The affiliate assistant answers from these and the agreement.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "integer" },
+          question_en: { type: "string" },
+          answer_en: { type: "string" },
+          question_es: { type: "string" },
+          answer_es: { type: "string" },
+          sort_order: { type: "integer" },
+          is_active: { type: "boolean" },
+        },
+        required: ["question_en", "answer_en"],
+      },
+    },
+    {
+      name: "list_affiliate_assistant_questions",
+      readOnly: true,
+      description:
+        "Recent questions affiliates asked the assistant, with its replies. handoff_only=true lists only questions it passed to the team (good candidates for new FAQ entries).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          affiliate_id: { type: "integer" },
+          handoff_only: { type: "boolean" },
+          limit: { type: "integer" },
+        },
+      },
+    },
+    {
+      name: "set_affiliate_sponsor",
+      readOnly: false,
+      description:
+        "Set or clear an affiliate's sponsor (who recruited them). The sponsor's sponsor becomes the Senior Sponsor. Refuses loops. Applies to new projects only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          affiliate_id: { type: "integer" },
+          sponsor_affiliate_id: {
+            type: "integer",
+            description: "null to clear",
+          },
+        },
+        required: ["affiliate_id"],
+      },
+    },
+    {
+      name: "get_phone_line",
+      description:
+        "Phone line settings: mode (shared/personal), owner, members, what rings (browsers + screened phones), ring time, bilingual voicemail, and whether it needs a new owner.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: { line_id: { type: "integer" }, e164: { type: "string" } },
+      },
+    },
+    {
+      name: "list_message_templates",
+      description:
+        "List active SMS templates (EN/ES, category, usage). Variables like {{first_name}} must be filled before sending.",
+      readOnly: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            enum: [
+              "general",
+              "welcome",
+              "follow_up",
+              "reminder",
+              "status_update",
+              "documents",
+              "scheduling",
+            ],
+          },
         },
       },
     },
@@ -20615,11 +33446,13 @@ function buildApp(): Express {
           status: {
             type: "string",
             enum: ["pending", "active"],
-            description: "Affiliate/contractor account status from confirm dialog",
+            description:
+              "Affiliate/contractor account status from confirm dialog",
           },
           confirm_phone_link: {
             type: "boolean",
-            description: "Set true after phone_match warning to link existing person",
+            description:
+              "Set true after phone_match warning to link existing person",
           },
         },
       },
@@ -20637,7 +33470,14 @@ function buildApp(): Express {
           project_id: { type: "integer" },
           milestone: {
             type: "string",
-            enum: ["lead", "financing", "contracted", "in_build", "closed", "cancelled"],
+            enum: [
+              "lead",
+              "financing",
+              "contracted",
+              "in_build",
+              "closed",
+              "cancelled",
+            ],
           },
           note: { type: "string" },
         },
@@ -20676,14 +33516,16 @@ function buildApp(): Express {
           contractor_id: { type: "integer" },
           override_reason: {
             type: "string",
-            description: "Why this contractor may skip prequalification (super_admin override; audited).",
+            description:
+              "Why this contractor may skip prequalification (super_admin override; audited).",
           },
         },
       },
     },
     {
       name: "invite_contractor",
-      description: "Invite a contractor: emails the prequalification application link (opening it accepts the invite).",
+      description:
+        "Invite a contractor: emails the prequalification application link (opening it accepts the invite).",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -20725,7 +33567,8 @@ function buildApp(): Express {
     },
     {
       name: "update_commission_status",
-      description: "Update affiliate commission status (approved/paid/void/pending).",
+      description:
+        "Update affiliate commission status (approved/paid/void/pending).",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -20743,7 +33586,7 @@ function buildApp(): Express {
     {
       name: "create_staff",
       description:
-        "Create an admin staff member and send welcome email. Cannot create super_admin via MCP — use Admin → Staff.",
+        "Create an admin staff member and send welcome email. Cannot create super_admin via MCP. Use Admin → Staff.",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -20770,15 +33613,21 @@ function buildApp(): Express {
         type: "object",
         required: ["q"],
         properties: {
-          q: { type: "string", description: "Search query (name, email, phone)" },
-          limit: { type: "integer", description: "Max rows (1–20, default 10)" },
+          q: {
+            type: "string",
+            description: "Search query (name, email, phone)",
+          },
+          limit: {
+            type: "integer",
+            description: "Max rows (1–20, default 10)",
+          },
         },
       },
     },
     {
       name: "get_contact",
       description:
-        "Fetch one CRM contact by contacts.id from search_contacts. Address book only — use convert_contact when ready to add as a client prospect.",
+        "Fetch one CRM contact by contacts.id from search_contacts. Address book only. Use convert_contact when ready to add as a client prospect.",
       readOnly: true,
       inputSchema: {
         type: "object",
@@ -20846,6 +33695,29 @@ function buildApp(): Express {
       },
     },
     {
+      name: "revert_client_to_lead",
+      description:
+        'Undo a client conversion ("Move back to Leads"). Lead-origin clients return to the Leads Active list; clients made from a CRM contact are un-converted; clients made from a Conversations unknown contact go back to Unknown; clients created directly become a new lead. Texts/calls are kept (re-homed), notes + deal-status history are copied to the lead/contact/thread, the empty project and unused portal invite are removed, and a full snapshot is audited. Refused (blockers) once the homeowner used the portal, a project moved past Lead, a contractor is assigned, or any commission/draw/contract/photo exists. Dry-run returns the plan; confirm=true + confirm_phrase=CONFIRM executes.',
+      readOnly: false,
+      inputSchema: {
+        type: "object",
+        required: ["client_id"],
+        properties: {
+          client_id: { type: "integer" },
+          lead_status: {
+            type: "string",
+            enum: ["new", "contacted", "qualified", "closed"],
+            description:
+              "Lead status after the undo (default: keep the lead's status; new leads default to contacted).",
+          },
+          reason: {
+            type: "string",
+            description: "Why (kept in the audit log and the lead notes).",
+          },
+        },
+      },
+    },
+    {
       name: "convert_contact",
       description:
         "Convert a CRM contact into a client prospect (status=prospect). Archives the contact (converted_client_id) and re-links Conversations from contact_id → client_id. Requires phone and/or email on the contact (email may be null on the new client). If phone/email already matches a client, links without creating a twin.",
@@ -20864,7 +33736,7 @@ function buildApp(): Express {
     {
       name: "send_contact_sms",
       description:
-        "Send SMS via Twilio from the acting admin's assigned Groundwork brand number to a CRM Contact (address book — NOT a pipeline client). contact_id from search_contacts. Logs Conversations hub + appends [SMS …] to contacts.admin_notes. Do NOT use send_sms for contacts.",
+        "Send SMS via Twilio from the acting admin's assigned Groundwork brand number to a CRM Contact (address book · NOT a pipeline client). contact_id from search_contacts. Logs Conversations hub + appends [SMS …] to contacts.admin_notes. Do NOT use send_sms for contacts.",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -20885,7 +33757,7 @@ function buildApp(): Express {
     {
       name: "send_contact_email",
       description:
-        "Send a branded email via Resend to a CRM Contact (address book — NOT a pipeline client). Appends [EMAIL …] to contacts.admin_notes. No portal upload links. Do NOT use for pipeline clients.",
+        "Send a branded email via Resend to a CRM Contact (address book · NOT a pipeline client). Appends [EMAIL …] to contacts.admin_notes. No portal upload links. Do NOT use for pipeline clients.",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -20903,7 +33775,7 @@ function buildApp(): Express {
     {
       name: "send_sms",
       description:
-        "Send SMS via Twilio from the acting admin's assigned Groundwork brand number to a CLIENT or STAFF. Client: client_id from search_clients — logs Conversations hub + client admin_notes. Staff: to_admin_id / to_admin_name. For CRM Contacts use send_contact_sms. Optional from_admin_* / from_phone_number_id to pick the From line.",
+        "Send SMS via Twilio from the acting admin's assigned Groundwork brand number to a CLIENT or STAFF. Client: client_id from search_clients. Logs Conversations hub + client admin_notes. Staff: to_admin_id / to_admin_name. For CRM Contacts use send_contact_sms. Optional from_admin_* / from_phone_number_id to pick the From line.",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -20955,7 +33827,10 @@ function buildApp(): Express {
             type: "string",
             enum: ["sms", "call", "email", "internal"],
           },
-          limit: { type: "integer", description: "Max messages (1–50, default 20)" },
+          limit: {
+            type: "integer",
+            description: "Max messages (1–50, default 20)",
+          },
         },
       },
     },
@@ -20986,14 +33861,17 @@ function buildApp(): Express {
     {
       name: "get_call_insights",
       description:
-        "Read recent call/voicemail rows for a client from the Conversations hub. Returns body, duration, recording presence, and Twilio transcription text when available (metadata.transcript / transcript_full). AI summaries are not generated — answer only from returned body and transcript_full.",
+        "Read recent call/voicemail rows for a client from the Conversations hub. Returns body, duration, recording presence, and Twilio transcription text when available (metadata.transcript / transcript_full). AI summaries are not generated. Answer only from returned body and transcript_full.",
       readOnly: true,
       inputSchema: {
         type: "object",
         properties: {
           client_id: { type: "integer" },
           message_id: { type: "integer" },
-          limit: { type: "integer", description: "Max call rows (1–10, default 3)" },
+          limit: {
+            type: "integer",
+            description: "Max call rows (1–10, default 3)",
+          },
         },
       },
     },
@@ -21026,7 +33904,7 @@ function buildApp(): Express {
     {
       name: "send_whatsapp",
       description:
-        "WhatsApp send is not configured on Groundwork yet (no 360dialog). Tool exists for Optimum parity — always returns whatsapp_not_configured. Use send_sms / send_contact_sms instead.",
+        "WhatsApp send is not configured on Groundwork yet (no 360dialog). Tool exists for Optimum parity. Always returns whatsapp_not_configured. Use send_sms / send_contact_sms instead.",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -21056,7 +33934,7 @@ function buildApp(): Express {
     {
       name: "send_contact_whatsapp",
       description:
-        "WhatsApp to CRM contact — not configured on Groundwork yet. Use send_contact_sms.",
+        "WhatsApp to CRM contact. Not configured on Groundwork yet. Use send_contact_sms.",
       readOnly: false,
       inputSchema: {
         type: "object",
@@ -21070,7 +33948,7 @@ function buildApp(): Express {
     {
       name: "list_whatsapp",
       description:
-        "WhatsApp timeline — not available (no whatsapp channel on Groundwork). Use list_sms.",
+        "WhatsApp timeline. Not available (no whatsapp channel on Groundwork). Use list_sms.",
       readOnly: true,
       inputSchema: {
         type: "object",
@@ -21084,7 +33962,11 @@ function buildApp(): Express {
 
   const MCP_TOOLS: McpToolDef[] = MCP_TOOLS_RAW.map(withMcpWriteConfirm);
 
-  function mcpLimit(args: Record<string, unknown>, def = 25, max = 100): number {
+  function mcpLimit(
+    args: Record<string, unknown>,
+    def = 25,
+    max = 100,
+  ): number {
     const n = Number(args.limit ?? def);
     if (!Number.isFinite(n) || n < 1) return def;
     return Math.min(Math.floor(n), max);
@@ -21095,7 +33977,12 @@ function buildApp(): Express {
     name: string,
     args: Record<string, unknown>,
     confirm: boolean,
-  ): Promise<{ ok: boolean; result?: unknown; error?: string; dry_run?: boolean }> {
+  ): Promise<{
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+    dry_run?: boolean;
+  }> {
     const tool = MCP_TOOLS.find((t) => t.name === name);
     if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
 
@@ -21104,6 +33991,10 @@ function buildApp(): Express {
       "create_contact",
       "update_contact",
       "convert_contact",
+      "revert_client_to_lead",
+      "create_appointment",
+      "reschedule_appointment",
+      "cancel_appointment",
       "send_contact_sms",
       "send_contact_email",
       "send_sms",
@@ -21112,8 +34003,7 @@ function buildApp(): Express {
       "send_wa",
       "send_contact_whatsapp",
     ]);
-    const writeConfirmed =
-      confirm && mcpStr(args.confirm_phrase) === "CONFIRM";
+    const writeConfirmed = confirm && mcpStr(args.confirm_phrase) === "CONFIRM";
     if (!tool.readOnly && !writeConfirmed && !MCP_RICH_DRY_RUN.has(name)) {
       return {
         ok: true,
@@ -21151,7 +34041,24 @@ function buildApp(): Express {
           return {
             ok: true,
             result: {
-              leads_new: await count(`SELECT COUNT(*) AS n FROM leads WHERE status = 'new'`),
+              leads_new: await count(
+                `SELECT COUNT(*) AS n FROM leads WHERE status = 'new'`,
+              ),
+              leads_active: await count(
+                `SELECT COUNT(*) AS n FROM leads WHERE client_id IS NULL AND converted_affiliate_id IS NULL
+                   AND converted_contractor_id IS NULL AND status <> 'spam'`,
+              ),
+              phone_lines_needing_owner: await count(
+                `SELECT COUNT(*) AS n FROM admin_phone_numbers n LEFT JOIN admins a ON a.id = n.assigned_admin_id
+                 WHERE n.is_active = 1 AND (n.assigned_admin_id IS NULL OR a.status <> 'active')`,
+              ),
+              affiliates_awaiting_agreement: await count(
+                `SELECT COUNT(*) AS n FROM affiliates af WHERE af.status = 'active'
+                   AND NOT EXISTS (SELECT 1 FROM affiliate_agreements g WHERE g.affiliate_id = af.id AND g.status = 'signed')`,
+              ),
+              w9s_to_review: await count(
+                `SELECT COUNT(*) AS n FROM affiliate_w9s WHERE status = 'submitted'`,
+              ),
               affiliates_pending: await count(
                 `SELECT COUNT(*) AS n FROM affiliates WHERE status = 'pending'`,
               ),
@@ -21179,14 +34086,29 @@ function buildApp(): Express {
         }
         case "search_leads": {
           const like = likeParam(args.q);
-          const status = ["new", "contacted", "qualified", "closed", "spam"].includes(
-            mcpStr(args.status),
-          )
+          const status = [
+            "new",
+            "contacted",
+            "qualified",
+            "closed",
+            "spam",
+          ].includes(mcpStr(args.status))
             ? mcpStr(args.status)
             : null;
           const limit = mcpLimit(args);
           const where: string[] = [];
           const params: any[] = [];
+          // Same scopes as the Leads page: active (not yet a client/affiliate/contractor, not spam) | converted | all.
+          const view = ["active", "converted", "all"].includes(
+            mcpStr(args.view),
+          )
+            ? mcpStr(args.view)
+            : "all";
+          const linked =
+            "(client_id IS NOT NULL OR converted_affiliate_id IS NOT NULL OR converted_contractor_id IS NOT NULL)";
+          if (view === "active")
+            where.push(`NOT ${linked}`, "status <> 'spam'");
+          else if (view === "converted") where.push(linked);
           if (status) {
             where.push("status = ?");
             params.push(status);
@@ -21199,17 +34121,34 @@ function buildApp(): Express {
           }
           const [rows] = await pool.execute<RowDataPacket[]>(
             `SELECT id, email, first_name, last_name, full_name, phone, status, mode,
-                    property_address, created_at, client_id
+                    property_address, created_at, client_id, converted_affiliate_id, converted_contractor_id
              FROM leads
              ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-             ORDER BY id DESC LIMIT ${limit}`,
+             ORDER BY COALESCE(last_submitted_at, created_at) DESC, id DESC LIMIT ${limit}`,
             params,
           );
-          return { ok: true, result: { leads: rows } };
+          const touches = await loadLeadTouches(
+            rows.map((r) => String(r.phone || "")),
+          );
+          return {
+            ok: true,
+            result: {
+              view,
+              leads: rows.map((r) => {
+                const t = touches.get(normalizePhoneLast10(r.phone) || "");
+                return {
+                  ...r,
+                  last_sms: t?.sms ?? null,
+                  last_call: t?.call ?? null,
+                };
+              }),
+            },
+          };
         }
         case "get_lead": {
           const id = Number(args.lead_id);
-          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid lead_id" };
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid lead_id" };
           const [rows] = await pool.execute<RowDataPacket[]>(
             `SELECT id, email, first_name, last_name, full_name, phone, status, mode,
                     property_address, soft_pull_consent, event_city, event_id,
@@ -21223,9 +34162,13 @@ function buildApp(): Express {
         }
         case "search_clients": {
           const like = likeParam(args.q);
-          const status = ["pending", "prospect", "active", "inactive", "suspended"].includes(
-            mcpStr(args.status),
-          )
+          const status = [
+            "pending",
+            "prospect",
+            "active",
+            "inactive",
+            "suspended",
+          ].includes(mcpStr(args.status))
             ? mcpStr(args.status)
             : null;
           const limit = mcpLimit(args);
@@ -21252,7 +34195,8 @@ function buildApp(): Express {
         }
         case "get_client": {
           const id = Number(args.client_id);
-          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid client_id" };
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid client_id" };
           const [rows] = await pool.execute<RowDataPacket[]>(
             `SELECT id, email, first_name, last_name, phone, preferred_language, status,
                     address_line1, address_line2, city, state, zip, affiliate_id,
@@ -21267,7 +34211,32 @@ function buildApp(): Express {
              FROM projects WHERE client_id = ? ORDER BY id DESC LIMIT 20`,
             [id],
           );
-          return { ok: true, result: { client: rows[0], projects } };
+          const [[deal]] = (await pool.execute<RowDataPacket[]>(
+            `SELECT c.deal_status_id, c.deal_status_changed_at, ds.label_en, ds.label_es, ds.tone
+             FROM clients c LEFT JOIN deal_statuses ds ON ds.id = c.deal_status_id WHERE c.id = ? LIMIT 1`,
+            [id],
+          )) as unknown as [RowDataPacket[]];
+          const aff = await clientAffiliate(id);
+          return {
+            ok: true,
+            result: {
+              client: rows[0],
+              projects,
+              deal_status: deal?.deal_status_id
+                ? {
+                    id: Number(deal.deal_status_id),
+                    label_en: deal.label_en,
+                    label_es: deal.label_es,
+                    tone: deal.tone,
+                    changed_at: isoDate(deal.deal_status_changed_at),
+                  }
+                : null,
+              referring_affiliate: aff
+                ? { id: Number(aff.id), first_name: String(aff.first_name) }
+                : null,
+              updates: (await loadClientUpdates(id)).slice(0, 20),
+            },
+          };
         }
         case "search_projects": {
           const like = likeParam(args.q);
@@ -21333,9 +34302,12 @@ function buildApp(): Express {
         }
         case "search_affiliates": {
           const like = likeParam(args.q);
-          const status = ["pending", "active", "inactive", "suspended"].includes(
-            mcpStr(args.status),
-          )
+          const status = [
+            "pending",
+            "active",
+            "inactive",
+            "suspended",
+          ].includes(mcpStr(args.status))
             ? mcpStr(args.status)
             : null;
           const limit = mcpLimit(args);
@@ -21372,13 +34344,42 @@ function buildApp(): Express {
             [id],
           );
           if (!rows[0]) return { ok: false, error: "affiliate not found" };
-          return { ok: true, result: { affiliate: rows[0] } };
+          const sponsors = await affiliateSponsorNames(id);
+          const [[w9]] = (await pool.execute<RowDataPacket[]>(
+            `SELECT status, tin_type, tin_last4, signed_at, review_note FROM affiliate_w9s WHERE affiliate_id = ? ORDER BY id DESC LIMIT 1`,
+            [id],
+          )) as unknown as [RowDataPacket[]];
+          return {
+            ok: true,
+            result: {
+              affiliate: rows[0],
+              sponsor: sponsors.sponsor_id
+                ? { id: sponsors.sponsor_id, name: sponsors.sponsor_name }
+                : null,
+              senior_sponsor_name: sponsors.senior_sponsor_name,
+              // Agreement Section 2: payouts need a signed agreement + W-9 (full TIN never exposed).
+              onboarding: await affiliateOnboardingState(id),
+              w9: w9
+                ? {
+                    status: w9.status,
+                    tin_type: w9.tin_type,
+                    tin_last4: w9.tin_last4,
+                    signed_at: isoDate(w9.signed_at),
+                    review_note: w9.review_note,
+                  }
+                : null,
+            },
+          };
         }
         case "search_contractors": {
           const like = likeParam(args.q);
-          const status = ["pending", "invited", "active", "inactive", "suspended"].includes(
-            mcpStr(args.status),
-          )
+          const status = [
+            "pending",
+            "invited",
+            "active",
+            "inactive",
+            "suspended",
+          ].includes(mcpStr(args.status))
             ? mcpStr(args.status)
             : null;
           const limit = mcpLimit(args);
@@ -21418,9 +34419,13 @@ function buildApp(): Express {
           return { ok: true, result: { contractor: rows[0] } };
         }
         case "list_draws": {
-          const status = ["draft", "submitted", "approved", "rejected", "paid"].includes(
-            mcpStr(args.status),
-          )
+          const status = [
+            "draft",
+            "submitted",
+            "approved",
+            "rejected",
+            "paid",
+          ].includes(mcpStr(args.status))
             ? mcpStr(args.status)
             : null;
           const pub = mcpStr(args.project_public_id);
@@ -21457,18 +34462,513 @@ function buildApp(): Express {
             ? mcpStr(args.status)
             : null;
           const limit = mcpLimit(args, 50, 200);
+          const where: string[] = [];
+          const params: any[] = [];
+          if (status) {
+            where.push("ac.status = ?");
+            params.push(status);
+          }
+          const role = ["direct", "closer", "parent", "grandparent"].includes(
+            mcpStr(args.role),
+          )
+            ? mcpStr(args.role)
+            : null;
+          if (role) {
+            where.push("ac.role = ?");
+            params.push(role);
+          }
+          if (Number(args.affiliate_id) > 0) {
+            where.push("ac.affiliate_id = ?");
+            params.push(Number(args.affiliate_id));
+          }
           const [rows] = await pool.execute<RowDataPacket[]>(
-            `SELECT ac.id, ac.amount_cents, ac.status, ac.expected_pay_at, ac.paid_at, ac.created_at,
+            `SELECT ac.id, ac.affiliate_id, ac.role, ac.amount_cents, ac.rate_cents_per_sqft, ac.status,
+                    ac.expected_pay_at, ac.paid_at, ac.created_at,
                     CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name,
-                    p.public_id AS project_public_id
+                    p.public_id AS project_public_id, p.commission_plan
              FROM affiliate_commissions ac
              JOIN affiliates a ON a.id = ac.affiliate_id
              JOIN projects p ON p.id = ac.project_id
-             ${status ? "WHERE ac.status = ?" : ""}
+             ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
              ORDER BY ac.id DESC LIMIT ${limit}`,
-            status ? [status] : [],
+            params,
           );
-          return { ok: true, result: { commissions: rows } };
+          const ready = new Map<number, boolean>();
+          for (const affId of [
+            ...new Set(rows.map((r) => Number(r.affiliate_id))),
+          ]) {
+            ready.set(
+              affId,
+              (await affiliateOnboardingState(affId)).payout_ready,
+            );
+          }
+          return {
+            ok: true,
+            result: {
+              commissions: rows.map((r) => ({
+                ...r,
+                payout_ready: ready.get(Number(r.affiliate_id)) ?? false,
+              })),
+              note: "Commissions can only be marked paid when payout_ready is true (signed agreement + W-9).",
+            },
+          };
+        }
+        case "list_deal_statuses": {
+          const [rows] = await pool.execute<RowDataPacket[]>(
+            `SELECT * FROM deal_statuses ORDER BY sort_order ASC, id ASC`,
+          );
+          return { ok: true, result: { statuses: rows.map(mapDealStatus) } };
+        }
+        case "set_client_deal_status": {
+          const clientId = Number(args.client_id);
+          if (!Number.isInteger(clientId) || clientId <= 0)
+            return { ok: false, error: "invalid client_id" };
+          let dealStatusId: number | null = null;
+          if (args.clear === true) dealStatusId = null;
+          else if (Number(args.deal_status_id) > 0)
+            dealStatusId = Number(args.deal_status_id);
+          else if (mcpStr(args.deal_status)) {
+            const label = mcpStr(args.deal_status).toLowerCase();
+            const [hit] = await pool.execute<RowDataPacket[]>(
+              `SELECT id FROM deal_statuses WHERE is_active = 1 AND (LOWER(label_en) = ? OR LOWER(label_es) = ?) LIMIT 1`,
+              [label, label],
+            );
+            if (!hit[0])
+              return {
+                ok: false,
+                error: "deal status not found. Use list_deal_statuses",
+              };
+            dealStatusId = Number(hit[0].id);
+          } else {
+            return {
+              ok: false,
+              error:
+                "deal_status_id, deal_status (label) or clear=true required",
+            };
+          }
+          const out = await setClientDealStatusCore({
+            adminId: admin.id,
+            clientId,
+            dealStatusId,
+            note: mcpStr(args.note) || null,
+            notifyAffiliate: args.notify_affiliate !== false,
+          });
+          return {
+            ok: true,
+            result: { ...out, updates: out.updates.slice(0, 5) },
+          };
+        }
+        case "add_client_update": {
+          const clientId = Number(args.client_id);
+          if (!Number.isInteger(clientId) || clientId <= 0)
+            return { ok: false, error: "invalid client_id" };
+          const out = await addClientUpdateCore({
+            adminId: admin.id,
+            clientId,
+            body: mcpStr(args.body),
+            shareWithAffiliate: args.share_with_affiliate === true,
+          });
+          return { ok: true, result: { updates: out.updates.slice(0, 5) } };
+        }
+        case "set_affiliate_subscription_price": {
+          const id = Number(args.affiliate_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid affiliate_id" };
+          const raw = args.price_cents;
+          const out = await setAffiliateSubscriptionPriceCore(
+            id,
+            raw == null ? null : Number(raw),
+          );
+          return {
+            ok: true,
+            result: { ...out, onboarding: await affiliateOnboardingState(id) },
+          };
+        }
+        case "list_appointments": {
+          const from = args.from ? new Date(mcpStr(args.from)) : new Date();
+          const to = args.to
+            ? new Date(mcpStr(args.to))
+            : new Date(from.getTime() + 14 * 86400_000);
+          if (
+            Number.isNaN(from.getTime()) ||
+            Number.isNaN(to.getTime()) ||
+            to.getTime() - from.getTime() > 120 * 86400_000
+          ) {
+            return { ok: false, error: "invalid from/to (max 120 days)" };
+          }
+          const where = ["ap.starts_at < ?", "ap.ends_at > ?"];
+          const params: any[] = [to, from];
+          for (const k of ["client_id", "project_id", "lead_id"] as const) {
+            if (Number.isInteger(Number(args[k])) && Number(args[k]) > 0) {
+              where.push(`ap.${k} = ?`);
+              params.push(Number(args[k]));
+            }
+          }
+          if (Number(args.admin_id) > 0) {
+            where.push(
+              "(ap.owner_admin_id = ? OR EXISTS (SELECT 1 FROM appointment_attendees t WHERE t.appointment_id = ap.id AND t.admin_id = ?))",
+            );
+            params.push(Number(args.admin_id), Number(args.admin_id));
+          }
+          if (args.include_cancelled !== true)
+            where.push("ap.status <> 'cancelled'");
+          const [rows] = await pool.query<RowDataPacket[]>(
+            `SELECT ap.id FROM appointments ap WHERE ${where.join(" AND ")} ORDER BY ap.starts_at LIMIT 100`,
+            params,
+          );
+          const out = [];
+          for (const r of rows) {
+            const full = await loadAppointmentFull(Number(r.id));
+            if (full)
+              out.push(
+                mapAppointment(full.a, full.attendees, { internal: true }),
+              );
+          }
+          return { ok: true, result: { appointments: out } };
+        }
+        case "create_appointment": {
+          if (!writeConfirmed) {
+            return {
+              ok: true,
+              dry_run: true,
+              result: {
+                preview: true,
+                would_create: {
+                  ...args,
+                  confirm: undefined,
+                  confirm_phrase: undefined,
+                },
+                message:
+                  "Re-run with confirm=true and confirm_phrase=CONFIRM to schedule and notify everyone tagged.",
+              },
+            };
+          }
+          try {
+            const out = await createAppointment(args as any, {
+              adminId: admin.id,
+              source: "staff",
+            });
+            const full = (await loadAppointmentFull(out.id))!;
+            return {
+              ok: true,
+              result: {
+                appointment: mapAppointment(full.a, full.attendees, {
+                  internal: true,
+                }),
+                conflicts: out.conflicts,
+              },
+            };
+          } catch (e) {
+            if (e instanceof HttpError) return { ok: false, error: e.key };
+            throw e;
+          }
+        }
+        case "reschedule_appointment": {
+          const id = Number(args.appointment_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "appointment_id is required" };
+          if (!writeConfirmed) {
+            const full = await loadAppointmentFull(id);
+            if (!full) return { ok: false, error: "Appointment not found" };
+            return {
+              ok: true,
+              dry_run: true,
+              result: {
+                preview: true,
+                current: mapAppointment(full.a, full.attendees, {
+                  internal: true,
+                }),
+                changes: args,
+              },
+            };
+          }
+          try {
+            const {
+              appointment_id: _ignored,
+              confirm: _c,
+              confirm_phrase: _p,
+              ...patch
+            } = args as any;
+            return {
+              ok: true,
+              result: await updateAppointment(id, patch, admin.id),
+            };
+          } catch (e) {
+            if (e instanceof HttpError) return { ok: false, error: e.key };
+            throw e;
+          }
+        }
+        case "cancel_appointment": {
+          const id = Number(args.appointment_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "appointment_id is required" };
+          if (!writeConfirmed) {
+            const full = await loadAppointmentFull(id);
+            if (!full) return { ok: false, error: "Appointment not found" };
+            return {
+              ok: true,
+              dry_run: true,
+              result: {
+                preview: true,
+                appointment: mapAppointment(full.a, full.attendees, {
+                  internal: true,
+                }),
+                will_notify: full.attendees.length,
+              },
+            };
+          }
+          try {
+            await cancelAppointment(
+              id,
+              mcpStr(args.reason).slice(0, 500) || null,
+            );
+            return {
+              ok: true,
+              result: { cancelled: true, appointment_id: id },
+            };
+          } catch (e) {
+            if (e instanceof HttpError) return { ok: false, error: e.key };
+            throw e;
+          }
+        }
+        case "list_lenders": {
+          const [rows] = await pool.query<RowDataPacket[]>(
+            `SELECT l.id, l.company, l.contact_name, l.email, l.phone, l.preferred_language, l.is_active,
+                    (SELECT COUNT(*) FROM projects p WHERE p.lender_id = l.id) AS project_count
+             FROM lenders l ORDER BY l.is_active DESC, l.company`,
+          );
+          return {
+            ok: true,
+            result: {
+              lenders: rows.map((r) => ({
+                ...r,
+                is_active: Number(r.is_active) === 1,
+                project_count: Number(r.project_count),
+              })),
+            },
+          };
+        }
+        case "upsert_lender": {
+          const company = mcpStr(args.company).slice(0, 200);
+          if (company.length < 2)
+            return { ok: false, error: "company is required" };
+          const email = args.email ? normalizeEmail(args.email) : null;
+          if (email && !isValidEmail(email))
+            return { ok: false, error: "invalid email" };
+          const vals = [
+            company,
+            mcpStr(args.contact_name).slice(0, 200) || null,
+            email,
+            mcpStr(args.phone).slice(0, 40) || null,
+            asLang(args.preferred_language),
+            mcpStr(args.notes).slice(0, 2000) || null,
+            args.is_active === false ? 0 : 1,
+          ];
+          const id = Number(args.id);
+          if (Number.isInteger(id) && id > 0) {
+            const [r] = await pool.execute<ResultSetHeader>(
+              `UPDATE lenders SET company = ?, contact_name = ?, email = ?, phone = ?, preferred_language = ?, notes = ?, is_active = ? WHERE id = ?`,
+              [...vals, id],
+            );
+            if (!r.affectedRows)
+              return { ok: false, error: "Lender not found" };
+            await pool.execute(
+              `UPDATE projects SET loan_lender_name = ? WHERE lender_id = ?`,
+              [company, id],
+            );
+            return { ok: true, result: { lender_id: id, updated: true } };
+          }
+          const [ins] = await pool.execute<ResultSetHeader>(
+            `INSERT INTO lenders (company, contact_name, email, phone, preferred_language, notes, is_active, created_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [...vals, admin.id],
+          );
+          return {
+            ok: true,
+            result: { lender_id: Number(ins.insertId), created: true },
+          };
+        }
+        case "list_memberships": {
+          const r = await buildBillingOverview();
+          let members = r.members as any[];
+          if (args.role) members = members.filter((m) => m.role === args.role);
+          if (args.status === "paused")
+            members = members.filter((m) => m.locked);
+          else if (args.status)
+            members = members.filter((m) => m.billing.status === args.status);
+          return {
+            ok: true,
+            result: { totals: r.totals, members: members.slice(0, 200) },
+          };
+        }
+        case "get_contractor_billing": {
+          const id = Number(args.contractor_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid contractor_id" };
+          return {
+            ok: true,
+            result: {
+              contractor_id: id,
+              billing: await loadBilling("contractor", id),
+              locked: await contractorBillingLocked(id),
+            },
+          };
+        }
+        case "get_affiliate_billing": {
+          const id = Number(args.affiliate_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid affiliate_id" };
+          return {
+            ok: true,
+            result: {
+              affiliate_id: id,
+              billing: await loadAffiliateBilling(id),
+              onboarding: await affiliateOnboardingState(id),
+            },
+          };
+        }
+        case "resend_affiliate_welcome": {
+          const id = Number(args.affiliate_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid affiliate_id" };
+          await pool.execute(
+            `UPDATE affiliate_onboarding_links SET revoked_at = NOW() WHERE affiliate_id = ? AND revoked_at IS NULL`,
+            [id],
+          );
+          await sendAffiliateWelcome(id);
+          return { ok: true, result: { affiliate_id: id, sent: true } };
+        }
+        case "list_affiliate_faqs": {
+          return {
+            ok: true,
+            result: {
+              faqs: await loadAffiliateFaqs(args.include_inactive !== true),
+            },
+          };
+        }
+        case "upsert_affiliate_faq": {
+          const qEn = mcpStr(args.question_en).slice(0, 300);
+          const aEn = mcpStr(args.answer_en).slice(0, 4000);
+          if (qEn.length < 3 || aEn.length < 3)
+            return {
+              ok: false,
+              error: "question_en and answer_en are required",
+            };
+          const vals = [
+            qEn,
+            aEn,
+            mcpStr(args.question_es).slice(0, 300) || null,
+            mcpStr(args.answer_es).slice(0, 4000) || null,
+            Number.isInteger(Number(args.sort_order))
+              ? Number(args.sort_order)
+              : 100,
+            args.is_active === false ? 0 : 1,
+          ];
+          const id = Number(args.id);
+          if (Number.isInteger(id) && id > 0) {
+            const [r] = await pool.execute<ResultSetHeader>(
+              `UPDATE affiliate_faqs SET question_en = ?, answer_en = ?, question_es = ?, answer_es = ?, sort_order = ?, is_active = ? WHERE id = ?`,
+              [...vals, id],
+            );
+            if (!r.affectedRows) return { ok: false, error: "FAQ not found" };
+          } else {
+            await pool.execute(
+              `INSERT INTO affiliate_faqs (question_en, answer_en, question_es, answer_es, sort_order, is_active, created_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [...vals, admin.id],
+            );
+          }
+          return { ok: true, result: { faqs: await loadAffiliateFaqs(false) } };
+        }
+        case "list_affiliate_assistant_questions": {
+          const where: string[] = ["m.role = 'user'"];
+          const params: unknown[] = [];
+          const affId = Number(args.affiliate_id);
+          if (Number.isInteger(affId) && affId > 0) {
+            where.push("m.affiliate_id = ?");
+            params.push(affId);
+          }
+          if (args.handoff_only === true) {
+            where.push(`EXISTS (SELECT 1 FROM affiliate_assistant_messages r WHERE r.affiliate_id = m.affiliate_id AND r.role = 'assistant' AND r.id > m.id AND r.handoff = 1
+              AND r.id = (SELECT MIN(r2.id) FROM affiliate_assistant_messages r2 WHERE r2.affiliate_id = m.affiliate_id AND r2.id > m.id AND r2.role = 'assistant'))`);
+          }
+          const limit = Math.min(Math.max(Number(args.limit) || 25, 1), 100);
+          const [rows] = await pool.query<RowDataPacket[]>(
+            `SELECT m.id, m.affiliate_id, CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name, m.content AS question, m.created_at,
+                    (SELECT r.content FROM affiliate_assistant_messages r WHERE r.affiliate_id = m.affiliate_id AND r.role = 'assistant' AND r.id > m.id ORDER BY r.id LIMIT 1) AS reply,
+                    (SELECT r.handoff FROM affiliate_assistant_messages r WHERE r.affiliate_id = m.affiliate_id AND r.role = 'assistant' AND r.id > m.id ORDER BY r.id LIMIT 1) AS handoff
+             FROM affiliate_assistant_messages m JOIN affiliates a ON a.id = m.affiliate_id
+             WHERE ${where.join(" AND ")} ORDER BY m.id DESC LIMIT ${limit}`,
+            params,
+          );
+          return {
+            ok: true,
+            result: {
+              questions: rows.map((r) => ({
+                ...r,
+                handoff: Number(r.handoff) === 1,
+                created_at: isoDate(r.created_at),
+              })),
+            },
+          };
+        }
+        case "set_affiliate_sponsor": {
+          const id = Number(args.affiliate_id);
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid affiliate_id" };
+          const sponsor =
+            args.sponsor_affiliate_id == null
+              ? null
+              : Number(args.sponsor_affiliate_id);
+          if (sponsor != null && (!Number.isInteger(sponsor) || sponsor <= 0))
+            return { ok: false, error: "invalid sponsor_affiliate_id" };
+          await assertSponsorAllowed(id, sponsor);
+          await pool.execute(
+            `UPDATE affiliates SET parent_affiliate_id = ? WHERE id = ?`,
+            [sponsor, id],
+          );
+          const names = await affiliateSponsorNames(id);
+          return {
+            ok: true,
+            result: {
+              affiliate_id: id,
+              sponsor_name: names.sponsor_name,
+              senior_sponsor_name: names.senior_sponsor_name,
+              note: "Applies to projects created from now on; existing projects keep their split.",
+            },
+          };
+        }
+        case "get_phone_line": {
+          let lineId = Number(args.line_id);
+          if (!(lineId > 0) && mcpStr(args.e164)) {
+            const p10 = normalizePhoneLast10(mcpStr(args.e164));
+            const [hit] = await pool.query<RowDataPacket[]>(
+              `SELECT id FROM admin_phone_numbers WHERE RIGHT(REGEXP_REPLACE(e164, '[^0-9]', ''), 10) = ? LIMIT 1`,
+              [p10],
+            );
+            lineId = Number(hit[0]?.id || 0);
+          }
+          if (!(lineId > 0))
+            return {
+              ok: false,
+              error:
+                "line_id or e164 required (see list_brand_phone_numbers all=true)",
+            };
+          return { ok: true, result: await loadLineSettings(lineId) };
+        }
+        case "list_message_templates": {
+          const cat = mcpStr(args.category);
+          const [rows] = await pool.query<RowDataPacket[]>(
+            `SELECT id, title, category, body_en, body_es, is_active, usage_count FROM conversation_templates
+             WHERE is_active = 1 ${cat ? "AND category = ?" : ""}
+             ORDER BY usage_count DESC, title ASC LIMIT 100`,
+            cat ? [cat] : [],
+          );
+          return {
+            ok: true,
+            result: {
+              templates: rows,
+              note: "Fill {{first_name}} / {{last_name}} / {{full_name}} / {{phone}} yourself before send_sms; use body_es for Spanish-speaking contacts.",
+            },
+          };
         }
         case "list_events": {
           const status = ["draft", "published", "archived"].includes(
@@ -21485,17 +34985,33 @@ function buildApp(): Express {
             params.push(status);
           }
           if (like) {
-            where.push("(slug LIKE ? OR title_en LIKE ? OR title_es LIKE ? OR city LIKE ?)");
+            where.push(
+              "(slug LIKE ? OR title_en LIKE ? OR title_es LIKE ? OR city LIKE ?)",
+            );
             params.push(like, like, like, like);
           }
           const [rows] = await pool.execute<RowDataPacket[]>(
-            `SELECT id, slug, status, starts_at, city, title_en, title_es, is_featured
+            `SELECT id, slug, status, starts_at, ends_at, city, title_en, title_es, is_featured, qr_scan_count
              FROM marketing_events
              ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
              ORDER BY starts_at DESC LIMIT ${limit}`,
             params,
           );
-          return { ok: true, result: { events: rows } };
+          const media = await loadEventMediaSummaries(
+            rows.map((r) => Number(r.id)),
+          );
+          return {
+            ok: true,
+            result: {
+              events: rows.map((r) => ({
+                ...r,
+                is_past: isEventPast(r),
+                media_count: media.get(Number(r.id))?.media_count ?? 0,
+                public_url: `${APP_URL}/events/${r.slug}`,
+                qr_url: `${APP_URL}/e/${r.slug}`,
+              })),
+            },
+          };
         }
         case "get_event": {
           const id = Number(args.event_id);
@@ -21517,16 +35033,32 @@ function buildApp(): Express {
             return { ok: false, error: "event_id or slug required" };
           }
           if (!rows[0]) return { ok: false, error: "event not found" };
-          return { ok: true, result: { event: mapMarketingEventRow(rows[0]) } };
+          const ev = mapMarketingEventRow(rows[0]);
+          return {
+            ok: true,
+            result: {
+              event: ev,
+              is_past: isEventPast(rows[0]),
+              public_url: `${APP_URL}/events/${ev.slug}`,
+              qr_url: `${APP_URL}/e/${ev.slug}`,
+              media: (await loadEventMediaRows(ev.id)).map(mapAdminEventMedia),
+            },
+          };
         }
         case "search_staff": {
           const like = likeParam(args.q);
-          const role = ["super_admin", "admin", "agent", "finance", "content"].includes(
-            mcpStr(args.role),
-          )
+          const role = [
+            "super_admin",
+            "admin",
+            "agent",
+            "finance",
+            "content",
+          ].includes(mcpStr(args.role))
             ? mcpStr(args.role)
             : null;
-          const status = ["active", "inactive", "suspended"].includes(mcpStr(args.status))
+          const status = ["active", "inactive", "suspended"].includes(
+            mcpStr(args.status),
+          )
             ? mcpStr(args.status)
             : null;
           const limit = mcpLimit(args);
@@ -21541,7 +35073,9 @@ function buildApp(): Express {
             params.push(status);
           }
           if (like) {
-            where.push("(first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)");
+            where.push(
+              "(first_name LIKE ? OR last_name LIKE ? OR email LIKE ?)",
+            );
             params.push(like, like, like);
           }
           const [rows] = await pool.execute<RowDataPacket[]>(
@@ -21566,10 +35100,15 @@ function buildApp(): Express {
         }
         case "convert_lead": {
           const id = Number(args.lead_id);
-          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid lead_id" };
-          const targetRaw = String(args.target || "client").trim().toLowerCase();
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid lead_id" };
+          const targetRaw = String(args.target || "client")
+            .trim()
+            .toLowerCase();
           const target =
-            targetRaw === "affiliate" || targetRaw === "contractor" ? targetRaw : "client";
+            targetRaw === "affiliate" || targetRaw === "contractor"
+              ? targetRaw
+              : "client";
           if (target === "client" && !adminCan(admin.role, "projects.write")) {
             return { ok: false, error: "errors.forbidden" };
           }
@@ -21595,13 +35134,16 @@ function buildApp(): Express {
             if (out.status >= 400) {
               return {
                 ok: false,
-                error: String((out.body as { error?: string }).error || "errors.server"),
+                error: String(
+                  (out.body as { error?: string }).error || "errors.server",
+                ),
                 result: out.body,
               };
             }
             return { ok: true, result: out.body };
           } catch (e) {
-            if (e instanceof HttpError) return { ok: false, error: e.key, result: e.data };
+            if (e instanceof HttpError)
+              return { ok: false, error: e.key, result: e.data };
             throw e;
           }
         }
@@ -21667,18 +35209,26 @@ function buildApp(): Express {
           );
           if (!rows[0]) return { ok: false, error: "affiliate not found" };
           if (rows[0].status !== "pending" && rows[0].status !== "inactive") {
-            return { ok: false, error: `cannot approve from status ${rows[0].status}` };
+            return {
+              ok: false,
+              error: `cannot approve from status ${rows[0].status}`,
+            };
           }
           await pool.execute(
             `UPDATE affiliates SET status = 'active', approved_at = COALESCE(approved_at, NOW()), approved_by_admin_id = ? WHERE id = ?`,
             [admin.id, id],
           );
+          await startBillingOnApproval("affiliate", id);
           const lang = asLang(rows[0].preferred_language);
           await safeSend(
             String(rows[0].email),
             tplPortalNotice({
               lang,
-              subject: tr(lang, "Affiliate approved — Groundwork Capital", "Afiliado aprobado — Groundwork Capital"),
+              subject: tr(
+                lang,
+                "Affiliate approved · Groundwork Capital",
+                "Afiliado aprobado · Groundwork Capital",
+              ),
               headline: tr(lang, "You're approved.", "Estás aprobado."),
               paragraphs: [
                 tr(
@@ -21689,7 +35239,11 @@ function buildApp(): Express {
               ],
               cta: {
                 url: `${APP_URL}/affiliate/login`,
-                label: tr(lang, "Open affiliate portal", "Abrir portal de afiliados"),
+                label: tr(
+                  lang,
+                  "Open affiliate portal",
+                  "Abrir portal de afiliados",
+                ),
               },
             }),
           );
@@ -21710,9 +35264,10 @@ function buildApp(): Express {
               error: `cannot approve from status ${rows[0].status}`,
             };
           }
-          await pool.execute(`UPDATE clients SET status = 'prospect' WHERE id = ?`, [
-            id,
-          ]);
+          await pool.execute(
+            `UPDATE clients SET status = 'prospect' WHERE id = ?`,
+            [id],
+          );
           const token = await issueClientPortalInvite(pool, {
             clientId: id,
             email: String(rows[0].email),
@@ -21747,7 +35302,11 @@ function buildApp(): Express {
           }
           let override: string | null = null;
           try {
-            ({ override } = await assertContractorActivationAllowed(id, admin, args.override_reason));
+            ({ override } = await assertContractorActivationAllowed(
+              id,
+              admin,
+              args.override_reason,
+            ));
           } catch (e) {
             if (e instanceof HttpError) return { ok: false, error: e.key };
             throw e;
@@ -21756,10 +35315,13 @@ function buildApp(): Express {
             `UPDATE contractors SET status = 'active', activated_at = COALESCE(activated_at, NOW()) WHERE id = ?`,
             [id],
           );
-          if (override) await recordContractorActivationOverride(id, admin.id, override);
+          if (override)
+            await recordContractorActivationOverride(id, admin.id, override);
+          await startBillingOnApproval("contractor", id);
           await sendContractorApprovedEmail({
             email: String(rows[0].email),
             first_name: String(rows[0].first_name),
+            id,
             preferred_language: rows[0].preferred_language,
           });
           return { ok: true, result: { contractor_id: id, status: "active" } };
@@ -21772,8 +35334,10 @@ function buildApp(): Express {
           const license = mcpStr(args.license_number).slice(0, 100) || null;
           const phone = mcpStr(args.phone).slice(0, 40) || null;
           const lang = asLang(args.preferred_language);
-          if (!isValidEmail(email)) return { ok: false, error: "validation.emailInvalid" };
-          if (!first) return { ok: false, error: "validation.firstNameRequired" };
+          if (!isValidEmail(email))
+            return { ok: false, error: "validation.emailInvalid" };
+          if (!first)
+            return { ok: false, error: "validation.firstNameRequired" };
           if (!last) return { ok: false, error: "validation.lastNameRequired" };
           const [ex] = await pool.execute<RowDataPacket[]>(
             `SELECT id, status FROM contractors WHERE email = ? LIMIT 1`,
@@ -21782,17 +35346,23 @@ function buildApp(): Express {
           if (ex[0] && ex[0].status !== "invited") {
             return { ok: false, error: "errors.contractorExists" };
           }
-          let mcpPhoneOverride: { reason: string; matches: PersonMatch[] } | null = null;
+          let mcpPhoneOverride: {
+            reason: string;
+            matches: PersonMatch[];
+          } | null = null;
           try {
             ({ phoneOverride: mcpPhoneOverride } = await assertPersonAvailable({
               email,
               phone,
               actor: "staff",
               sharedPhoneReason: args.shared_phone_reason,
-              exclude: ex[0] ? [{ entity: "contractor", id: Number(ex[0].id) }] : [],
+              exclude: ex[0]
+                ? [{ entity: "contractor", id: Number(ex[0].id) }]
+                : [],
             }));
           } catch (e) {
-            if (e instanceof HttpError) return { ok: false, error: e.key, result: e.data };
+            if (e instanceof HttpError)
+              return { ok: false, error: e.key, result: e.data };
             throw e;
           }
           const token = crypto.randomBytes(32).toString("hex");
@@ -21824,19 +35394,38 @@ function buildApp(): Express {
             await conn.execute(
               `INSERT INTO contractor_invites (token, email, contractor_id, created_by_admin_id, expires_at)
                VALUES (?, ?, ?, ?, ?)`,
-              [token, email, cid, admin.id, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)],
+              [
+                token,
+                email,
+                cid,
+                admin.id,
+                new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+              ],
             );
             return cid;
           });
           if (mcpPhoneOverride) {
-            await recordSharedPhoneOverride({ entity: "contractor", id: contractorId, override: mcpPhoneOverride, adminId: admin.id });
+            await recordSharedPhoneOverride({
+              entity: "contractor",
+              id: contractorId,
+              override: mcpPhoneOverride,
+              adminId: admin.id,
+            });
           }
-          await sendContractorApplicationLink({ contractorId, adminId: admin.id, variant: "new" });
-          return { ok: true, result: { contractor_id: contractorId, invite_sent: true } };
+          await sendContractorApplicationLink({
+            contractorId,
+            adminId: admin.id,
+            variant: "new",
+          });
+          return {
+            ok: true,
+            result: { contractor_id: contractorId, invite_sent: true },
+          };
         }
         case "invite_client_portal": {
           const id = Number(args.client_id);
-          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid client_id" };
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid client_id" };
           const [rows] = await pool.execute<RowDataPacket[]>(
             `SELECT email, first_name, preferred_language, status FROM clients WHERE id = ? LIMIT 1`,
             [id],
@@ -21864,7 +35453,8 @@ function buildApp(): Express {
         case "update_draw_status": {
           const id = Number(args.draw_id);
           const next = mcpStr(args.status);
-          if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "invalid draw_id" };
+          if (!Number.isInteger(id) || id <= 0)
+            return { ok: false, error: "invalid draw_id" };
           if (!["approved", "rejected", "paid"].includes(next)) {
             return { ok: false, error: "invalid status" };
           }
@@ -21903,7 +35493,14 @@ function buildApp(): Express {
               );
             }
           });
-          return { ok: true, result: { draw_id: id, status: next, project_public_id: d.public_id } };
+          return {
+            ok: true,
+            result: {
+              draw_id: id,
+              status: next,
+              project_public_id: d.public_id,
+            },
+          };
         }
         case "update_commission_status": {
           const id = Number(args.commission_id);
@@ -21920,7 +35517,8 @@ function buildApp(): Express {
           );
           const c = rows[0];
           if (!c) return { ok: false, error: "commission not found" };
-          if (c.status === "paid") return { ok: false, error: "errors.invalidTransition" };
+          if (c.status === "paid")
+            return { ok: false, error: "errors.invalidTransition" };
           const allowed: Record<string, string[]> = {
             pending: ["approved", "void"],
             approved: ["paid", "void", "pending"],
@@ -21928,6 +35526,13 @@ function buildApp(): Express {
           };
           if (!allowed[String(c.status)]?.includes(next)) {
             return { ok: false, error: "errors.invalidTransition" };
+          }
+          if (
+            next === "paid" &&
+            !(await affiliateOnboardingState(Number(c.affiliate_id)))
+              .payout_ready
+          ) {
+            return { ok: false, error: "errors.affiliateOnboardingIncomplete" };
           }
           const updates: Record<string, unknown> = { status: next };
           if (next === "paid") updates.paid_at = new Date();
@@ -21959,7 +35564,12 @@ function buildApp(): Express {
                 await conn.execute(
                   `UPDATE projects SET affiliate_commission_cents = ?, net_profit_cents = ?,
                      net_profit_per_sqft_cents = ? WHERE id = ?`,
-                  [affComm, econ.net_profit_cents, econ.net_profit_per_sqft_cents, projectId],
+                  [
+                    affComm,
+                    econ.net_profit_cents,
+                    econ.net_profit_per_sqft_cents,
+                    projectId,
+                  ],
                 );
               }
               const [[open]] = (await conn.execute<RowDataPacket[]>(
@@ -21977,7 +35587,11 @@ function buildApp(): Express {
           });
           return {
             ok: true,
-            result: { commission_id: id, status: next, project_public_id: c.public_id },
+            result: {
+              commission_id: id,
+              status: next,
+              project_public_id: c.public_id,
+            },
           };
         }
         case "create_staff": {
@@ -21987,17 +35601,23 @@ function buildApp(): Express {
           const role = mcpStr(args.role);
           const phone = mcpStr(args.phone).slice(0, 20) || null;
           const lang = asLang(args.preferred_language);
-          if (!isValidEmail(email)) return { ok: false, error: "validation.emailInvalid" };
-          if (!first) return { ok: false, error: "validation.firstNameRequired" };
+          if (!isValidEmail(email))
+            return { ok: false, error: "validation.emailInvalid" };
+          if (!first)
+            return { ok: false, error: "validation.firstNameRequired" };
           if (!last) return { ok: false, error: "validation.lastNameRequired" };
-          if (!["super_admin", "admin", "agent", "finance", "content"].includes(role)) {
+          if (
+            !["super_admin", "admin", "agent", "finance", "content"].includes(
+              role,
+            )
+          ) {
             return { ok: false, error: "validation.invalidField" };
           }
           // MCP must not mint additional super_admins (use Admin → Staff UI for that).
           if (role === "super_admin") {
             return {
               ok: false,
-              error: "MCP cannot create super_admin — use Admin → Staff",
+              error: "MCP cannot create super_admin. Use Admin → Staff",
             };
           }
           const [r] = await pool.execute<ResultSetHeader>(
@@ -22009,8 +35629,16 @@ function buildApp(): Express {
             email,
             tplPortalNotice({
               lang,
-              subject: tr(lang, "You've been added to Groundwork Admin", "Te agregaron a Groundwork Admin"),
-              headline: tr(lang, "Welcome to the team.", "Bienvenido al equipo."),
+              subject: tr(
+                lang,
+                "You've been added to Groundwork Admin",
+                "Te agregaron a Groundwork Admin",
+              ),
+              headline: tr(
+                lang,
+                "Welcome to the team.",
+                "Bienvenido al equipo.",
+              ),
               paragraphs: [
                 tr(
                   lang,
@@ -22020,7 +35648,11 @@ function buildApp(): Express {
               ],
               cta: {
                 url: `${APP_URL}/admin/login`,
-                label: tr(lang, "Open admin portal", "Abrir portal de administración"),
+                label: tr(
+                  lang,
+                  "Open admin portal",
+                  "Abrir portal de administración",
+                ),
               },
             }),
           );
@@ -22124,7 +35756,10 @@ function buildApp(): Express {
             return { ok: false, error: "email is invalid" };
           }
           if (phoneNormalized && !normalizePhoneLast10(phoneNormalized)) {
-            return { ok: false, error: "phone must include at least 10 digits" };
+            return {
+              ok: false,
+              error: "phone must include at least 10 digits",
+            };
           }
           if (phoneNormalized) {
             phoneNormalized = toSmsE164(phoneNormalized).slice(0, 20);
@@ -22188,7 +35823,11 @@ function buildApp(): Express {
               },
             };
           }
-          if (hasDups && args.confirm_duplicate !== true && args.confirm_duplicate !== "true") {
+          if (
+            hasDups &&
+            args.confirm_duplicate !== true &&
+            args.confirm_duplicate !== "true"
+          ) {
             return {
               ok: false,
               error:
@@ -22242,7 +35881,10 @@ function buildApp(): Express {
             [contactId],
           );
           if (!existing[0]) {
-            return { ok: false, error: "Contact not found (or already converted/deleted)" };
+            return {
+              ok: false,
+              error: "Contact not found (or already converted/deleted)",
+            };
           }
           const first =
             args.first_name != null
@@ -22252,7 +35894,8 @@ function buildApp(): Express {
             args.last_name != null
               ? mcpStr(args.last_name).slice(0, 100)
               : String(existing[0].last_name);
-          if (!first || !last) return { ok: false, error: "first_name and last_name required" };
+          if (!first || !last)
+            return { ok: false, error: "first_name and last_name required" };
           const email =
             args.email !== undefined
               ? normalizeEmail(args.email) || null
@@ -22273,7 +35916,10 @@ function buildApp(): Express {
           }
           if (phone && args.phone !== undefined) {
             if (!normalizePhoneLast10(phone)) {
-              return { ok: false, error: "phone must include at least 10 digits" };
+              return {
+                ok: false,
+                error: "phone must include at least 10 digits",
+              };
             }
             phone = toSmsE164(phone).slice(0, 20);
           }
@@ -22339,7 +35985,11 @@ function buildApp(): Express {
               },
             };
           }
-          if (hasDups && args.confirm_duplicate !== true && args.confirm_duplicate !== "true") {
+          if (
+            hasDups &&
+            args.confirm_duplicate !== true &&
+            args.confirm_duplicate !== "true"
+          ) {
             return {
               ok: false,
               error:
@@ -22384,8 +36034,62 @@ function buildApp(): Express {
           );
           return {
             ok: true,
-            result: { updated: true, contact: mapCrmContactRow(rows[0]), href: `/admin/contacts` },
+            result: {
+              updated: true,
+              contact: mapCrmContactRow(rows[0]),
+              href: `/admin/contacts`,
+            },
           };
+        }
+        case "revert_client_to_lead": {
+          const clientId = Number(args.client_id);
+          if (!Number.isInteger(clientId) || clientId <= 0)
+            return { ok: false, error: "client_id is required" };
+          const leadStatus = mcpStr(args.lead_status) || null;
+          const reason = mcpStr(args.reason).slice(0, 500) || null;
+          try {
+            if (!writeConfirmed) {
+              const { plan } = await revertClientToLead({
+                clientId,
+                adminId: admin.id,
+                leadStatus,
+                dryRun: true,
+              });
+              return {
+                ok: true,
+                dry_run: true,
+                result: {
+                  preview: true,
+                  ready: plan.blockers.length === 0,
+                  plan,
+                  message: plan.blockers.length
+                    ? `Blocked: ${plan.blockers.join(", ")}`
+                    : "Re-run with confirm=true and confirm_phrase=CONFIRM to move this client back.",
+                },
+              };
+            }
+            const out = await revertClientToLead({
+              clientId,
+              adminId: admin.id,
+              leadStatus,
+              reason,
+            });
+            return {
+              ok: true,
+              result: { reverted: true, plan: out.plan, ...out.result },
+            };
+          } catch (e) {
+            if (e instanceof HttpError) {
+              return {
+                ok: false,
+                error:
+                  e.key === "errors.clientRevertBlocked"
+                    ? `Blocked: ${((e.data?.blockers as string[]) || []).join(", ")}`
+                    : e.key,
+              };
+            }
+            throw e;
+          }
         }
         case "convert_contact": {
           const contactId = Number(args.contact_id);
@@ -22399,7 +36103,10 @@ function buildApp(): Express {
             [contactId],
           );
           if (!previewRows[0]) {
-            return { ok: false, error: "Contact not found (or already converted/deleted)" };
+            return {
+              ok: false,
+              error: "Contact not found (or already converted/deleted)",
+            };
           }
           const c = previewRows[0];
           const phone = c.phone ? String(c.phone) : null;
@@ -22407,7 +36114,8 @@ function buildApp(): Express {
           if (!phone && !email) {
             return {
               ok: false,
-              error: "Contact needs phone or email before convert. Use update_contact first.",
+              error:
+                "Contact needs phone or email before convert. Use update_contact first.",
             };
           }
           let existingClientId: number | null = null;
@@ -22488,7 +36196,10 @@ function buildApp(): Express {
           }
           if (!body) return { ok: false, error: "body is required" };
           if ([...body].length > SMS_MAX_BODY_CHARS) {
-            return { ok: false, error: `SMS body exceeds ${SMS_MAX_BODY_CHARS} characters` };
+            return {
+              ok: false,
+              error: `SMS body exceeds ${SMS_MAX_BODY_CHARS} characters`,
+            };
           }
           const [rows] = await pool.query<RowDataPacket[]>(
             `SELECT id, first_name, last_name, phone, deleted_at, converted_client_id
@@ -22509,9 +36220,15 @@ function buildApp(): Express {
             `${rows[0].first_name || ""} ${rows[0].last_name || ""}`.trim();
           const toPhone = rows[0].phone ? String(rows[0].phone).trim() : null;
           if (!toPhone) {
-            return { ok: false, error: "Contact has no phone. Use update_contact first." };
+            return {
+              ok: false,
+              error: "Contact has no phone. Use update_contact first.",
+            };
           }
-          const fromResolved = await resolveMcpSmsFromE164(admin.id, args);
+          const fromResolved = await resolveMcpSmsFromE164(admin.id, args, {
+            contactId,
+            phone: toPhone,
+          });
           if (fromResolved.ok === false) {
             return { ok: false, error: fromResolved.message };
           }
@@ -22593,7 +36310,8 @@ function buildApp(): Express {
           if (rows[0].converted_client_id != null) {
             return {
               ok: false,
-              error: "Contact already converted. Email the client from Admin instead.",
+              error:
+                "Contact already converted. Email the client from Admin instead.",
             };
           }
           const contactName =
@@ -22601,7 +36319,10 @@ function buildApp(): Express {
           const toEmail = rows[0].email ? String(rows[0].email).trim() : null;
           const toLang = rows[0].preferred_language === "es" ? "es" : "en";
           if (!toEmail || !isValidEmail(toEmail)) {
-            return { ok: false, error: "Contact has no valid email. Use update_contact." };
+            return {
+              ok: false,
+              error: "Contact has no valid email. Use update_contact.",
+            };
           }
           if (!writeConfirmed) {
             return {
@@ -22666,14 +36387,18 @@ function buildApp(): Express {
           ).trim();
           if (!body) return { ok: false, error: "body is required" };
           if ([...body].length > SMS_MAX_BODY_CHARS) {
-            return { ok: false, error: `SMS body exceeds ${SMS_MAX_BODY_CHARS} characters` };
+            return {
+              ok: false,
+              error: `SMS body exceeds ${SMS_MAX_BODY_CHARS} characters`,
+            };
           }
           const namedTo = await resolveMcpStaffAssignee({
             adminId: args.to_admin_id,
             name: args.to_admin_name,
             email: args.to_admin_email,
           });
-          if (namedTo.ok === false) return { ok: false, error: namedTo.message };
+          if (namedTo.ok === false)
+            return { ok: false, error: namedTo.message };
           const clientId =
             args.client_id != null && Number(args.client_id) > 0
               ? Number(args.client_id)
@@ -22681,10 +36406,15 @@ function buildApp(): Express {
           if (!namedTo.requested && !clientId) {
             return {
               ok: false,
-              error: "Provide client_id or to_admin_id / to_admin_name (use send_contact_sms for contacts)",
+              error:
+                "Provide client_id or to_admin_id / to_admin_name (use send_contact_sms for contacts)",
             };
           }
-          const fromResolved = await resolveMcpSmsFromE164(admin.id, args);
+          const fromResolved = await resolveMcpSmsFromE164(
+            admin.id,
+            args,
+            clientId ? { clientId } : undefined,
+          );
           if (fromResolved.ok === false) {
             return { ok: false, error: fromResolved.message };
           }
@@ -22816,7 +36546,9 @@ function buildApp(): Express {
             ? Math.min(50, Math.max(1, Math.floor(rawLimit)))
             : 20;
           const channelArg = mcpStr(args.channel).toLowerCase();
-          const channelFilter = ["sms", "call", "email", "internal"].includes(channelArg)
+          const channelFilter = ["sms", "call", "email", "internal"].includes(
+            channelArg,
+          )
             ? channelArg
             : null;
           const [convRows] = await pool.query<RowDataPacket[]>(
@@ -22825,7 +36557,9 @@ function buildApp(): Express {
               : `SELECT id FROM conversations WHERE client_id = ?`,
             channelFilter ? [clientId, channelFilter] : [clientId],
           );
-          const convIds = convRows.map((r) => Number(r.id)).filter((id) => id > 0);
+          const convIds = convRows
+            .map((r) => Number(r.id))
+            .filter((id) => id > 0);
           if (!convIds.length) {
             return {
               ok: true,
@@ -22863,11 +36597,16 @@ function buildApp(): Express {
                   conversation_id: Number(m.conversation_id),
                   direction: String(m.direction || ""),
                   channel: String(m.channel || "sms"),
-                  body: decodeLiteralUnicodeEscapes(String(m.body || "")).slice(0, 500),
+                  body: decodeLiteralUnicodeEscapes(String(m.body || "")).slice(
+                    0,
+                    500,
+                  ),
                   has_media: Number(m.has_media) === 1,
                   has_recording: Number(m.has_recording) === 1,
                   call_duration_sec:
-                    m.call_duration_sec != null ? Number(m.call_duration_sec) : null,
+                    m.call_duration_sec != null
+                      ? Number(m.call_duration_sec)
+                      : null,
                   provider_message_id: m.provider_message_id
                     ? String(m.provider_message_id)
                     : null,
@@ -22901,7 +36640,9 @@ function buildApp(): Express {
             `SELECT id FROM conversations WHERE client_id = ?`,
             [clientId],
           );
-          const convIds = convRows.map((r) => Number(r.id)).filter((id) => id > 0);
+          const convIds = convRows
+            .map((r) => Number(r.id))
+            .filter((id) => id > 0);
           if (!convIds.length) {
             return {
               ok: true,
@@ -22940,7 +36681,7 @@ function buildApp(): Express {
               client_id: clientId,
               call_insights_enabled: false,
               guidance:
-                "Twilio call/voicemail transcripts are returned in transcript_full when transcript_status is ready. AI call summaries are not enabled — use body text and transcript_full only; do not invent details.",
+                "Twilio call/voicemail transcripts are returned in transcript_full when transcript_status is ready. AI call summaries are not enabled. Use body text and transcript_full only; do not invent details.",
               calls: callRows.map((m) => {
                 let isVoicemail = false;
                 let transcriptFull: string | null = null;
@@ -22951,7 +36692,11 @@ function buildApp(): Express {
                       ? JSON.parse(m.metadata_json)
                       : m.metadata_json;
                   isVoicemail = !!(meta && meta.is_voicemail);
-                  if (meta && typeof meta.transcript === "string" && meta.transcript.trim()) {
+                  if (
+                    meta &&
+                    typeof meta.transcript === "string" &&
+                    meta.transcript.trim()
+                  ) {
                     transcriptFull = String(meta.transcript);
                   }
                   if (meta && meta.transcript_status != null) {
@@ -22968,7 +36713,9 @@ function buildApp(): Express {
                   body: body.slice(0, 240),
                   is_voicemail: isVoicemail,
                   call_duration_sec:
-                    m.call_duration_sec != null ? Number(m.call_duration_sec) : null,
+                    m.call_duration_sec != null
+                      ? Number(m.call_duration_sec)
+                      : null,
                   has_recording: Number(m.has_recording) === 1,
                   transcript_status: transcriptStatus,
                   transcript_full: transcriptFull,
@@ -22985,17 +36732,27 @@ function buildApp(): Express {
           // MCP is super_admin-only; all=true is allowed.
           const [rows] = await pool.query<RowDataPacket[]>(
             listAll
-              ? `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name
+              ? `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name,
+                        a.status AS assigned_admin_status,
+                        (SELECT COUNT(*) FROM phone_line_members m WHERE m.line_id = n.id) AS member_count
                  FROM admin_phone_numbers n
                  LEFT JOIN admins a ON a.id = n.assigned_admin_id
                  WHERE n.is_active = 1
-                 ORDER BY n.id ASC`
+                 ORDER BY n.is_primary DESC, n.id ASC`
               : `SELECT n.*, CONCAT(a.first_name,' ',a.last_name) AS assigned_admin_name
                  FROM admin_phone_numbers n
                  LEFT JOIN admins a ON a.id = n.assigned_admin_id
-                 WHERE n.is_active = 1 AND n.assigned_admin_id = ?
-                 ORDER BY n.id ASC`,
-            listAll ? [] : [admin.id],
+                 WHERE n.id IN (?)
+                 ORDER BY FIELD(n.id, ?)`,
+            listAll
+              ? []
+              : await (async () => {
+                  // Lines the acting admin sends from: own personal first, then shared memberships.
+                  const ids = (await listAssignedPhoneNumbers(admin.id)).map(
+                    (r) => Number(r.id),
+                  );
+                  return [ids.length ? ids : [0], ids.length ? ids : [0]];
+                })(),
           );
           const twilioConfigured = isTwilioConfigured();
           return {
@@ -23010,7 +36767,7 @@ function buildApp(): Express {
                   ? String(rows[0].e164)
                   : null,
               note: !twilioConfigured
-                ? "Twilio credentials are not configured — SMS cannot send until TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN are set."
+                ? "Twilio credentials are not configured · SMS cannot send until TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN are set."
                 : rows.length === 0
                   ? "No active brand numbers assigned to this admin. Assign one in Staff → Brand phone numbers before send_sms."
                   : "Use acting_admin_from (or numbers[].e164) as the From line for send_sms/send_text.",
@@ -23023,13 +36780,13 @@ function buildApp(): Express {
           return {
             ok: false,
             error:
-              "whatsapp_not_configured — Groundwork has no WhatsApp channel yet. Use send_sms or send_contact_sms.",
+              "whatsapp_not_configured · Groundwork has no WhatsApp channel yet. Use send_sms or send_contact_sms.",
           };
         case "list_whatsapp":
           return {
             ok: false,
             error:
-              "whatsapp_not_configured — no whatsapp channel. Use list_sms for the Conversations timeline.",
+              "whatsapp_not_configured. No whatsapp channel. Use list_sms for the Conversations timeline.",
           };
         default:
           return { ok: false, error: `Unhandled tool: ${name}` };
@@ -23049,8 +36806,7 @@ function buildApp(): Express {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const challenge =
-      `Bearer FAKESECRET_g3h4i5j6k7l8m9n0o1p2="${siteOrigin()}/.well-known/oauth-protected-resource", scope="${MCP_SCOPE}"`;
+    const challenge = `Bearer FAKESECRET_g3h4i5j6k7l8m9n0o1p2="${siteOrigin()}/.well-known/oauth-protected-resource", scope="${MCP_SCOPE}"`;
     const fail = (reason: string) => {
       console.warn("[mcp] auth_reject", { reason });
       res.setHeader("WWW-Authenticate", challenge);
@@ -23138,7 +36894,12 @@ function buildApp(): Express {
           }
           const confirm = mcpWriteConfirmed(cleaned);
           try {
-            const result = await executeMcpTool(admin, t.name, cleaned, confirm);
+            const result = await executeMcpTool(
+              admin,
+              t.name,
+              cleaned,
+              confirm,
+            );
             try {
               await pool.execute(
                 `INSERT INTO mcp_audit_logs (admin_id, tool_name, confirm, request_json, result_json, error_message)
@@ -23201,7 +36962,10 @@ function buildApp(): Express {
     };
     const origSend = res.send.bind(res);
     (res as any).send = (body: unknown) => {
-      if (typeof body === "string" && (body.startsWith("{") || body.startsWith("["))) {
+      if (
+        typeof body === "string" &&
+        (body.startsWith("{") || body.startsWith("["))
+      ) {
         return origSend(sanitizeMcpJsonRpcForClaude(body));
       }
       return origSend(body as any);
@@ -23222,7 +36986,10 @@ function buildApp(): Express {
   });
 
   app.get("/api/mcp", requireMcpAuth, (_req, res) => {
-    return res.status(405).setHeader("Allow", "POST").json({ error: "use_post" });
+    return res
+      .status(405)
+      .setHeader("Allow", "POST")
+      .json({ error: "use_post" });
   });
 
   app.post("/api/mcp", requireMcpAuth, (req, res) => {
@@ -23317,7 +37084,8 @@ function buildApp(): Express {
       if (!clientId || !redirectUri || responseType !== "code" || !challenge) {
         return res.status(400).send("invalid_request");
       }
-      if (method !== "S256") return res.status(400).send("unsupported code_challenge_method");
+      if (method !== "S256")
+        return res.status(400).send("unsupported code_challenge_method");
 
       const [clients] = await pool.query<RowDataPacket[]>(
         `SELECT * FROM mcp_oauth_clients WHERE client_id = ? LIMIT 1`,
@@ -23376,7 +37144,8 @@ function buildApp(): Express {
           `SELECT * FROM mcp_oauth_clients WHERE client_id = ? LIMIT 1`,
           [clientId],
         );
-        if (!clients[0]) return res.status(400).json({ error: "unknown_client" });
+        if (!clients[0])
+          return res.status(400).json({ error: "unknown_client" });
         const registered = parseMcpRedirectUris(clients[0].redirect_uris_json);
         if (!mcpRedirectUriAllowed(redirectUri, registered)) {
           return res.status(400).json({ error: "invalid_redirect_uri" });
@@ -23528,7 +37297,8 @@ function buildApp(): Express {
           WHERE id = ? AND consumed_at IS NULL AND expires_at > NOW()`,
         [rows[0].id],
       );
-      if (!consumed.affectedRows) return res.status(400).json({ error: "invalid_grant" });
+      if (!consumed.affectedRows)
+        return res.status(400).json({ error: "invalid_grant" });
 
       const access = crypto.randomBytes(32).toString("hex");
       const refresh = crypto.randomBytes(32).toString("hex");
@@ -23624,21 +37394,17 @@ function buildApp(): Express {
     }),
   );
 
-  app.get(
-    "/api/admin/mcp/tools",
-    requireSuperAdminMcp,
-    (_req, res) => {
-      res.json({
-        tools: MCP_TOOLS.map((t) => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-          readOnly: t.readOnly,
-          requiresConfirm: !t.readOnly,
-        })),
-      });
-    },
-  );
+  app.get("/api/admin/mcp/tools", requireSuperAdminMcp, (_req, res) => {
+    res.json({
+      tools: MCP_TOOLS.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        readOnly: t.readOnly,
+        requiresConfirm: !t.readOnly,
+      })),
+    });
+  });
 
   registerTwilioWebhookRoutes(app);
 
@@ -23688,6 +37454,15 @@ export const __test = {
   MFSN_FREE_SNAPSHOT_URL,
   ADMIN_PERMS,
   eventRegistrationOpen,
+  isEventPast,
+  twilioNumberPointsHere,
+  renderAffiliateAgreement,
+  validateTin,
+  buildW9Pdf,
+  buildAffiliateAgreementPdf,
+  AFFILIATE_AGREEMENT_V1,
+  parseEventEmbedUrl,
+  detectVideoType,
   assertMilestoneTransition,
   MILESTONE_TRANSITIONS,
   buildContractPdf,

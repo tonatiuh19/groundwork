@@ -6,23 +6,16 @@ import type { TFunction } from "i18next";
 import { useEffect, useMemo } from "react";
 import {
   ArrowLeft,
-  ArrowRight,
   CalendarDays,
   CheckCircle2,
-  Clock,
   ExternalLink,
   Loader2,
   Mail,
-  MapPin,
   ShieldCheck,
-  Video,
 } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { resetLeadForm } from "@/store/slices/leadSlice";
-import {
-  clearEventDetail,
-  fetchEventBySlug,
-} from "@/store/slices/publicEventsSlice";
+import { fetchLiveEvent } from "@/store/slices/publicEventsSlice";
 import {
   clearGetCreditReportLead,
   submitGetCreditReportLead,
@@ -32,11 +25,8 @@ import LeadForm from "@/components/LeadForm";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import PageMeta, { breadcrumbSchema } from "@/components/PageMeta";
-import { eventDayOfMonth, useFormatters } from "@/lib/format";
+import EventHero from "@/components/events/EventHero";
 import { translateApiError } from "@/lib/api";
-
-/** Campaign landing: Fontana RSVP lives at this URL (optional free credit report below). */
-const FONTANA_EVENT_SLUG = "fontana-oct-6";
 
 function makeGcrSchema(t: TFunction) {
   return Yup.object({
@@ -57,18 +47,16 @@ function makeGcrSchema(t: TFunction) {
 }
 
 /**
- * `/get-credit-report` — Fontana event registration (same content/RSVP as
- * `/events/fontana-oct-6`) plus an optional free soft-pull credit report at the end.
+ * `/get-credit-report` — dynamic campaign landing. While an event is live
+ * (published, registration open, not past) it shows that event + RSVP with the
+ * optional free soft-pull credit report below; otherwise a clean credit-report page.
  */
 export default function GetCreditReport() {
   const { t, i18n } = useTranslation();
   const location = useLocation();
   const dispatch = useAppDispatch();
-  const fmt = useFormatters();
   const lang = i18n.language?.startsWith("es") ? "es" : "en";
-  const { slug: loadedSlug, event, loading, error } = useAppSelector(
-    (s) => s.publicEvents.detail,
-  );
+  const { event: current, loaded } = useAppSelector((s) => s.publicEvents.live);
   const {
     submitting: gcrSubmitting,
     error: gcrError,
@@ -78,24 +66,19 @@ export default function GetCreditReport() {
   const gcrSchema = useMemo(() => makeGcrSchema(t), [t]);
 
   useEffect(() => {
-    void dispatch(fetchEventBySlug({ slug: FONTANA_EVENT_SLUG, lang }));
+    void dispatch(fetchLiveEvent(lang));
   }, [dispatch, lang]);
 
   useEffect(() => {
     dispatch(resetLeadForm());
     return () => {
-      dispatch(clearEventDetail());
       dispatch(clearGetCreditReportLead());
     };
   }, [dispatch]);
 
-  const current =
-    event && loadedSlug === FONTANA_EVENT_SLUG ? event : null;
-  const missing = !current && !loading && error !== null;
-
-  // Event content loads async — re-scroll when #free-report is present (e.g. from /join).
+  // Content loads async — re-scroll when #free-report is present (e.g. from /join).
   useEffect(() => {
-    if (!current) return;
+    if (!loaded) return;
     if (location.hash !== "#free-report") return;
     const el = document.getElementById("free-report");
     if (!el) return;
@@ -103,42 +86,9 @@ export default function GetCreditReport() {
       el.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 80);
     return () => window.clearTimeout(id);
-  }, [current, location.hash]);
+  }, [loaded, current, location.hash]);
 
-  if (missing) {
-    return (
-      <div className="groundwork-page">
-        <PageMeta
-          title={t("event.notFoundTitle")}
-          description={t("event.notFoundBody")}
-          canonical="/get-credit-report"
-          noIndex
-        />
-        <SiteHeader />
-        <main className="interior-main">
-          <section className="interior-hero section-shell event-empty">
-            <p className="eyebrow">
-              <span className="eyebrow-line" /> {t("event.eyebrow")}
-            </p>
-            <h1>{t("event.notFoundTitle")}</h1>
-            <p className="section-lead">
-              {error && error !== "errors.eventNotFound"
-                ? t("errors.server")
-                : t("event.notFoundBody")}
-            </p>
-            <p className="event-empty-actions">
-              <Link className="button button-gold" to="/">
-                {t("notFound.home")} <ArrowRight size={16} />
-              </Link>
-            </p>
-          </section>
-        </main>
-        <SiteFooter />
-      </div>
-    );
-  }
-
-  if (!current) {
+  if (!loaded) {
     return (
       <div className="groundwork-page">
         <PageMeta
@@ -157,158 +107,60 @@ export default function GetCreditReport() {
     );
   }
 
-  const paragraphs = (current.body || "")
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const place = current.location_label || current.city;
-
   return (
     <div className="groundwork-page gcr-page">
       <PageMeta
-        title={current.title}
-        description={current.summary || t("getCreditReport.metaDescription")}
+        title={current ? current.title : t("getCreditReport.metaTitle")}
+        description={current?.summary || t("getCreditReport.metaDescription")}
         canonical="/get-credit-report"
-        image={current.image_url || undefined}
+        image={current?.cover_url || current?.image_url || undefined}
         ogType="website"
         noIndex
         jsonLd={[
           breadcrumbSchema([
             { name: t("brand.name"), path: "/" },
-            { name: current.title, path: "/get-credit-report" },
+            { name: current ? current.title : t("getCreditReport.metaTitle"), path: "/get-credit-report" },
           ]),
         ]}
       />
       <SiteHeader />
 
       <main className="interior-main event-page">
-        <section className="event-detail section-shell">
-          <div className="event-detail-copy">
+        {current ? (
+          <>
+            <EventHero event={current} back={{ to: "/", label: t("getCreditReport.backHome") }} />
+            <section className="form-section section-shell" id="register">
+              <div className="form-intro">
+                <p className="eyebrow">
+                  <span className="eyebrow-line" /> {t("form.eyebrow")}
+                </p>
+                <h2>
+                  {t("form.titleEventBefore")}
+                  <br />
+                  <em>{t("form.titleEventEm", { city: current.city })}</em>
+                </h2>
+                <p>{t("form.intro")}</p>
+              </div>
+              <div className="lead-form-wrap">
+                <LeadForm event={current} creditNextHref="#free-report" />
+              </div>
+            </section>
+          </>
+        ) : (
+          <section className="interior-hero section-shell gcr-hero">
             <Link className="text-link pf-back event-back" to="/">
               <ArrowLeft size={14} /> {t("getCreditReport.backHome")}
             </Link>
             <p className="eyebrow">
-              <span className="eyebrow-line" /> {t("event.eyebrow")}
+              <span className="eyebrow-line" /> {t("getCreditReport.standaloneEyebrow")}
             </p>
-            <h1>{current.title}</h1>
-            {current.summary ? (
-              <p className="section-lead">{current.summary}</p>
-            ) : null}
-
-            <div className="event-meta event-meta--wrap">
-              <div>
-                <span>
-                  <CalendarDays size={12} /> {t("event.date")}
-                </span>
-                <strong>{fmt.eventDateTime(current.starts_at)}</strong>
-              </div>
-              <div>
-                <span>
-                  <MapPin size={12} /> {t("event.location")}
-                </span>
-                <strong>{place}</strong>
-                {current.venue_name || current.venue_address ? (
-                  <em>
-                    {[current.venue_name, current.venue_address]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </em>
-                ) : null}
-              </div>
-              {current.zoom_url ? (
-                <div>
-                  <span>
-                    <Video size={12} /> {t("event.online")}
-                  </span>
-                  <a
-                    className="text-link"
-                    href={current.zoom_url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {t("event.joinOnline")} <ArrowRight size={13} />
-                  </a>
-                </div>
-              ) : null}
-              {current.spots_remaining != null ? (
-                <div>
-                  <span>
-                    <Clock size={12} /> {t("event.spots")}
-                  </span>
-                  <strong>
-                    {current.spots_remaining === 0 && current.waitlist_enabled
-                      ? t("event.waitlistOpen")
-                      : t("event.spotsLeft", {
-                          count: current.spots_remaining,
-                        })}
-                  </strong>
-                </div>
-              ) : null}
-            </div>
-
-            {current.registration_open ? (
-              <a
-                className="button button-gold event-detail-cta"
-                href="#register"
-              >
-                {current.cta || t("event.register")} <ArrowRight size={16} />
-              </a>
-            ) : (
-              <p className="event-closed event-closed--inline" role="status">
-                <Clock size={18} /> {t("event.registrationClosed")}
-              </p>
-            )}
-          </div>
-
-          <aside className="event-detail-side">
-            {current.image_url ? (
-              <img
-                className="event-detail-image"
-                src={current.image_url}
-                alt={current.title}
-              />
-            ) : (
-              <div className="event-card">
-                <div className="event-card-top">
-                  <span className="calendar-mark">
-                    {eventDayOfMonth(current.starts_at)}
-                  </span>
-                  <span>
-                    {t("event.cardLine1")}
-                    <br />
-                    {t("event.cardLine2")}
-                  </span>
-                </div>
-                <p className="event-card-place">{place}</p>
-              </div>
-            )}
-          </aside>
-        </section>
-
-        {paragraphs.length ? (
-          <section className="event-body section-shell">
-            {paragraphs.map((p, i) => (
-              <p key={i}>{p}</p>
-            ))}
+            <h1>{t("getCreditReport.standaloneTitle")}</h1>
+            <p className="section-lead">{t("getCreditReport.standaloneLead")}</p>
+            <Link className="text-link" to="/events">
+              <CalendarDays size={14} /> {t("getCreditReport.seeEvents")}
+            </Link>
           </section>
-        ) : null}
-
-        <section className="form-section section-shell" id="register">
-          <div className="form-intro">
-            <p className="eyebrow">
-              <span className="eyebrow-line" /> {t("form.eyebrow")}
-            </p>
-            <h2>
-              {t("form.titleEventBefore")}
-              <br />
-              <em>{t("form.titleEventEm", { city: current.city })}</em>
-            </h2>
-            <p>{t("form.intro")}</p>
-          </div>
-          <div className="lead-form-wrap">
-            <LeadForm event={current} creditNextHref="#free-report" />
-          </div>
-        </section>
+        )}
 
         <section
           className="form-section section-shell gcr-optional"
@@ -316,14 +168,15 @@ export default function GetCreditReport() {
         >
           <div className="form-intro">
             <p className="eyebrow">
-              <span className="eyebrow-line" /> {t("getCreditReport.optionalEyebrow")}
+              <span className="eyebrow-line" />{" "}
+              {t(current ? "getCreditReport.optionalEyebrow" : "getCreditReport.standaloneFormEyebrow")}
             </p>
             <h2>
-              {t("getCreditReport.optionalTitleBefore")}
+              {t(current ? "getCreditReport.optionalTitleBefore" : "getCreditReport.standaloneFormBefore")}
               <br />
               <em>{t("getCreditReport.optionalTitleEm")}</em>
             </h2>
-            <p>{t("getCreditReport.optionalHint")}</p>
+            <p>{t(current ? "getCreditReport.optionalHint" : "getCreditReport.standaloneHint")}</p>
             <div className="trust-line gcr-trust">
               <ShieldCheck size={17} /> {t("getCreditReport.trust")}
             </div>

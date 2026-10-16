@@ -21,6 +21,8 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["api/**/*.test.ts", "client/**/*.spec.ts"],
+          // Sweeps / leak-checks fixtures in the shared TiDB (see api/testGlobalSetup.ts).
+          globalSetup: ["api/testGlobalSetup.ts"],
           environment: "node",
           env: { VITEST: "true" },
           testTimeout: 45_000,

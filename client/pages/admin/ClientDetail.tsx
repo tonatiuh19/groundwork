@@ -1,8 +1,10 @@
 import { useEffect, useState, useRef } from "react";
-import { Link, useParams } from "react-router-dom";
+import LastContactStrip from "@/components/admin/LastContactStrip";
+import DeletePersonButton from "@/components/admin/DeletePersonButton";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
-import { Check, Mail, MessageSquare, Phone } from "lucide-react";
+import { ArchiveRestore, Check, Mail, MailWarning, MessageSquare, PencilLine, Phone, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -35,6 +37,11 @@ import {
 import { useFormatters } from "@/lib/format";
 import { useAdminCan } from "@/hooks/useAdminCan";
 import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
+import ClientDealPanel from "@/components/admin/ClientDealPanel";
+import RevertClientModal from "@/components/admin/RevertClientModal";
+import AppointmentsPanel from "@/components/admin/AppointmentsPanel";
+import { DetailList, SideDrawer } from "@/components/portal/SideDrawer";
+import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import { isDemotingAccountStatus } from "@/lib/accountStatus";
 
 const STATUSES = ["prospect", "active", "inactive", "suspended"] as const;
@@ -56,6 +63,7 @@ type ClientForm = {
 };
 
 export default function AdminClientDetail() {
+  const navigate = useNavigate();
   const { t } = useTranslation();
   const { id: rawId = "" } = useParams();
   const id = Number(rawId);
@@ -76,6 +84,8 @@ export default function AdminClientDetail() {
   );
   const [pendingValues, setPendingValues] = useState<ClientForm | null>(null);
   const [demoteBusy, setDemoteBusy] = useState(false);
+  const [revertOpen, setRevertOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
     dispatch(clearAdminSaveError());
@@ -233,16 +243,49 @@ export default function AdminClientDetail() {
                     }}
                   />
                 ) : null}
+                {canApprove ? (
+                  <button
+                    type="button"
+                    className="pf-btn pf-btn--sm"
+                    title={t("clientRevert.openHint")}
+                    onClick={() => setRevertOpen(true)}
+                  >
+                    <ArchiveRestore size={14} aria-hidden />
+                    {t("clientRevert.open")}
+                  </button>
+                ) : null}
               </>
             }
           />
+          <LastContactStrip phone={c.phone} name={`${c.first_name} ${c.last_name}`.trim()} />
+          {canApprove ? (
+            <RevertClientModal clientId={c.id} open={revertOpen} onClose={() => setRevertOpen(false)} />
+          ) : null}
 
           <div className="pf-stats">
             <StatCard labelKey="portalNav.projects" value={c.project_count} />
             <StatCard labelKey="admin.affiliate" value={c.affiliate_name || "—"} />
             <StatCard labelKey="admin.lastLogin" value={fmt.date(c.last_login_at)} />
             <StatCard labelKey="pf.created" value={fmt.date(c.created_at)} />
+            <StatCard
+              labelKey="deal.status"
+              value={
+                c.deal_status_en ? (
+                  <DealStatusBadge en={c.deal_status_en} es={c.deal_status_es} tone={c.deal_status_tone} />
+                ) : (
+                  t("deal.none")
+                )
+              }
+            />
           </div>
+
+          <ClientDealPanel
+            clientId={c.id}
+            currentStatusId={c.deal_status_id ?? null}
+            onChanged={() => void dispatch(fetchAdminClientDetail(c.id))}
+          />
+
+          <AppointmentsPanel context={{ client_id: c.id, label: `${c.first_name} ${c.last_name}`.trim() }} />
 
           <ErrorNote error={saveError} />
           <PersonConflictNotice
@@ -251,7 +294,70 @@ export default function AdminClientDetail() {
           />
 
           <section className="pf-section">
-            <h2 className="pf-h2">{t("admin.recordDetails")}</h2>
+            <div className="gw-details-head">
+              <h2 className="pf-h2">{t("admin.recordDetails")}</h2>
+              {canWrite ? (
+                <button type="button" className="pf-btn pf-btn--sm" onClick={() => setEditOpen(true)}>
+                  <PencilLine size={14} aria-hidden /> {t("editPanel.edit")}
+                </button>
+              ) : null}
+            </div>
+            <DetailList
+              items={[
+                { label: t("form.email"), value: c.email },
+                { label: t("form.phone"), value: c.phone },
+                { label: t("admin.profileLanguage"), value: t(`lang.${c.preferred_language || "en"}`) },
+                { label: t("form.address"), value: [c.address_line1, c.city, c.zip].filter(Boolean).join(", ") },
+                {
+                  label: t("admin.affiliate"),
+                  value: affiliates.find((x) => x.id === c.affiliate_id)
+                    ? `${affiliates.find((x) => x.id === c.affiliate_id)!.first_name} ${affiliates.find((x) => x.id === c.affiliate_id)!.last_name}`
+                    : c.affiliate_id
+                      ? `#${c.affiliate_id}`
+                      : null,
+                },
+                {
+                  label: t("admin.assignee"),
+                  value: assignees.find((x) => x.id === c.assigned_admin_id)
+                    ? `${assignees.find((x) => x.id === c.assigned_admin_id)!.first_name} ${assignees.find((x) => x.id === c.assigned_admin_id)!.last_name}`
+                    : null,
+                },
+                { label: t("admin.internalNotes"), value: c.admin_notes, wide: true },
+              ]}
+            />
+          </section>
+
+          <SideDrawer
+            open={editOpen}
+            onClose={() => setEditOpen(false)}
+            busy={saving}
+            icon={<UserRound size={18} />}
+            title={t("editPanel.clientTitle")}
+            subtitle={`${c.first_name} ${c.last_name}`}
+            footer={
+              <div className="pf-actions gw-drawer__foot-row">
+                <DeletePersonButton
+                  entity="client"
+                  id={c.id}
+                  name={`${c.first_name} ${c.last_name}`.trim()}
+                  onDeleted={() => navigate("/admin/clients", { replace: true })}
+                />
+                <span className="gw-flex-spacer" aria-hidden />
+                <button type="button" className="pf-btn" onClick={() => setEditOpen(false)} disabled={saving}>
+                  {t("pf.cancel")}
+                </button>
+                {canWrite ? <SubmitButton busy={saving} labelKey="pf.save" form="client-edit-form" /> : null}
+              </div>
+            }
+          >
+            <ErrorNote error={saveError} />
+            <PersonConflictNotice
+              busy={saving}
+              onOverride={(reason) =>
+                lastClientForm.current &&
+                void saveClient(lastClientForm.current, reason).then((ok) => ok && setEditOpen(false))
+              }
+            />
             <Formik
               enableReinitialize
               initialValues={{
@@ -283,20 +389,48 @@ export default function AdminClientDetail() {
                   });
                   return;
                 }
-                await saveClient(v);
+                if (await saveClient(v)) setEditOpen(false);
               }}
             >
-              <Form className="pf-form pf-card">
-                <div className="pf-form-grid">
-                  <TextField name="first_name" labelKey="form.firstName" disabled={!canWrite} />
-                  <TextField name="last_name" labelKey="form.lastName" disabled={!canWrite} />
-                  <TextField
-                    name="email"
-                    labelKey="form.email"
-                    type="email"
-                    disabled={!canWrite}
-                  />
-                  <TextField name="phone" labelKey="form.phone" type="tel" disabled={!canWrite} />
+              {({ values }) => (
+              <Form className="pf-form pf-card" id="client-edit-form">
+                <section className="gw-drawer-section">
+                  <h3 className="gw-drawer-section__title">{t("editPanel.contact")}</h3>
+                  <div className="pf-form-grid">
+                    <TextField name="first_name" labelKey="form.firstName" disabled={!canWrite} />
+                    <TextField name="last_name" labelKey="form.lastName" disabled={!canWrite} />
+                  </div>
+                  <TextField name="email" labelKey="form.email" type="email" disabled={!canWrite} />
+                  {values.email.trim().toLowerCase() !== (c.email || "").toLowerCase() ? (
+                    <p className="gw-drawer-email-note" role="status">
+                      <MailWarning size={15} aria-hidden /> {t("editPanel.emailChangeNote")}
+                    </p>
+                  ) : (
+                    <p className="pf-muted">{t("admin.clientEmailHelp")}</p>
+                  )}
+                  <div className="pf-form-grid">
+                    <TextField name="phone" labelKey="form.phone" type="tel" disabled={!canWrite} />
+                    <SelectField
+                      name="preferred_language"
+                      labelKey="admin.profileLanguage"
+                      disabled={!canWrite}
+                      options={[
+                        { value: "en", label: t("lang.en") },
+                        { value: "es", label: t("lang.es") },
+                      ]}
+                    />
+                  </div>
+                </section>
+                <section className="gw-drawer-section">
+                  <h3 className="gw-drawer-section__title">{t("editPanel.property")}</h3>
+                  <TextField name="address_line1" labelKey="form.address" disabled={!canWrite} />
+                  <div className="pf-form-grid">
+                    <TextField name="city" labelKey="pf.city" disabled={!canWrite} />
+                    <TextField name="zip" labelKey="pf.zip" disabled={!canWrite} />
+                  </div>
+                </section>
+                <section className="gw-drawer-section">
+                  <h3 className="gw-drawer-section__title">{t("editPanel.account")}</h3>
                   <SelectField
                     name="status"
                     labelKey="pf.status"
@@ -307,65 +441,45 @@ export default function AdminClientDetail() {
                     }
                     disabled={!canWrite || (isPending && !approved)}
                   />
-                </div>
-                <p className="pf-muted">{t("admin.clientEmailHelp")}</p>
-                {isPending && !approved ? (
-                  <p className="pf-muted">{t("admin.pendingApprovalHelp")}</p>
-                ) : null}
-                <div className="pf-form-grid">
-                  <TextField name="address_line1" labelKey="form.address" disabled={!canWrite} />
-                  <TextField name="city" labelKey="pf.city" disabled={!canWrite} />
-                  <TextField name="zip" labelKey="pf.zip" disabled={!canWrite} />
-                </div>
-                <div className="pf-form-grid">
-                  <SelectField
-                    name="affiliate_id"
-                    labelKey="admin.affiliate"
-                    disabled={!canWrite}
-                    options={[
-                      { value: "", label: t("pf.none") },
-                      ...affiliates
-                        .filter((a) => a.status === "active" || a.id === c.affiliate_id)
-                        .map((a) => ({
+                  {isPending && !approved ? <p className="pf-muted">{t("admin.pendingApprovalHelp")}</p> : null}
+                  <div className="pf-form-grid">
+                    <SelectField
+                      name="affiliate_id"
+                      labelKey="admin.affiliate"
+                      disabled={!canWrite}
+                      options={[
+                        { value: "", label: t("pf.none") },
+                        ...affiliates
+                          .filter((a) => a.status === "active" || a.id === c.affiliate_id)
+                          .map((a) => ({
+                            value: a.id,
+                            label: `${a.first_name} ${a.last_name}`,
+                          })),
+                      ]}
+                    />
+                    <SelectField
+                      name="assigned_admin_id"
+                      labelKey="admin.assignee"
+                      disabled={!canWrite}
+                      options={[
+                        { value: "", label: t("pf.none") },
+                        ...assignees.map((a) => ({
                           value: a.id,
                           label: `${a.first_name} ${a.last_name}`,
                         })),
-                    ]}
-                  />
-                  <SelectField
-                    name="assigned_admin_id"
-                    labelKey="admin.assignee"
-                    disabled={!canWrite}
-                    options={[
-                      { value: "", label: t("pf.none") },
-                      ...assignees.map((a) => ({
-                        value: a.id,
-                        label: `${a.first_name} ${a.last_name}`,
-                      })),
-                    ]}
-                  />
-                  <SelectField
-                    name="preferred_language"
-                    labelKey="admin.profileLanguage"
-                    disabled={!canWrite}
-                    options={[
-                      { value: "en", label: t("lang.en") },
-                      { value: "es", label: t("lang.es") },
-                    ]}
-                  />
-                </div>
-                <p className="pf-muted">{t("admin.affiliateLockHelp")}</p>
-                <TextField
-                  name="admin_notes"
-                  labelKey="admin.internalNotes"
-                  as="textarea"
-                  rows={4}
-                  disabled={!canWrite}
-                />
-                {canWrite ? <SubmitButton busy={saving} labelKey="pf.save" /> : null}
+                      ]}
+                    />
+                  </div>
+                  <p className="pf-muted">{t("admin.affiliateLockHelp")}</p>
+                </section>
+                <section className="gw-drawer-section">
+                  <h3 className="gw-drawer-section__title">{t("admin.internalNotes")}</h3>
+                  <TextField name="admin_notes" labelKey="admin.internalNotes" as="textarea" rows={5} disabled={!canWrite} />
+                </section>
               </Form>
+              )}
             </Formik>
-          </section>
+          </SideDrawer>
 
           <ConfirmStatusChangeModal
             pending={pendingDemote}
@@ -385,6 +499,7 @@ export default function AdminClientDetail() {
                   if (ok) {
                     setPendingDemote(null);
                     setPendingValues(null);
+                    setEditOpen(false);
                   }
                 } finally {
                   setDemoteBusy(false);

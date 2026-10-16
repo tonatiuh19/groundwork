@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import { useNavigate } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
@@ -279,7 +280,8 @@ export default function AdminProjects() {
                 headerKey: "pf.client",
                 render: (p) => (
                   <>
-                    {p.client_name}
+                    {p.client_name}{" "}
+                    <DealStatusBadge en={p.deal_status_en} es={p.deal_status_es} tone={p.deal_status_tone} />
                     <br />
                     <span className="pf-muted">{p.property_address || "—"}</span>
                   </>

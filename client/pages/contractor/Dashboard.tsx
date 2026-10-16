@@ -6,6 +6,7 @@ import { fetchContractorDraws, fetchContractorProjects } from "@/store/slices/co
 import { DataTable, ErrorNote, PageHeader, StatCard, StatusBadge } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
 import PrequalificationBanner from "@/components/contractorApplication/PrequalificationBanner";
+import ContractorMembership from "@/components/contractor/ContractorMembership";
 
 export default function Dashboard() {
   const { t } = useTranslation();
@@ -57,6 +58,7 @@ export default function Dashboard() {
           { key: "milestone", headerKey: "pf.status", render: (p) => <StatusBadge group="milestone" value={p.milestone} /> },
         ]}
       />
+      <ContractorMembership mode="portal" />
     </div>
   );
 }

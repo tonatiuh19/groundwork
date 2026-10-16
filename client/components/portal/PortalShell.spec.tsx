@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, within, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { configureStore } from "@reduxjs/toolkit";
 import axios from "axios";
@@ -103,12 +103,15 @@ describe("PortalShell guard", () => {
     await waitFor(() => expect(screen.getByText("LOGIN PAGE")).toBeInTheDocument());
   });
 
+  /** Menu labels also appear in the phone tab bar — query the sidebar menu. */
+  const sidebar = () => within(document.querySelector(".portal-sidebar") as HTMLElement);
+
   it("hides nav items the role cannot use and shows the role chip", async () => {
     signIn("admin", admin("agent"));
     mount();
-    expect(await screen.findByText(i18n.t("portalNav.dashboard"))).toBeInTheDocument();
-    expect(screen.queryByText(i18n.t("portalNav.staff"))).toBeNull(); // super_admin only
-    expect(screen.queryByText(i18n.t("portalNav.settings"))).toBeNull(); // super_admin / finance
+    expect(await sidebar().findByText(i18n.t("portalNav.dashboard"))).toBeInTheDocument();
+    expect(sidebar().queryByText(i18n.t("portalNav.staff"))).toBeNull(); // super_admin only
+    expect(sidebar().queryByText(i18n.t("portalNav.settings"))).toBeNull(); // super_admin / finance
     expect(screen.getByText(i18n.t("role.agent"))).toHaveClass(
       "portal-account-role",
     );
@@ -121,14 +124,14 @@ describe("PortalShell guard", () => {
   it("super admins see everything; finance sees settings but not staff", async () => {
     signIn("admin", admin("super_admin"));
     mount();
-    expect(await screen.findByText(i18n.t("portalNav.staff"))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t("portalNav.settings"))).toBeInTheDocument();
+    expect(await sidebar().findByText(i18n.t("portalNav.staff"))).toBeInTheDocument();
+    expect(sidebar().getByText(i18n.t("portalNav.settings"))).toBeInTheDocument();
     expect(screen.getByText("can-finance")).toBeInTheDocument();
     cleanup();
     signIn("admin", admin("finance"));
     mount();
-    expect(await screen.findByText(i18n.t("portalNav.settings"))).toBeInTheDocument();
-    expect(screen.queryByText(i18n.t("portalNav.staff"))).toBeNull();
+    expect(await sidebar().findByText(i18n.t("portalNav.settings"))).toBeInTheDocument();
+    expect(sidebar().queryByText(i18n.t("portalNav.staff"))).toBeNull();
   });
 
   it("array perms are any-of: events OR leads", async () => {
@@ -139,8 +142,8 @@ describe("PortalShell guard", () => {
     ] as const) {
       signIn("admin", admin(role));
       mount();
-      await screen.findByText(i18n.t("portalNav.dashboard"));
-      const link = screen.queryByText(i18n.t("portalNav.events"));
+      await sidebar().findByText(i18n.t("portalNav.dashboard"));
+      const link = sidebar().queryByText(i18n.t("portalNav.events"));
       expect(Boolean(link)).toBe(visible);
       cleanup();
     }
@@ -156,19 +159,20 @@ describe("PortalShell guard", () => {
     expect(store.getState().portalAuth.admin.user).toBeNull();
   });
 
-  it("toggles the mobile nav drawer open and closed", async () => {
+  it("phones: More (bottom tab bar) opens and closes the menu sheet; tabs follow the role", async () => {
     signIn("admin", admin("super_admin"));
     mount();
     const shell = (await screen.findByText("Bo Ss")).closest(".portal-shell");
     expect(shell).toBeTruthy();
     expect(shell).not.toHaveClass("is-nav-open");
-    const toggle = document.querySelector(
-      ".portal-menu-toggle",
-    ) as HTMLButtonElement;
-    expect(toggle).toBeTruthy();
-    await userEvent.click(toggle);
+    expect(document.querySelector(".portal-menu-toggle")).toBeNull(); // no burger
+    const bar = within(document.querySelector(".portal-tabbar") as HTMLElement);
+    expect(bar.getByText(i18n.t("portalNav.dashboard"))).toBeInTheDocument();
+    const more = bar.getByRole("button", { name: new RegExp(i18n.t("portalAuth.more")) });
+    await userEvent.click(more);
     expect(shell).toHaveClass("is-nav-open");
-    await userEvent.click(toggle);
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(document.querySelector(".portal-sheet-close") as HTMLButtonElement);
     expect(shell).not.toHaveClass("is-nav-open");
   });
 });

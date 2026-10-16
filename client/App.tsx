@@ -14,6 +14,8 @@ import { useTranslation } from "react-i18next";
 import { store } from "./store";
 import Index from "./pages/Index";
 import EventDetail from "./pages/EventDetail";
+import Events from "./pages/Events";
+import EventQrRedirect from "./pages/EventQrRedirect";
 import GetCreditReport from "./pages/GetCreditReport";
 import About from "./pages/About";
 import Partners from "./pages/Partners";
@@ -34,10 +36,14 @@ import Start from "./pages/Start";
 import ReferralLanding from "./pages/ReferralLanding";
 import ReferralExpired from "./pages/ReferralExpired";
 import AdminLayout from "./pages/admin/AdminLayout";
+import AdminBilling from "./pages/admin/Billing";
+import BillingCardLinkPage from "./pages/billing/CardLink";
 import AdminDashboard from "./pages/admin/Dashboard";
 import AdminLeads from "./pages/admin/Leads";
 import AdminEvents from "./pages/admin/Events";
+import AdminCalendar from "./pages/admin/Calendar";
 import AdminEventDetail from "./pages/admin/EventDetail";
+import AdminTemplates from "./pages/admin/Templates";
 import AdminProjects from "./pages/admin/Projects";
 import AdminProjectDetail from "./pages/admin/ProjectDetail";
 import AdminClients from "./pages/admin/Clients";
@@ -63,11 +69,17 @@ import AffiliateCommissions from "./pages/affiliate/Commissions";
 import AffiliateTeam from "./pages/affiliate/Team";
 import AffiliateTrackingLink from "./pages/affiliate/TrackingLink";
 import AffiliateProfile from "./pages/affiliate/Profile";
+import AffiliateAgreement from "./pages/affiliate/Agreement";
+import AffiliateHelp from "./pages/affiliate/Help";
+import AffiliateWelcome from "./pages/affiliate/Welcome";
+import BookPage from "./pages/booking/BookPage";
+import ManageAppointment from "./pages/booking/ManageAppointment";
 import ContractorLayout from "./pages/contractor/ContractorLayout";
 import ContractorDashboard from "./pages/contractor/Dashboard";
 import ContractorProjects from "./pages/contractor/Projects";
 import ContractorProjectDetail from "./pages/contractor/ProjectDetail";
 import ContractorPhotos from "./pages/contractor/Photos";
+import { ContractorAppointmentsPage } from "./components/portal/PortalAppointments";
 import ContractorDraws from "./pages/contractor/Draws";
 import ClientLayout from "./pages/client/ClientLayout";
 import ClientDashboard from "./pages/client/Dashboard";
@@ -105,6 +117,8 @@ export default function App() {
           <ReferralCapture />
           <Routes>
             <Route path="/" element={<Index />} />
+            <Route path="/events" element={<Events />} />
+            <Route path="/e/:slug" element={<EventQrRedirect />} />
             <Route path="/events/:slug" element={<EventDetail />} />
             <Route path="/about" element={<About />} />
             <Route path="/partners" element={<Partners />} />
@@ -135,7 +149,9 @@ export default function App() {
               <Route path="profile" element={<AdminProfile />} />
               <Route path="leads" element={<AdminLeads />} />
               <Route path="events" element={<AdminEvents />} />
+              <Route path="calendar" element={<AdminCalendar />} />
               <Route path="events/:id" element={<AdminEventDetail />} />
+              <Route path="templates" element={<AdminTemplates />} />
               <Route path="campaigns" element={<AdminCampaigns />} />
               <Route path="projects" element={<AdminProjects />} />
               <Route
@@ -150,6 +166,7 @@ export default function App() {
               <Route path="contractors/:id" element={<AdminContractorDetail />} />
               <Route path="draws" element={<AdminDraws />} />
               <Route path="commissions" element={<AdminCommissions />} />
+              <Route path="billing" element={<AdminBilling />} />
               <Route path="plans" element={<AdminPlans />} />
               <Route path="conversations" element={<AdminConversations />} />
               <Route path="contacts" element={<AdminContacts />} />
@@ -157,6 +174,14 @@ export default function App() {
               <Route path="settings" element={<AdminSettings />} />
             </Route>
 
+            {/* Public booking link + "manage my appointment" (from the confirmation email). */}
+            <Route path="/book/:slug" element={<BookPage />} />
+            {/* Staff-sent secure link: add a card to start a membership. */}
+            <Route path="/billing/card/:token" element={<BillingCardLinkPage />} />
+            <Route path="/appointment/:token" element={<ManageAppointment />} />
+            {/* Welcome link from the signup email / text (no login; token-scoped). */}
+            <Route path="/affiliate/welcome" element={<AffiliateWelcome />} />
+            <Route path="/affiliate/welcome/:token" element={<AffiliateWelcome />} />
             <Route path="/affiliate" element={<AffiliateLayout />}>
               <Route index element={<AffiliateDashboard />} />
               <Route path="clients" element={<AffiliateClients />} />
@@ -164,6 +189,8 @@ export default function App() {
               <Route path="commissions" element={<AffiliateCommissions />} />
               <Route path="link" element={<AffiliateTrackingLink />} />
               <Route path="profile" element={<AffiliateProfile />} />
+              <Route path="agreement" element={<AffiliateAgreement />} />
+              <Route path="help" element={<AffiliateHelp />} />
             </Route>
 
             <Route path="/contractor" element={<ContractorLayout />}>
@@ -173,6 +200,7 @@ export default function App() {
                 path="projects/:publicId"
                 element={<ContractorProjectDetail />}
               />
+              <Route path="appointments" element={<ContractorAppointmentsPage />} />
               <Route path="photos" element={<ContractorPhotos />} />
               <Route path="draws" element={<ContractorDraws />} />
             </Route>

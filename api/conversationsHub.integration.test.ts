@@ -497,6 +497,99 @@ describe.runIf(hasDb)("conversations contact hub", () => {
     await db.query(`DELETE FROM clients WHERE id = ?`, [createdClientId]).catch(() => {});
   });
 
+  it("leads: last text/call columns, Conversations lead search, prospect from lead leaves Active", async () => {
+    const leadPhone = `+1555${String(stamp).slice(-6)}55`;
+    const leadEmail = em("leadtouch");
+    const leadId = await insertId(
+      `INSERT INTO leads (full_name, email, phone, property_address, status, source)
+       VALUES ('Maya Touch Tester', ?, ?, '1 Test Way', 'new', 'vitest')`,
+      [leadEmail, leadPhone],
+    );
+    const unknownId = await insertId(
+      `INSERT INTO conversation_unknown_contacts
+         (phone_e164, ofg_number_id, status, last_message_at, unread_count)
+       VALUES (?, ?, 'open', NOW(), 0)`,
+      [leadPhone, phoneNumberId],
+    );
+    const convId = await insertId(
+      `INSERT INTO conversations
+         (unknown_contact_id, channel, status, ofg_number_id, assigned_admin_id, last_message_at)
+       VALUES (?, 'sms', 'open', ?, ?, NOW())`,
+      [unknownId, phoneNumberId, agentId],
+    );
+    await db.execute(
+      `INSERT INTO conversation_messages (conversation_id, direction, channel, body, from_address, to_address, created_at)
+       VALUES (?, 'outbound', 'sms', 'old text', ?, ?, NOW() - INTERVAL 2 DAY),
+              (?, 'inbound', 'sms', 'Yes please   call me', ?, ?, NOW() - INTERVAL 1 HOUR),
+              (?, 'outbound', 'call', NULL, ?, ?, NOW() - INTERVAL 3 HOUR)`,
+      [convId, ofgE164, leadPhone, convId, leadPhone, ofgE164, convId, ofgE164, leadPhone],
+    );
+
+    const active = await request(app)
+      .get(`/api/admin/leads?view=active&q=${encodeURIComponent(leadEmail)}`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    expect(active.body.leads).toHaveLength(1);
+    const row = active.body.leads[0];
+    expect(row.last_sms).toMatchObject({
+      direction: "inbound",
+      preview: "Yes please call me",
+      thread: { kind: "unknown", id: unknownId },
+    });
+    expect(row.last_call).toMatchObject({ direction: "outbound", duration_sec: null });
+
+    // Default view stays "all" for older callers (MCP).
+    const legacy = await request(app)
+      .get(`/api/admin/leads?q=${encodeURIComponent(leadEmail)}`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    expect(legacy.body.view).toBe("all");
+
+    const search = await request(app)
+      .get(`/api/admin/conversations/lead-search?q=${encodeURIComponent("Touch Tester")}`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    const hit = search.body.leads.find((l: { lead_id: number }) => l.lead_id === leadId);
+    expect(hit).toMatchObject({ unknown_contact_id: unknownId, client_id: null });
+    const byDigits = await request(app)
+      .get(`/api/admin/conversations/lead-search?q=${leadPhone.slice(-7)}`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    expect(byDigits.body.leads.some((l: { lead_id: number }) => l.lead_id === leadId)).toBe(true);
+    const tooShort = await request(app)
+      .get(`/api/admin/conversations/lead-search?q=M`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    expect(tooShort.body.leads).toEqual([]);
+
+    // Prospect without typing anything: details come from the lead, lead is linked.
+    const created = await request(app)
+      .post(`/api/admin/conversations/unknown/${unknownId}/create-prospect`)
+      .set("Cookie", agentCookie)
+      .send({});
+    expect(created.status).toBe(200);
+    expect(created.body.lead_id).toBe(leadId);
+    const clientId = Number(created.body.client_id);
+    const [crow] = (await db.query(`SELECT first_name, last_name, email FROM clients WHERE id = ?`, [clientId])) as any;
+    expect(crow[0]).toMatchObject({ first_name: "Maya", last_name: "Touch Tester", email: leadEmail });
+
+    const afterActive = await request(app)
+      .get(`/api/admin/leads?view=active&q=${encodeURIComponent(leadEmail)}`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    expect(afterActive.body.leads).toHaveLength(0);
+    const converted = await request(app)
+      .get(`/api/admin/leads?view=converted&q=${encodeURIComponent(leadEmail)}`)
+      .set("Cookie", agentCookie)
+      .expect(200);
+    expect(converted.body.leads[0]).toMatchObject({ id: leadId, client_id: clientId });
+    // Thread now belongs to the client, and the touch link follows it.
+    expect(converted.body.leads[0].last_sms.thread).toEqual({ kind: "client", id: clientId });
+
+    await db.query(`DELETE FROM leads WHERE id = ?`, [leadId]).catch(() => {});
+    await db.query(`DELETE FROM clients WHERE id = ?`, [clientId]).catch(() => {});
+  });
+
   it("logs outbound voice calls into conversation_messages", async () => {
     const res = await request(app)
       .post("/api/voice/log")

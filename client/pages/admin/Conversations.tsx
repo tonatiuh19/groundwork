@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ChevronDown,
@@ -34,7 +34,6 @@ import { ConversationMessageStatus } from "@/components/admin/ConversationMessag
 import { ConversationMediaLightbox } from "@/components/admin/ConversationMediaLightbox";
 import { ConversationVoiceSettingsModal } from "@/components/admin/ConversationVoiceSettingsModal";
 import { VoiceAudioDevicePicker } from "@/components/admin/VoiceAudioDevicePicker";
-import { ConversationTemplatesAdmin } from "@/components/admin/ConversationTemplatesAdmin";
 import ConversationsHubSkeleton, {
   ConversationsContactListSkeleton,
   ConversationsTimelineSkeleton,
@@ -59,6 +58,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   assignConversationToMe,
   createProspectFromUnknown,
+  searchConversationLeads,
   retryCallTranscript,
   dismissUnknownConversation,
   fetchConversationInbox,
@@ -105,6 +105,7 @@ function contactKey(c: { kind: string; contact_id: number }) {
 export default function AdminConversations() {
   const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const user = useAppSelector((s) => s.portalAuth.admin.user);
   const voiceDevice = useVoiceDeviceOptional();
@@ -113,6 +114,7 @@ export default function AdminConversations() {
     accessLoading,
     accessNumbers,
     inbox,
+    leadMatches,
     inboxLoading,
     inboxRefreshing,
     inboxError,
@@ -185,12 +187,14 @@ export default function AdminConversations() {
     useState<ConversationMediaAttachment | null>(null);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [fromNumberId, setFromNumberId] = useState<number | null>(null);
+  /** Thread replies: null = automatic (the conversation's own line, chosen server-side). */
+  const [threadFromId, setThreadFromId] = useState<number | null>(null);
+  useEffect(() => setThreadFromId(null), [activeKind, activeId]);
   const [mobileThread, setMobileThread] = useState(false);
   const [searchDraft, setSearchDraft] = useState(search);
   const debouncedSearch = useDebounce(searchDraft, 350);
   const [composerCollapsed, setComposerCollapsed] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [showTemplatesAdmin, setShowTemplatesAdmin] = useState(false);
   const [mediaPreview, setMediaPreview] = useState<{
     url: string;
     contentType?: string | null;
@@ -255,7 +259,11 @@ export default function AdminConversations() {
           activeContact?.client_status ||
           "",
       ),
-      preferred_language: templateLang as "en" | "es",
+      // Templates follow the contact's language (client / CRM contact), else the UI language.
+      preferred_language:
+        contact.preferred_language === "es" || contact.preferred_language === "en"
+          ? (contact.preferred_language as "en" | "es")
+          : (templateLang as "en" | "es"),
     };
   }, [timeline, activeContact, templateLang]);
 
@@ -299,6 +307,12 @@ export default function AdminConversations() {
     // Ably live updates via AdminRealtimeBridge → realtimeSeq (no interval poll).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, enabled, view, search]);
+
+  // Leads are not thread contacts yet — search them alongside the inbox.
+  useEffect(() => {
+    if (!enabled) return;
+    void dispatch(searchConversationLeads(search));
+  }, [dispatch, enabled, search]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -457,7 +471,7 @@ export default function AdminConversations() {
       channel,
       body: body || "",
       is_internal_note: channel === "internal",
-      ofg_number_id: fromNumberId || undefined,
+      ofg_number_id: threadFromId || undefined,
       media_url:
         channel === "sms" ? threadAttachment?.url || undefined : undefined,
       media_content_type:
@@ -710,7 +724,7 @@ export default function AdminConversations() {
             <HeaderAction
               labelKey="conversations.templates"
               icon={FileText}
-              onClick={() => setShowTemplatesAdmin(true)}
+              onClick={() => navigate("/admin/templates")}
             />
             <HeaderAction
               labelKey="conversations.newMessage"
@@ -826,9 +840,15 @@ export default function AdminConversations() {
                     </time>
                   </div>
                   <div className="gw-conv-row__meta">
-                    <span className={`gw-conv-kind gw-conv-kind--${c.kind}`}>
-                      {t(`conversations.kind.${c.kind}`)}
-                    </span>
+                    {c.match ? (
+                      <span className={`gw-conv-kind gw-conv-match gw-conv-match--${c.match.role}`}>
+                        {t(`conversations.match.${c.match.role}`)}
+                      </span>
+                    ) : (
+                      <span className={`gw-conv-kind gw-conv-kind--${c.kind}`}>
+                        {t(`conversations.kind.${c.kind}`)}
+                      </span>
+                    )}
                     {c.unread_count > 0 && (
                       <span className="gw-conv-unread">{c.unread_count}</span>
                     )}
@@ -839,6 +859,41 @@ export default function AdminConversations() {
                 </button>
               ))
             )}
+            {search.trim().length >= 2 && leadMatches.length > 0 ? (
+              <div className="gw-conv-lead-matches">
+                <p className="gw-conv-lead-matches__title">{t("conversations.leadMatches")}</p>
+                {leadMatches.map((l) => (
+                  <button
+                    key={`lead-${l.lead_id}`}
+                    type="button"
+                    className="gw-conv-row"
+                    onClick={() => {
+                      if (l.unknown_contact_id) {
+                        dispatch(selectConversationContact({ kind: "unknown", id: l.unknown_contact_id }));
+                        setSearchParams({ unknown: String(l.unknown_contact_id) }, { replace: true });
+                        setMobileThread(true);
+                      } else if (l.client_id) {
+                        dispatch(selectConversationContact({ kind: "client", id: l.client_id }));
+                        setSearchParams({ client: String(l.client_id) }, { replace: true });
+                        setMobileThread(true);
+                      } else {
+                        setSearchParams({ compose: "1", phone: l.phone, name: l.full_name }, { replace: true });
+                      }
+                    }}
+                  >
+                    <div className="gw-conv-row__top">
+                      <strong>{l.full_name}</strong>
+                    </div>
+                    <div className="gw-conv-row__meta">
+                      <span className="gw-conv-kind gw-conv-kind--lead">{t("conversations.kind.lead")}</span>
+                    </div>
+                    <p className="gw-conv-row__preview">
+                      {[l.phone, l.email].filter(Boolean).join(" · ")}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {canLoadMore && (
               <button
                 type="button"
@@ -883,9 +938,25 @@ export default function AdminConversations() {
                 <div className="gw-conv-thread-head__copy min-w-0">
                   <h2 className="truncate">
                     {activeContact?.display_name || t("conversations.thread")}
+                    {activeContact?.match ? (
+                      <span className={`gw-conv-kind gw-conv-match gw-conv-match--${activeContact.match.role}`}>
+                        {t(`conversations.match.${activeContact.match.role}`)}
+                      </span>
+                    ) : null}
                   </h2>
                   <p className="text-xs text-muted-foreground truncate">
                     {activeContact?.phone || activeContact?.email || ""}
+                    {activeContact?.match ? (
+                      <>
+                        {" · "}
+                        <Link className="text-link" to={matchPath(activeContact.match.role, activeContact.match.id, activeContact.phone)}>
+                          {t("conversations.openRecord", { role: t(`conversations.match.${activeContact.match.role}`) })}
+                        </Link>
+                        {activeContact.match.others.length
+                          ? ` · ${t("conversations.alsoKnownAs", { names: activeContact.match.others.map((o) => `${o.name} (${t(`conversations.match.${o.role}`)})`).join(", ") })}`
+                          : ""}
+                      </>
+                    ) : null}
                   </p>
                 </div>
                 <div className="gw-conv-thread-head__actions">
@@ -1122,16 +1193,17 @@ export default function AdminConversations() {
                 </button>
                 {!composerCollapsed && (
                   <>
-                    {accessNumbers.length > 1 && (
+                    {accessNumbers.length > 0 && (
                       <label className="text-xs flex flex-wrap items-center gap-2 mb-2">
                         <span>{t("conversations.fromNumber")}</span>
                         <select
                           className="pf-input"
-                          value={fromNumberId ?? ""}
+                          value={threadFromId ?? ""}
                           onChange={(e) =>
-                            setFromNumberId(Number(e.target.value) || null)
+                            setThreadFromId(Number(e.target.value) || null)
                           }
                         >
+                          <option value="">{t("conversations.fromThreadLine")}</option>
                           {accessNumbers.map((n) => (
                             <option key={n.id} value={n.id}>
                               {n.friendly_name || n.e164}
@@ -1158,7 +1230,7 @@ export default function AdminConversations() {
                       channel={channel}
                       onChannelChange={setChannel}
                       templates={templates}
-                      templateLang={templateLang}
+                      templateLang={mergeContext.preferred_language || templateLang}
                       mergeContext={mergeContext}
                       sending={sending}
                       sendError={
@@ -1424,10 +1496,6 @@ export default function AdminConversations() {
         open={settingsOpen}
         onClose={() => dispatch(setVoiceSettingsOpen(false))}
       />
-      <ConversationTemplatesAdmin
-        open={showTemplatesAdmin}
-        onClose={() => setShowTemplatesAdmin(false)}
-      />
       <ConversationMediaLightbox
         open={!!mediaPreview}
         url={mediaPreview?.url || null}
@@ -1504,4 +1572,22 @@ function CallTranscriptStatus({ messageId, status }: { messageId: number; status
       <ErrorNote error={error} />
     </div>
   );
+}
+
+/** Where a matched phone number's record lives. */
+function matchPath(role: string, id: number, phone?: string | null): string {
+  switch (role) {
+    case "client":
+      return `/admin/clients/${id}`;
+    case "affiliate":
+      return `/admin/affiliates/${id}`;
+    case "contractor":
+      return `/admin/contractors/${id}`;
+    case "contact":
+      return `/admin/contacts?q=${encodeURIComponent(phone || "")}`;
+    case "lead":
+      return `/admin/leads?q=${encodeURIComponent(phone || "")}`;
+    default:
+      return "/admin/staff";
+  }
 }

@@ -11,12 +11,20 @@
     {
       "path": "/api/cron/contractor-applications",
       "schedule": "0 16 * * *"
+    },
+    {
+      "path": "/api/cron/appointment-reminders",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/billing-card-expiry",
+      "schedule": "0 17 * * *"
     }
   ],
   "functions": {
     "api/index.ts": {
       "maxDuration": 60,
-      "includeFiles": "public/logos/**"
+      "includeFiles": "{public/logos/**,public/forms/**}"
     }
   },
   "routes": [

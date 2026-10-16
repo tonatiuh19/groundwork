@@ -24,6 +24,8 @@ export type AdminNotifyEventKey =
   | "contractor_signup_reminder"
   | "contractor_application_submitted"
   | "contractor_compliance_alert"
+  | "affiliate_onboarding"
+  | "line_needs_owner"
   | "duplicate_blocked"
   | "draw_submitted"
   | "lead_converted"
@@ -95,6 +97,97 @@ export interface AdminPhoneNumber {
   assigned_admin_name?: string | null;
   is_active: boolean;
   capabilities: { sms?: boolean; mms?: boolean; voice?: boolean } | null;
+  is_primary?: boolean;
+  /** shared = members + ring list; personal = one staff owner (visible to admins too). */
+  line_mode?: PhoneLineMode;
+  /** Staff on a shared line. */
+  member_count?: number;
+  /** Active line with no owner or a deactivated owner (traffic falls back to the main line). */
+  needs_owner?: boolean;
+}
+
+export type PhoneLineMode = "shared" | "personal";
+
+/** Twilio number on the account that isn't connected to Groundwork yet. */
+export interface AvailableTwilioNumber {
+  sid: string;
+  e164: string;
+  friendly_name: string | null;
+  capabilities: { sms?: boolean; mms?: boolean; voice?: boolean } | null;
+  current_host: string | null;
+  in_use_elsewhere: boolean;
+}
+
+/** Phone line settings: who sees the line, what rings, one bilingual voicemail. */
+export interface PhoneLineSettings {
+  ok: true;
+  line: {
+    id: number;
+    e164: string;
+    friendly_name: string | null;
+    is_primary: boolean;
+    line_mode: PhoneLineMode;
+    assigned_admin_id: number | null;
+    assigned_admin_name: string | null;
+    ring_timeout_sec: number;
+    voicemail_greeting_en: string | null;
+    voicemail_greeting_es: string | null;
+  };
+  members: Array<{
+    admin_id: number;
+    name: string;
+    role: string;
+    active: boolean;
+    ring_browser: boolean;
+    browser_online: boolean;
+  }>;
+  ring_numbers: Array<{ id?: number; label: string; e164: string; is_active: boolean }>;
+  staff: Array<{ id: number; name: string; role: string }>;
+  defaults: { en: string; es: string };
+  now: { ringing_browsers: number; ringing_phones: string[]; timeout: number; personal_line: boolean; needs_owner: boolean };
+}
+
+export interface PhoneLineSettingsBody {
+  line_mode: PhoneLineMode;
+  assigned_admin_id: number | null;
+  members: Array<{ admin_id: number; ring_browser: boolean }>;
+  ring_numbers: Array<{ label: string; e164: string; is_active: boolean }>;
+  ring_timeout_sec: number;
+  voicemail_greeting_en: string | null;
+  voicemail_greeting_es: string | null;
+}
+
+export type DealStatusTone = "neutral" | "warn" | "bad" | "good";
+
+export interface DealStatus {
+  id: number;
+  label_en: string;
+  label_es: string;
+  tone: DealStatusTone;
+  sort_order: number;
+  is_active: boolean;
+}
+
+/** Fields joined onto clients / projects / affiliate client rows. */
+export interface DealStatusFields {
+  deal_status_en?: string | null;
+  deal_status_es?: string | null;
+  deal_status_tone?: DealStatusTone | null;
+}
+
+export interface ClientUpdate {
+  id: number;
+  client_id: number;
+  kind: "note" | "deal_status";
+  visibility: "internal" | "affiliate";
+  body: string | null;
+  deal_status_id?: number | null;
+  deal_status_label_en: string | null;
+  deal_status_label_es: string | null;
+  author_name?: string | null;
+  notified_affiliate_name?: string | null;
+  notified_at?: string | null;
+  created_at: string;
 }
 
 export interface CrmContact {
@@ -137,6 +230,17 @@ export interface ConversationHubContact {
   assigned_admin_id?: number | null;
   primary_conversation_id?: number | null;
   client_status?: string | null;
+  /** Unknown threads: who this number belongs to in our records (best match first). */
+  match?: PhoneMatch | null;
+}
+
+export type PhoneMatchRole = "client" | "affiliate" | "contractor" | "contact" | "lead" | "staff";
+export interface PhoneMatch {
+  role: PhoneMatchRole;
+  id: number;
+  name: string;
+  /** Other records sharing this number (lower priority). */
+  others: { role: PhoneMatchRole; id: number; name: string }[];
 }
 
 export interface ConversationMessage {
@@ -203,10 +307,24 @@ export interface ConversationTemplate {
   body_es: string | null;
   is_active: boolean;
   sort_order: number;
+  category?: ConversationTemplateCategory;
+  usage_count?: number;
+  last_used_at?: string | null;
   created_by_admin_id?: number | null;
   created_at?: string;
   updated_at?: string;
 }
+
+export const CONVERSATION_TEMPLATE_CATEGORIES = [
+  "general",
+  "welcome",
+  "follow_up",
+  "reminder",
+  "status_update",
+  "documents",
+  "scheduling",
+] as const;
+export type ConversationTemplateCategory = (typeof CONVERSATION_TEMPLATE_CATEGORIES)[number];
 
 export interface CrmContactWritePayload {
   first_name: string;
@@ -410,6 +528,22 @@ export interface MarketingEvent {
   waitlisted_count?: number;
   /** Whether public registration is currently open. */
   registration_open?: boolean;
+  /** Scans of the `/e/<slug>` QR short link. */
+  qr_scan_count?: number;
+  qr_last_scanned_at?: string | null;
+  /** RSVPs submitted after a QR scan (`leads.source = 'qr'`; admin detail). */
+  qr_rsvp_count?: number;
+}
+
+/** `POST /api/public/events/:slug/qr-scan` — where a scanned flyer should land. */
+export interface EventQrScanResponse {
+  ok: true;
+  /** Destination event slug (scanned event, or the next open one once it is over); null → `/events`. */
+  slug: string | null;
+  /** True when the destination accepts RSVPs (land on `#register`). */
+  register: boolean;
+  /** Event id the RSVP should be attributed to as `source = 'qr'`. */
+  event_id: number | null;
 }
 
 /** Public event payload — bilingual fields resolved for the requested lang. */
@@ -433,6 +567,50 @@ export interface PublicEventView {
   body: string | null;
   location_label: string | null;
   cta: string | null;
+  /** True after 11:59 PM Pacific on the event day (ends_at day when set). */
+  is_past: boolean;
+  /** Cover image: chosen media cover, else image_url. */
+  cover_url: string | null;
+  media_count: number;
+  /** Detail view only: highlights (reel first) + gallery in display order. */
+  media?: PublicEventMedia[];
+}
+
+export type EventMediaKind = "photo" | "video" | "embed";
+export type EventEmbedProvider = "instagram" | "youtube" | "tiktok";
+
+export interface PublicEventMedia {
+  id: number;
+  kind: EventMediaKind;
+  url: string;
+  embed_provider: EventEmbedProvider | null;
+  caption: string | null;
+  is_cover: boolean;
+  is_highlight: boolean;
+}
+
+/** Admin: both caption languages + storage details. */
+export interface AdminEventMedia {
+  id: number;
+  event_id: number;
+  kind: EventMediaKind;
+  url: string;
+  source_url: string | null;
+  embed_provider: EventEmbedProvider | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  caption_en: string | null;
+  caption_es: string | null;
+  sort_order: number;
+  is_cover: boolean;
+  is_highlight: boolean;
+  created_at: string;
+}
+
+export interface PublicEventsListResponse {
+  ok: true;
+  tab: "upcoming" | "past";
+  events: PublicEventView[];
 }
 
 export type ContactIntent =
@@ -633,6 +811,48 @@ export interface AdminDuplicatesResponse {
   ok: true;
   clusters: DuplicateCluster[];
   total: number;
+}
+
+/** Lead pipeline statuses (leads.status). */
+export const LEAD_STATUSES = ["new", "contacted", "qualified", "closed", "spam"] as const;
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+
+/**
+ * "Move back to Leads" (undo a client conversion). Where the person goes back
+ * to depends on where the client came from:
+ * - lead: the lead(s) linked to the client return to the Active list
+ * - contact: the CRM contact is un-converted (threads move back to it)
+ * - unknown: the Conversations unknown contact is reopened (threads move back)
+ * - new_lead: client was created directly → a new lead is made from its info
+ */
+export type ClientRevertOrigin = "lead" | "contact" | "unknown" | "new_lead";
+export type ClientRevertBlocker =
+  | "portal_used"
+  | "projects_in_progress"
+  | "contractor_assigned"
+  | "commissions"
+  | "missing_contact_info";
+
+export interface ClientRevertPlan {
+  client_id: number;
+  client_name: string;
+  origin: ClientRevertOrigin;
+  leads: Array<{ id: number; full_name: string; status: LeadStatus }>;
+  contact_id: number | null;
+  unknown_contact_ids: number[];
+  /** Referring affiliate (kept on the lead). */
+  affiliate_id: number | null;
+  /** What moves / is removed (counts). */
+  counts: { conversations: number; projects: number; notes: number; invites: number };
+  blockers: ClientRevertBlocker[];
+}
+
+export interface ClientRevertResponse {
+  ok: true;
+  dry_run: boolean;
+  plan: ClientRevertPlan;
+  /** Where the person lives now (after a real revert). */
+  result: { lead_id: number | null; contact_id: number | null; unknown_contact_id: number | null } | null;
 }
 
 export interface LeadConvertPhoneMatch {
@@ -859,6 +1079,8 @@ export interface AdminProject {
   sq_ft: number | null;
   loan_lender_type: LoanLenderType;
   loan_lender_name: string | null;
+  /** Lenders directory link (loan_lender_name kept in sync). */
+  lender_id?: number | null;
   loan_status: LoanStatus;
   loan_finalized_at: string | null;
   anchor_external_id: string | null;
@@ -883,6 +1105,10 @@ export interface AdminProject {
   commission_rate_direct_cents_per_sqft?: number | null;
   commission_rate_closer_cents_per_sqft?: number | null;
   commission_rate_parent_cents_per_sqft?: number | null;
+  client_deal_status_id?: number | null;
+  deal_status_en?: string | null;
+  deal_status_es?: string | null;
+  deal_status_tone?: DealStatusTone | null;
 }
 
 export interface AdminProjectDetail {
@@ -936,11 +1162,43 @@ export interface AdminLead {
   converted_contractor_id?: number | null;
   referral_code: string | null;
   notes: string | null;
-  status: "new" | "contacted" | "qualified" | "closed" | "spam";
+  status: LeadStatus;
   /** Public submissions merged into this lead (repeat forms). */
   submission_count?: number;
   last_submitted_at?: string | null;
   created_at: string;
+  /** Latest SMS / call with this lead's phone (any Groundwork line), or null. */
+  last_sms?: LeadTouch | null;
+  last_call?: LeadTouch | null;
+}
+
+/** Last text or call with a lead, matched by phone (last 10 digits). */
+export interface LeadTouch {
+  at: string;
+  direction: "inbound" | "outbound";
+  /** SMS: first ~80 chars of the body. */
+  preview?: string | null;
+  /** Calls: seconds connected (null/0 → missed / not answered). */
+  duration_sec?: number | null;
+  status?: string | null;
+  /** Conversations thread to open. */
+  thread: { kind: "client" | "contact" | "unknown"; id: number } | null;
+}
+
+/** Leads list scope: `active` = not yet a client/affiliate/contractor (and not spam). */
+export type LeadListView = "active" | "converted" | "all";
+
+/** Conversations search hit for a lead not yet linked to a thread contact. */
+export interface ConversationLeadMatch {
+  lead_id: number;
+  full_name: string;
+  email: string;
+  phone: string;
+  status: AdminLead["status"];
+  /** Open unknown-number thread for this phone, if any. */
+  unknown_contact_id: number | null;
+  /** Client already linked (lead converted) — open that thread instead. */
+  client_id: number | null;
 }
 
 export interface AdminAffiliate {
@@ -954,6 +1212,7 @@ export interface AdminAffiliate {
   referral_code: string;
   slug: string | null;
   notes: string | null;
+  preferred_language?: "en" | "es";
   avatar_url?: string | null;
   bio?: string | null;
   parent_affiliate_id?: number | null;
@@ -1065,6 +1324,11 @@ export interface AdminClient {
   last_login_at: string | null;
   created_at: string;
   project_count: number;
+  deal_status_id?: number | null;
+  deal_status_changed_at?: string | null;
+  deal_status_en?: string | null;
+  deal_status_es?: string | null;
+  deal_status_tone?: DealStatusTone | null;
 }
 
 export interface AdminStaff {
@@ -1105,9 +1369,13 @@ export interface CommissionSettings {
   commission_direct_cents_per_sqft: number;
   commission_closer_cents_per_sqft: number;
   commission_parent_cents_per_sqft: number;
+  /** Sponsor share when a Senior Sponsor also earns (two-level plan). */
+  commission_parent_shared_cents_per_sqft?: number;
+  /** Senior Sponsor share (two-level plan). */
+  commission_grandparent_cents_per_sqft?: number;
 }
 
-export type AffiliateCommissionRole = "direct" | "closer" | "parent";
+export type AffiliateCommissionRole = "direct" | "closer" | "parent" | "grandparent";
 
 export interface AffiliateTeamMember {
   id: number;
@@ -1179,6 +1447,13 @@ export interface AffiliateClientRow {
   commission_status: CommissionStatus | null;
   expected_pay_at: string | null;
   created_at: string;
+  client_id?: number;
+  deal_status_en?: string | null;
+  deal_status_es?: string | null;
+  deal_status_tone?: DealStatusTone | null;
+  deal_status_changed_at?: string | null;
+  /** Updates staff shared with the affiliate (newest first, up to 5). */
+  updates?: Array<Pick<ClientUpdate, "id" | "kind" | "body" | "deal_status_label_en" | "deal_status_label_es" | "created_at">>;
 }
 
 export interface AffiliateCommissionRow {
@@ -1330,4 +1605,505 @@ export interface ContractorInvitePreview {
   email: string;
   first_name: string;
   company: string | null;
+}
+
+// ── Affiliate onboarding (agreement e-sign + W-9) ───────────────────────────
+
+export type AffiliateW9Status = "missing" | "submitted" | "accepted" | "rejected";
+export type W9TaxClassification =
+  | "individual"
+  | "c_corp"
+  | "s_corp"
+  | "partnership"
+  | "trust_estate"
+  | "llc"
+  | "other";
+
+export interface AffiliateOnboardingState {
+  /** Monthly platform price in the agreement; null = pending (cannot sign yet). */
+  subscription_price_cents: number | null;
+  agreement_signed: boolean;
+  agreement_signed_at: string | null;
+  agreement_version: number | null;
+  /** Signed an older version than the one published now (asked to re-sign). */
+  agreement_outdated: boolean;
+  agreement_current_version: number | null;
+  w9_status: AffiliateW9Status;
+  /** Card on file with an active (or free-period) platform subscription. */
+  billing_ready: boolean;
+  /** Signed agreement + W-9 on file (not rejected) + active subscription — required before payouts. */
+  payout_ready: boolean;
+}
+
+export type AffiliateBillingStatus = "none" | "trialing" | "active" | "past_due" | "canceled" | "incomplete";
+
+/** Platform subscription (card on file → free period → monthly). */
+export interface AffiliateBilling {
+  configured: boolean;
+  status: AffiliateBillingStatus;
+  price_cents: number | null;
+  trial_days: number;
+  trial_ends_at: string | null;
+  current_period_end: string | null;
+  card: { brand: string | null; last4: string; exp: string | null } | null;
+  cancel_at_period_end: boolean;
+  /** Card saved; the plan (and its free period) starts when Groundwork approves. */
+  awaiting_approval: boolean;
+  /** Staff waived the fee (price 0). */
+  waived: boolean;
+  /** Approved: saving a card starts the plan right away. */
+  approved: boolean;
+  /** Billing is in good standing or not required (portal locks use this). */
+  in_good_standing: boolean;
+  /** The card on file expires within 30 days. */
+  card_expiring: boolean;
+}
+
+/** Same shape for every paying role (affiliates, contractors). */
+export type PlatformBilling = AffiliateBilling;
+
+export type BillingRole = "affiliate" | "contractor";
+
+export interface AdminBillingRow {
+  role: BillingRole;
+  id: number;
+  name: string;
+  email: string;
+  company: string | null;
+  member_status: string;
+  billing: PlatformBilling;
+  locked: boolean;
+}
+
+export interface AdminBillingOverview {
+  ok: true;
+  configured: boolean;
+  totals: {
+    mrr_cents: number;
+    active: number;
+    trialing: number;
+    past_due: number;
+    paused: number;
+    trials_ending_7d: number;
+    awaiting_approval: number;
+    canceling: number;
+  };
+  members: AdminBillingRow[];
+}
+
+export interface BillingInvoice {
+  id: string;
+  number: string | null;
+  created: string;
+  period_start: string | null;
+  period_end: string | null;
+  status: string;
+  amount_due: number;
+  amount_paid: number;
+  amount_refunded: number;
+  refundable: boolean;
+  hosted_url: string | null;
+  pdf_url: string | null;
+  receipt_url: string | null;
+}
+
+export interface BillingAdminAction {
+  id: number;
+  action: string;
+  reason: string | null;
+  detail: Record<string, unknown>;
+  created_at: string | null;
+  admin_name: string | null;
+}
+
+export interface AdminMembership {
+  ok: true;
+  member: { role: BillingRole; id: number; name: string; email: string; phone: string | null; company: string | null; status: string };
+  billing: PlatformBilling;
+  locked: boolean;
+  invoices: BillingInvoice[];
+  actions: BillingAdminAction[];
+  open_link: { price_cents: number | null; free_days: number | null; expires_at: string | null; created_at: string | null } | null;
+}
+
+export interface BillingCardLinkView {
+  ok: true;
+  member: { first_name: string; last_name: string; email: string; role: BillingRole };
+  billing: PlatformBilling;
+  expires_at: string | null;
+}
+
+/** Contractor portal: membership + whether the portal is locked to the billing page. */
+export interface ContractorBillingResponse {
+  ok: true;
+  billing: PlatformBilling;
+  locked: boolean;
+}
+
+export interface AffiliateFaq {
+  id: number;
+  question_en: string;
+  answer_en: string;
+  question_es: string | null;
+  answer_es: string | null;
+  sort_order: number;
+  is_active: boolean;
+  updated_at: string | null;
+}
+
+export type AffiliateFaqBody = Pick<AffiliateFaq, "question_en" | "answer_en"> &
+  Partial<Pick<AffiliateFaq, "question_es" | "answer_es" | "sort_order" | "is_active">>;
+
+export interface AffiliateAssistantMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  handoff: boolean;
+  created_at: string | null;
+}
+
+export interface AffiliateOnboardingResponse {
+  ok: true;
+  state: AffiliateOnboardingState;
+  affiliate: {
+    first_name: string;
+    last_name: string;
+    email: string;
+    phone: string | null;
+    company: string | null;
+    status: string;
+  };
+  template: { version: number; body: string; body_en: string };
+  sponsor_name: string | null;
+  senior_sponsor_name: string | null;
+  agreement: {
+    id: number;
+    version: number;
+    lang: string;
+    legal_name: string;
+    business_name: string | null;
+    signed_at: string | null;
+  } | null;
+  w9: {
+    id: number;
+    status: AffiliateW9Status;
+    legal_name: string;
+    tin_type: "ssn" | "ein";
+    tin_last4: string;
+    review_note: string | null;
+    signed_at: string | null;
+  } | null;
+  blank_w9_url: string;
+  /** Program presentation (welcome step). */
+  presentation_url: string | null;
+  billing: AffiliateBilling;
+}
+
+export interface AffiliateAgreementSignBody {
+  version: number;
+  lang: "en" | "es";
+  legal_name: string;
+  business_name?: string | null;
+  title?: string | null;
+  address: string;
+  phone?: string | null;
+  signature_image: string;
+  consent: true;
+}
+
+export interface AffiliateW9Body {
+  legal_name: string;
+  business_name?: string | null;
+  tax_classification: W9TaxClassification;
+  llc_tax_class?: "C" | "S" | "P" | null;
+  other_classification?: string | null;
+  foreign_partners?: boolean;
+  exempt_payee_code?: string | null;
+  fatca_code?: string | null;
+  address: string;
+  city_state_zip: string;
+  tin_type: "ssn" | "ein";
+  tin: string;
+  signature_image: string;
+  certify: true;
+  lang?: "en" | "es";
+}
+
+export interface AdminAffiliateOnboarding {
+  ok: true;
+  state: AffiliateOnboardingState;
+  sponsor_name: string | null;
+  senior_sponsor_name: string | null;
+  agreements: Array<{
+    id: number;
+    template_version: number;
+    lang: string;
+    status: "signed" | "void";
+    legal_name: string;
+    business_name: string | null;
+    title: string | null;
+    address: string;
+    phone: string | null;
+    email: string;
+    subscription_price_cents: number;
+    sponsor_name: string | null;
+    signed_at: string | null;
+    signed_ip: string | null;
+    voided_at: string | null;
+    void_reason: string | null;
+  }>;
+  w9s: Array<{
+    id: number;
+    status: Exclude<AffiliateW9Status, "missing">;
+    legal_name: string;
+    business_name: string | null;
+    tax_classification: W9TaxClassification;
+    llc_tax_class: string | null;
+    tin_type: "ssn" | "ein";
+    tin_last4: string;
+    address: string;
+    city_state_zip: string;
+    signed_at: string | null;
+    reviewed_at: string | null;
+    review_note: string | null;
+  }>;
+}
+
+export interface AffiliateAgreementTemplateResponse {
+  ok: true;
+  template: { version: number; body_en: string; body_es: string; published_at: string | null };
+  signed_count: number;
+}
+
+// ── Scheduler (appointments, lenders, booking links) ────────────────────────
+
+export const APPOINTMENT_KINDS = ["property_inspection", "site_visit", "lender_meeting", "consultation", "call", "other"] as const;
+export type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
+export const APPOINTMENT_LOCATION_TYPES = ["onsite", "office", "phone", "video"] as const;
+export type AppointmentLocationType = (typeof APPOINTMENT_LOCATION_TYPES)[number];
+export type AppointmentStatus = "scheduled" | "cancelled" | "completed" | "no_show";
+export type AppointmentAttendeeKind = "admin" | "contractor" | "lender" | "homeowner" | "guest";
+
+export interface AppointmentAttendee {
+  id: number;
+  kind: AppointmentAttendeeKind;
+  admin_id: number | null;
+  contractor_id: number | null;
+  lender_id: number | null;
+  name: string | null;
+  email?: string | null;
+  phone?: string | null;
+  notified_at?: string | null;
+}
+
+export interface Appointment {
+  id: number;
+  title: string;
+  kind: AppointmentKind;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  location_type: AppointmentLocationType;
+  location: string | null;
+  video_url: string | null;
+  description: string | null;
+  /** Internal (staff only). */
+  notes?: string | null;
+  status: AppointmentStatus;
+  source: "staff" | "booking";
+  notify_homeowner: boolean;
+  client_id: number | null;
+  client_name: string | null;
+  lead_id: number | null;
+  lead_name: string | null;
+  project_id: number | null;
+  project_public_id: string | null;
+  owner_admin_id: number | null;
+  owner_name: string | null;
+  cancelled_reason: string | null;
+  attendees: AppointmentAttendee[];
+}
+
+export type AppointmentAttendeeInput =
+  | { kind: "admin"; admin_id: number }
+  | { kind: "contractor"; contractor_id: number }
+  | { kind: "lender"; lender_id: number }
+  | { kind: "guest"; name: string; email?: string | null; phone?: string | null; preferred_language?: "en" | "es" };
+
+export interface AppointmentBody {
+  title?: string;
+  kind: AppointmentKind;
+  /** Local date + time in `timezone`. */
+  date: string;
+  start: string;
+  duration_minutes: number;
+  timezone?: string;
+  location_type: AppointmentLocationType;
+  location?: string | null;
+  video_url?: string | null;
+  description?: string | null;
+  notes?: string | null;
+  client_id?: number | null;
+  lead_id?: number | null;
+  project_id?: number | null;
+  owner_admin_id?: number | null;
+  notify_homeowner: boolean;
+  attendees: AppointmentAttendeeInput[];
+}
+
+export interface AppointmentConflict {
+  id: number;
+  title: string;
+  starts_at: string | null;
+  ends_at: string | null;
+}
+
+/** Affiliate portal view: referred clients only, no address / notes. */
+export interface AffiliateAppointment {
+  id: number;
+  kind: AppointmentKind;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  status: AppointmentStatus;
+  client_name: string;
+}
+
+export interface Lender {
+  id: number;
+  company: string;
+  contact_name: string | null;
+  email: string | null;
+  phone: string | null;
+  preferred_language: "en" | "es";
+  notes: string | null;
+  is_active: boolean;
+  project_count: number;
+}
+
+export type LenderBody = Pick<Lender, "company"> &
+  Partial<Pick<Lender, "contact_name" | "email" | "phone" | "preferred_language" | "notes" | "is_active">>;
+
+export interface SchedulerAvailability {
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+}
+
+export interface SchedulerSettings {
+  admin_id: number;
+  is_enabled: boolean;
+  slug: string;
+  title_en: string;
+  title_es: string;
+  description_en: string | null;
+  description_es: string | null;
+  kind: AppointmentKind;
+  duration_minutes: number;
+  buffer_minutes: number;
+  advance_days: number;
+  min_notice_hours: number;
+  timezone: string;
+  allow_phone: boolean;
+  allow_video: boolean;
+  allow_office: boolean;
+  allow_onsite: boolean;
+  video_url: string | null;
+  availability: SchedulerAvailability[];
+}
+
+export interface SchedulerResponse {
+  ok: true;
+  settings: SchedulerSettings;
+  booking_url: string;
+  blocked?: Array<{ id: number; starts_at: string | null; ends_at: string | null; label: string | null }>;
+}
+
+export interface PublicBookingInfo {
+  ok: true;
+  host: { name: string; avatar_url: string | null };
+  title: string;
+  description: string | null;
+  duration_minutes: number;
+  timezone: string;
+  advance_days: number;
+  location_types: AppointmentLocationType[];
+  days: number[];
+}
+
+export interface PublicAppointmentView {
+  ok: true;
+  appointment: {
+    title: string;
+    kind: AppointmentKind;
+    starts_at: string;
+    ends_at: string;
+    timezone: string;
+    location_type: AppointmentLocationType;
+    location: string | null;
+    video_url: string | null;
+    status: AppointmentStatus;
+    host: string | null;
+  };
+  reschedule_slug: string | null;
+}
+
+/** Affiliate portal → my link (EN/ES URLs, short display, stats, link-name rule). */
+export interface AffiliateLinkInfo {
+  ok: true;
+  slug: string | null;
+  referral_code: string;
+  urls: { en: string; es: string };
+  display: string;
+  /** Next allowed self-service name change (ISO), or null when allowed now. */
+  can_change_slug_at: string | null;
+  stats: { clicks_total: number; clicks_7d: number; leads: number; clients: number };
+}
+
+/** Staff dashboard (command center): sections are filtered by the viewer's role. */
+export interface CommandCenterInboxItem {
+  key: string;
+  count: number;
+  to: string;
+  tone: "alert" | "warn" | "info";
+  amount_cents?: number;
+}
+export interface CommandCenter {
+  ok: true;
+  role: AdminRole;
+  generated_at: string;
+  inbox: CommandCenterInboxItem[];
+  appointments: { id: number; title: string; starts_at: string | null; kind: string; location_type: string; owner: string | null }[];
+  money: null | {
+    mrr_cents: number;
+    commissions: { pending: number; approved: number; paid: number };
+    pipeline: { milestone: string; count: number; value_cents: number }[];
+    closed: { count: number; net_cents: number };
+  };
+  activity: { kind: string; at: string; title: string; detail?: string | null; to?: string | null }[];
+  trends: null | {
+    weeks: { start: string; leads: number; clients: number; contracted: number; closed: number; affiliates: number; contractors: number }[];
+    funnel: { leads: number; clients: number; contracted: number; closed: number };
+    sources: { source: string; count: number }[];
+    events: { id: number; title: string; starts_at: string | null; rsvps: number }[];
+  };
+}
+
+/** Staff record search (appointment "who is this for" and other pickers). */
+export interface RecordSearchResults {
+  clients: { id: number; name: string; email: string | null; phone: string | null; city: string | null; status: string }[];
+  leads: { id: number; name: string; email: string | null; phone: string | null; address: string | null; status: string }[];
+  projects: { id: number; public_id: string; client_id: number | null; client_name: string; address: string | null; milestone: string }[];
+}
+export type RecordRef = { kind: "client" | "lead" | "project"; id: number; label: string; sub?: string | null };
+
+/** What erasing a person removes (confirm modal). */
+export interface ErasePreview {
+  ok: true;
+  person: { entity: "client" | "affiliate" | "contractor"; id: number; name: string; email: string | null; status: string };
+  counts: Record<string, number>;
+  kept: Record<string, number>;
+  subscription: boolean;
+  card_on_file: boolean;
+  files: number;
 }

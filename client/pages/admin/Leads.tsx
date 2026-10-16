@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Formik, Form } from "formik";
-import { ArrowRightCircle, NotebookPen } from "lucide-react";
+import { ArrowRightCircle, MessageSquare, NotebookPen, Phone } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import DuplicatesPanel from "@/components/admin/DuplicatesPanel";
 import type {
@@ -28,6 +28,7 @@ import {
   Modal,
   PageHeader,
   SearchBox,
+  SegmentedTabs,
   SelectField,
   StatusBadge,
   SubmitButton,
@@ -39,6 +40,10 @@ import { LEAD_MODES } from "@/lib/eventOptions";
 import { useFormatters } from "@/lib/format";
 import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
 import { useAdminCan } from "@/hooks/useAdminCan";
+import LeadTouchCell from "@/components/admin/leads/LeadTouchCell";
+import LeadQuickText from "@/components/admin/leads/LeadQuickText";
+import { conversationsDialUrl } from "@/lib/conversationDeepLink";
+import type { LeadListView } from "@shared/api";
 import {
   leadAlreadyConverted,
   smartLeadConvertTarget,
@@ -73,10 +78,14 @@ export default function AdminLeads() {
   const canClientConvert = useAdminCan("projects.write");
   const canApprovalsConvert = useAdminCan("approvals");
   const canShowConvert = canClientConvert || canApprovalsConvert;
+  const [view, setView] = useState<LeadListView>("active");
+  const [textLead, setTextLead] = useState<AdminLead | null>(null);
   const [status, setStatus] = useState("");
   const [mode, setMode] = useState("");
   const [eventId, setEventId] = useState("");
-  const [q, setQ] = useState("");
+  // ?q= deep link (e.g. "Move back to Leads" lands on the restored lead).
+  const [searchParams] = useSearchParams();
+  const [q, setQ] = useState(() => searchParams.get("q") || "");
   const [offset, setOffset] = useState(0);
   const [noteLead, setNoteLead] = useState<AdminLead | null>(null);
   const [convertLead, setConvertLead] = useState<AdminLead | null>(null);
@@ -90,7 +99,7 @@ export default function AdminLeads() {
 
   useEffect(() => {
     setOffset(0);
-  }, [status, q, mode, eventId]);
+  }, [view, status, q, mode, eventId]);
 
   useEffect(() => {
     void dispatch(fetchAdminEvents({ limit: 100 }));
@@ -99,6 +108,7 @@ export default function AdminLeads() {
   const load = () =>
     void dispatch(
       fetchAdminLeads({
+        view,
         status: status || undefined,
         q: q || undefined,
         mode: mode || undefined,
@@ -110,7 +120,7 @@ export default function AdminLeads() {
   useEffect(() => {
     dispatch(clearAdminSaveError());
     load();
-  }, [status, q, mode, eventId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, status, q, mode, eventId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openConvert = (lead: AdminLead) => {
     dispatch(clearAdminSaveError());
@@ -189,8 +199,19 @@ export default function AdminLeads() {
     <div className="portal-page">
       <PageHeader titleKey="portalNav.leads" leadKey="admin.leadsLead" />
       <DuplicatesPanel entity="lead" />
+      <SegmentedTabs<LeadListView>
+        value={view}
+        onChange={setView}
+        ariaLabel={t("admin.leadViewAria")}
+        options={[
+          { value: "active", labelKey: "admin.leadViewActive" },
+          { value: "converted", labelKey: "admin.leadViewConverted" },
+          { value: "all", labelKey: "admin.leadViewAll" },
+        ]}
+      />
+      <p className="pf-hint">{t(`admin.leadViewHint.${view}`)}</p>
       <div className="pf-filters">
-        <SearchBox onSearch={setQ} />
+        <SearchBox value={q} onSearch={setQ} />
         <FilterSelect
           value={status}
           onChange={setStatus}
@@ -241,6 +262,8 @@ export default function AdminLeads() {
               </>
             ),
           },
+          { key: "lastText", headerKey: "admin.leadLastText", render: (l) => <LeadTouchCell touch={l.last_sms} kind="sms" /> },
+          { key: "lastCall", headerKey: "admin.leadLastCall", render: (l) => <LeadTouchCell touch={l.last_call} kind="call" /> },
           { key: "address", headerKey: "pf.address", render: (l) => l.property_address || "—" },
           { key: "source", headerKey: "admin.source", render: (l) => l.source || "—" },
           {
@@ -329,17 +352,31 @@ export default function AdminLeads() {
           {
             key: "convert",
             headerKey: "pf.actions",
-            render: (l) =>
-              canShowConvert && !leadAlreadyConverted(l) ? (
-                <button type="button" className="pf-btn" onClick={() => openConvert(l)}>
-                  <ArrowRightCircle size={15} /> {t("admin.convert")}
-                </button>
-              ) : leadAlreadyConverted(l) ? (
-                <LeadPersonLink lead={l} />
-              ) : null,
+            render: (l) => (
+              <div className="gw-lead-actions">
+                {l.phone ? (
+                  <>
+                    <button type="button" className="pf-btn" onClick={() => setTextLead(l)}>
+                      <MessageSquare size={15} /> {t("admin.leadText")}
+                    </button>
+                    <Link className="pf-btn" to={conversationsDialUrl({ phone: l.phone })}>
+                      <Phone size={15} /> {t("admin.leadCall")}
+                    </Link>
+                  </>
+                ) : null}
+                {canShowConvert && !leadAlreadyConverted(l) ? (
+                  <button type="button" className="pf-btn" onClick={() => openConvert(l)}>
+                    <ArrowRightCircle size={15} /> {t("admin.convert")}
+                  </button>
+                ) : leadAlreadyConverted(l) ? (
+                  <LeadPersonLink lead={l} />
+                ) : null}
+              </div>
+            ),
           },
         ]}
       />
+      <LeadQuickText lead={textLead} onClose={() => setTextLead(null)} onSent={load} />
       <ListPager
         total={total}
         limit={PAGE_SIZE}

@@ -184,6 +184,40 @@ export default function EnrollWizard({
       </aside>
 
       <div className="enroll-stage">
+        {/* Phones (any orientation): who invited you + compact progress instead of the steps rail. */}
+        <div className="enroll-mobile-head">
+          {affiliate ? (
+            <div className="enroll-invited">
+              {affiliate.avatar_url ? (
+                <img className="enroll-invited-avatar" src={affiliate.avatar_url} alt="" />
+              ) : (
+                <span className="enroll-invited-avatar enroll-invited-avatar--fallback" aria-hidden>
+                  {affiliate.initials}
+                </span>
+              )}
+              <span className="enroll-invited-copy">
+                <span className="enroll-invited-kicker">{t("enroll.invitedBy")}</span>
+                <strong className="enroll-invited-name">
+                  {affiliate.first_name} {affiliate.last_name}
+                </strong>
+                {"company" in affiliate && affiliate.company ? <span className="enroll-invited-co">{String(affiliate.company)}</span> : null}
+              </span>
+            </div>
+          ) : null}
+          <div className="enroll-progress" role="group" aria-label={t("enroll.stepsAria")}>
+            <div className="enroll-progress-top">
+              <span>{t("enroll.stepOf", { current: step + 1, total: ENROLL_STEP_COUNT })}</span>
+              <span>{step + 1 < ENROLL_STEP_COUNT ? t("enroll.nextUp", { step: t(`enroll.step${step + 1}Title`) }) : null}</span>
+            </div>
+            <ol className="enroll-progress-bar">
+              {STEP_ICONS.map((_, i) => (
+                <li key={i} className={i < step ? "is-done" : i === step ? "is-current" : undefined} aria-current={i === step ? "step" : undefined}>
+                  <span className="sr-only">{t(`enroll.step${i}Title`)}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </div>
         <p className="enroll-pill">{t("enroll.stepOf", { current: step + 1, total: ENROLL_STEP_COUNT })}</p>
         <h1 className="enroll-stage-title">{t(`enroll.step${step}Title`)}</h1>
         <p className="enroll-stage-lead">{t(leadKey)}</p>

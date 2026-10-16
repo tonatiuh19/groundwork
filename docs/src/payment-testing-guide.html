@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Groundwork · Testing payments &amp; memberships</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  @page { size: Letter; margin: 0.55in 0.6in 0.6in; }
+  :root { --navy: #0e2a4a; --navy2: #1d4673; --gold: #d4a548; --cream: #f7f2e8; --paper: #fffdf8; --line: #ecdcb8; --ink: #1f2430; --soft: #5b6270; --terra: #c1633b; --green: #1f6b4a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Manrope, Arial, sans-serif; color: var(--ink); font-size: 9.8pt; line-height: 1.4; background: #fff; }
+  .top { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 2px solid var(--gold); }
+  .top img { height: 34px; }
+  .kicker { font-size: 8pt; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--terra); }
+  h1 { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; color: var(--navy); font-size: 27pt; line-height: 1.08; margin: 18px 0 6px; }
+  h2 { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; color: var(--navy); font-size: 16pt; margin: 14px 0 6px; break-after: avoid; }
+  h3 { font-size: 10.5pt; margin: 0 0 6px; color: var(--navy); }
+  p { margin: 0 0 8px; }
+  .lead { color: var(--soft); font-size: 10.5pt; }
+  .callout { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 10px 12px; border-radius: 10px; background: #fff6e0; border: 1px solid #ecd08f; color: #6b4a0f; margin: 10px 0; break-inside: avoid; }
+  .callout b { color: #5a3d07; }
+  .callout .ico { font-size: 13pt; line-height: 1; }
+  .callout.navy { background: #eef3f9; border-color: #c9d6e6; color: var(--navy); }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 4px; break-inside: avoid; }
+  thead th { background: var(--navy); color: #fff; text-align: left; font-size: 8.4pt; letter-spacing: .04em; padding: 7px 9px; }
+  thead th:first-child { border-radius: 8px 0 0 0; } thead th:last-child { border-radius: 0 8px 0 0; }
+  td { padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr:nth-child(even) td { background: var(--paper); }
+  .num { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-weight: 700; color: var(--navy); white-space: nowrap; letter-spacing: .02em; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 7.8pt; font-weight: 800; letter-spacing: .03em; white-space: nowrap; }
+  .ok { background: #e3f2ea; color: var(--green); } .fail { background: #fde8dd; color: #a5481f; } .auth { background: #e8eef6; color: var(--navy); } .later { background: #fff3d6; color: #8a5d0a; }
+  .note { font-size: 8.6pt; color: var(--soft); }
+  .flows { display: grid; gap: 8px; }
+  .flow { border: 1px solid var(--line); border-left: 4px solid var(--gold); border-radius: 12px; padding: 9px 12px; background: var(--paper); break-inside: avoid; }
+  .flow.navy { border-left-color: var(--navy); }
+  .flow.terra { border-left-color: var(--terra); }
+  .flow h3 { display: flex; align-items: baseline; gap: 8px; }
+  .flow h3 .n { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--navy); color: #f3d58c; font-size: 8.5pt; flex: none; }
+  ol.steps { margin: 4px 0 6px 18px; padding: 0; } ol.steps li { margin: 2px 0; }
+  .expect { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line); font-size: 9pt; }
+  .expect b { color: var(--green); }
+  code, .path { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 8.8pt; background: #f1e8d4; padding: 0 4px; border-radius: 4px; color: var(--navy); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .box { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #fff; break-inside: avoid; }
+  .check li { list-style: none; margin: 3px 0; } .check { padding-left: 0; margin: 4px 0; }
+  .check li::before { content: "☐  "; color: var(--gold); font-weight: 800; }
+  .page-break { break-before: page; }
+  .foot { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-size: 8pt; color: var(--soft); }
+</style>
+</head>
+<body>
+  <div class="top">
+    <img src="../assets/groundwork-logo.png" alt="Groundwork Capital Group" />
+    <span class="kicker">QA guide · payments &amp; memberships</span>
+  </div>
+
+  <h1>How we test payments: every flow, every card, step by step</h1>
+  <p class="lead">Our platform runs memberships for affiliates ($19.99/mo after 90 free days) and contractors ($99.90/mo after 30 free days). The free period always starts when our team approves the person, never at signup. While we test, the platform is connected to <b>test mode</b>: the card form is real, but no real money ever moves. Use the test cards below. Real cards are refused in test mode.</p>
+
+  <div class="callout"><span class="ico">⚠️</span><div><b>Emails and texts are real.</b> Sign-in codes, welcome emails and texts really go out. Test with <b>your own email and phone</b>. Every test person needs a <b>different email and a different phone number</b> (one role per person). With Gmail you can add <code>+aff1</code>, <code>+ctr1</code>… to your address, for example <code>you+ctr1@gmail.com</code>.</div></div>
+
+  <h2>Test cards</h2>
+  <p>For every card: use <b>any future expiry date</b> (e.g. <code>12/34</code>), <b>any 3-digit security code</b> (any 4 digits for Amex) and any ZIP.</p>
+  <table>
+    <thead><tr><th style="width:31%">Card number</th><th style="width:19%">Result</th><th>What it tests</th></tr></thead>
+    <tbody>
+      <tr><td class="num">4242 4242 4242 4242</td><td><span class="tag ok">Success</span></td><td>Visa that always works. Use it for the happy path and to recover from failures.</td></tr>
+      <tr><td class="num">5555 5555 5555 4444</td><td><span class="tag ok">Success</span></td><td>Mastercard that always works. Use it to test <b>Replace card</b> (you'll see the brand and last 4 change).</td></tr>
+      <tr><td class="num">4000 0025 0000 3155</td><td><span class="tag auth">Bank check</span></td><td>Opens a bank authentication window (3-D Secure). Click <b>Complete</b> to save the card, or <b>Fail</b> to see the error.</td></tr>
+      <tr><td class="num">4000 0000 0000 0002</td><td><span class="tag fail">Declined</span></td><td>Generic decline. The card is not saved and the form shows the bank's message.</td></tr>
+      <tr><td class="num">4000 0000 0000 9995</td><td><span class="tag fail">Declined</span></td><td>Insufficient funds.</td></tr>
+      <tr><td class="num">4000 0000 0000 0069</td><td><span class="tag fail">Declined</span></td><td>Expired card.</td></tr>
+      <tr><td class="num">4000 0000 0000 0127</td><td><span class="tag fail">Declined</span></td><td>Wrong security code (CVC).</td></tr>
+      <tr><td class="num">4000 0000 0000 0341</td><td><span class="tag later">Saves, then fails</span></td><td>Saves fine but <b>every charge fails</b>. Use it to test a failed payment, the portal pause and recovery (flow 5).</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Tip: to see the "card expires soon" banner and the staff "Card expiring" badge, add 4242… with <b>this month</b> as the expiry date.</p>
+
+  <h2>Who approves what (staff)</h2>
+  <div class="grid2">
+    <div class="box"><h3>Affiliates</h3><p>Admin → <b>Affiliates</b> → filter <b>Pending</b> → open the person → set status to <b>Active</b>. Their 90 free days start at that moment.</p></div>
+    <div class="box"><h3>Contractors</h3><p>Admin → <b>Contractors</b> → open the person → <b>Application</b> panel → mark license and insurance verified → <b>Approve</b> (you can approve with documents still missing if you add a note). The 30 free days start at that moment.</p></div>
+  </div>
+  <p class="note">Super admins, admins and finance can manage memberships. Agents can view them. Everything is in Admin → <b>Billing</b>, or the <b>Manage membership</b> button on each record.</p>
+
+
+  <h2>The flows to test</h2>
+  <div class="flows">
+    <div class="flow">
+      <h3><span class="n">1</span> New affiliate: signup → setup link → approval</h3>
+      <ol class="steps">
+        <li>Open <span class="path">/affiliate/signup</span> and apply. You'll see <i>"Check your email and texts"</i>.</li>
+        <li>Open the welcome email or text and tap the secure link (<span class="path">/affiliate/welcome/…</span>).</li>
+        <li>Sign the agreement → submit the W-9 → add card <span class="num">4242 4242 4242 4242</span>.</li>
+        <li>Staff approve the affiliate (see above).</li>
+      </ol>
+      <div class="expect"><b>Expect:</b> before approval the card shows "Your 90 free days start when we approve you", and nothing is charged. After approval: status <b>Free period</b>, first charge in 90 days at $19.99, and Admin → Billing shows the affiliate.</div>
+    </div>
+    <div class="flow">
+      <h3><span class="n">2</span> New contractor: signup → application with card → approval</h3>
+      <ol class="steps">
+        <li>Open <span class="path">/contractor/signup</span> and apply. Use the emailed link (<span class="path">/contractor/apply/…</span>).</li>
+        <li>Fill in the application. On <b>Review &amp; sign</b>, try <b>Submit</b> before adding a card: it stays disabled.</li>
+        <li>Try a decline card (<span class="num">…0002</span>), then add <span class="num">4242 4242 4242 4242</span>, sign and submit.</li>
+        <li>Staff approve the application. The contractor signs in at <span class="path">/contractor/login</span>.</li>
+      </ol>
+      <div class="expect"><b>Expect:</b> the decline card is refused with a clear message. After approval, the approval email says "30 days free, then $99.90/month starting [date]", the portal opens, and the dashboard shows the membership card.</div>
+    </div>
+    <div class="flow navy">
+      <h3><span class="n">3</span> Existing contractor without a card</h3>
+      <ol class="steps"><li>Sign in as an already-active contractor who has never added a card.</li><li>Add <span class="num">4242…</span> on the "Reactivate your contractor portal" screen.</li></ol>
+      <div class="expect"><b>Expect:</b> every page shows the card screen until the card is saved, then the portal opens with a 30-day free period.</div>
+    </div>
+    <div class="flow navy">
+      <h3><span class="n">4</span> Replace card · cancel · resume (member side)</h3>
+      <ol class="steps">
+        <li>Contractor dashboard (or affiliate <span class="path">/affiliate/agreement</span>) → <b>Replace card</b> → <span class="num">5555 5555 5555 4444</span>.</li>
+        <li><b>Cancel plan</b> → confirm, then <b>Keep my plan</b>.</li>
+      </ol>
+      <div class="expect"><b>Expect:</b> the card changes to Mastercard •••• 4444 with no second free period. Cancel keeps access until the end of the paid month, and Keep my plan undoes it.</div>
+    </div>
+    <div class="flow terra">
+      <h3><span class="n">5</span> Failed payment → portal paused → recovery</h3>
+      <ol class="steps">
+        <li>Staff: Admin → Billing → open a test member → <b>Cancel</b> → <i>Cancel now</i> (any reason).</li>
+        <li>Staff: <b>Start with card link</b> → Free days <b>0</b> → Send. The member gets an email and text.</li>
+        <li>Member: open the link and add <span class="num">4000 0000 0000 0341</span>. The charge fails right away.</li>
+        <li>Member: sign in, try <span class="num">…0341</span> again, then add <span class="num">4242 4242 4242 4242</span>.</li>
+      </ol>
+      <div class="expect"><b>Expect:</b> after step 3 the contractor portal (or affiliate portal) is paused on the card screen, and the affiliate's payouts are held. A second bad card shows <i>"Your bank declined the new card"</i>. The good card pays the open invoice right away and the portal reopens. The affiliate referral link keeps working the whole time.</div>
+    </div>
+    <div class="flow">
+      <h3><span class="n">6</span> Staff tools: free days · price · refund</h3>
+      <ol class="steps">
+        <li><b>Add free days</b> (+14) on a running plan. The member gets an email, and the next charge date moves.</li>
+        <li><b>Price</b> → Custom $120 (or Waive). Custom applies from the next cycle; Waive cancels the plan and unlocks the portal.</li>
+        <li><b>Refund:</b> start a member with a card link (Free days 0, card <span class="num">4242…</span>) so there's a real charge. Then <b>Payments → Refund</b> $20, then refund the rest.</li>
+      </ol>
+      <div class="expect"><b>Expect:</b> every action asks for a reason, appears in <b>Activity</b>, and emails the member. Receipts and PDFs open from Payments. You can't refund more than what's left.</div>
+    </div>
+    <div class="flow navy">
+      <h3><span class="n">7</span> Denied application</h3>
+      <ol class="steps"><li>A contractor saves a card in the application and submits. Staff click <b>Deny</b>.</li></ol>
+      <div class="expect"><b>Expect:</b> the saved card is removed and nothing is ever charged.</div>
+    </div>
+  </div>
+
+  <h2>Sign-off checklist</h2>
+  <div class="grid2">
+    <ul class="check">
+      <li>Affiliate: signup → link → card → approved → Free period</li>
+      <li>Contractor: Submit blocked without a card</li>
+      <li>Contractor: approved → Free period, portal open</li>
+      <li>Decline cards refused (…0002, 9995, 0069, 0127)</li>
+      <li>Bank-check card: Complete saves, Fail shows an error</li>
+    </ul>
+    <ul class="check">
+      <li>Replace card → brand and last 4 update</li>
+      <li>Cancel / keep plan works</li>
+      <li>…0341 → paused → 4242 → reopened</li>
+      <li>Staff: free days, price, refund, activity log</li>
+      <li>Phones: card form and screens look right (portrait and landscape)</li>
+    </ul>
+  </div>
+
+  <div class="callout navy"><span class="ico">🧹</span><div><b>When testing is done</b>, we switch to Groundwork's own live payment account and clear the test billing data, so no test membership carries over. Until then, test data stays in test mode only.</div></div>
+
+  <div class="foot"><span>Groundwork Capital · QA guide: payments &amp; memberships</span><span>October 2026</span></div>
+</body>
+</html>

@@ -148,6 +148,22 @@ export function fromDateTimeLocalValue(value: string | null | undefined): string
   return Number.isNaN(out.getTime()) ? null : out.toISOString();
 }
 
+/** "5 min ago" / "hace 3 días" — falls back to a date after ~30 days. */
+export function formatRelative(v: string | Date | null | undefined, locale = "en-US", now = Date.now()): string {
+  if (!v) return "—";
+  const d = v instanceof Date ? v : new Date(v);
+  const ms = d.getTime();
+  if (Number.isNaN(ms)) return "—";
+  const sec = Math.round((ms - now) / 1000);
+  const abs = Math.abs(sec);
+  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  if (abs < 60) return rtf.format(sec, "second");
+  if (abs < 3600) return rtf.format(Math.round(sec / 60), "minute");
+  if (abs < 86400) return rtf.format(Math.round(sec / 3600), "hour");
+  if (abs < 30 * 86400) return rtf.format(Math.round(sec / 86400), "day");
+  return formatDate(d, locale);
+}
+
 export function useFormatters() {
   const { i18n } = useTranslation();
   const locale = i18n.language?.startsWith("es") ? "es-US" : "en-US";
@@ -156,5 +172,6 @@ export function useFormatters() {
     date: (v: string | Date | null | undefined) => formatDate(v, locale),
     eventDay: (v: string | Date | null | undefined) => formatEventDay(v, locale),
     eventDateTime: (v: string | Date | null | undefined) => formatEventDateTime(v, locale),
+    relative: (v: string | Date | null | undefined) => formatRelative(v, locale),
   };
 }

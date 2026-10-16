@@ -1,5 +1,7 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import type {
+  ConversationLeadMatch,
+  ConversationTemplateCategory,
   AdminPhoneNumber,
   ConversationContactKind,
   ConversationHubContact,
@@ -37,6 +39,9 @@ type ConversationsState = {
   accessNumbers: AdminPhoneNumber[];
   accessLoading: boolean;
   inbox: ConversationHubContact[];
+  /** Leads matching the inbox search (not yet linked people). */
+  leadMatches: ConversationLeadMatch[];
+  leadMatchesQuery: string;
   inboxPagination: ConversationsListResponse["pagination"] | null;
   inboxLoading: boolean;
   inboxRefreshing: boolean;
@@ -67,6 +72,8 @@ const initialState: ConversationsState = {
   accessNumbers: [],
   accessLoading: false,
   inbox: [],
+  leadMatches: [],
+  leadMatchesQuery: "",
   inboxPagination: null,
   inboxLoading: false,
   inboxRefreshing: false,
@@ -211,6 +218,19 @@ export const fetchConversationInbox = createApiThunk<
   );
   return { ...data, soft: !!args?.soft, append: !!args?.append };
 });
+
+/** Leads matching the Conversations search box (name / email / phone). */
+export const searchConversationLeads = createApiThunk<ConversationLeadMatch[], string>(
+  "conversations/leadSearch",
+  A,
+  async (q) => {
+    if (q.trim().length < 2) return [];
+    const { data } = await api.get<{ leads: ConversationLeadMatch[] }>("/admin/conversations/lead-search", {
+      params: { q: q.trim() },
+    });
+    return data.leads;
+  },
+);
 
 export const fetchConversationTimeline = createApiThunk<
   ConversationTimeline,
@@ -380,7 +400,7 @@ export const uploadConversationMedia = createApiThunk<
 
 export const createConversationTemplate = createApiThunk<
   ConversationTemplate,
-  { title: string; body_en: string; body_es?: string | null; sort_order?: number }
+  { title: string; body_en: string; body_es?: string | null; sort_order?: number; category?: ConversationTemplateCategory }
 >("conversations/createTemplate", A, async (body) => {
   const { data } = await api.post<{ template: ConversationTemplate }>(
     "/admin/conversation-templates",
@@ -398,6 +418,7 @@ export const updateConversationTemplate = createApiThunk<
     body_es?: string | null;
     is_active?: boolean;
     sort_order?: number;
+    category?: ConversationTemplateCategory;
   }
 >("conversations/updateTemplate", A, async ({ id, ...body }) => {
   const { data } = await api.patch<{ template: ConversationTemplate }>(
@@ -414,6 +435,16 @@ export const deleteConversationTemplate = createApiThunk<
   await api.delete(`/admin/conversation-templates/${id}`);
   return { id };
 });
+
+/** Fire-and-forget usage bump when a template is inserted into a message. */
+export const markConversationTemplateUsed = createApiThunk<boolean, number>(
+  "conversations/templateUsed",
+  A,
+  async (id) => {
+    await api.post(`/admin/conversation-templates/${id}/used`);
+    return true;
+  },
+);
 
 export const fetchConversationTemplates = createApiThunk<
   ConversationTemplate[],
@@ -492,6 +523,16 @@ const conversationsSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    builder.addCase(searchConversationLeads.pending, (state, action) => {
+      state.leadMatchesQuery = action.meta.arg;
+    });
+    builder.addCase(searchConversationLeads.fulfilled, (state, action) => {
+      // Ignore stale responses from an older query.
+      if (state.leadMatchesQuery === action.meta.arg) state.leadMatches = action.payload;
+    });
+    builder.addCase(searchConversationLeads.rejected, (state, action) => {
+      if (state.leadMatchesQuery === action.meta.arg) state.leadMatches = [];
+    });
     builder
       .addCase(fetchConversationsAccess.pending, (state) => {
         state.accessLoading = true;

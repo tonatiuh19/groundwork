@@ -19,7 +19,7 @@ import { CommissionActions } from "@/components/portal/AdminActions";
 import { useFormatters } from "@/lib/format";
 
 const STATUSES = ["pending", "approved", "paid", "void"] as const;
-const ROLES = ["direct", "closer", "parent"] as const;
+const ROLES = ["direct", "closer", "parent", "grandparent"] as const;
 
 export default function AdminCommissions() {
   const { t } = useTranslation();

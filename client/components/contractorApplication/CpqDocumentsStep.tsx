@@ -63,7 +63,10 @@ function DocRow({
   const live = docs.filter((d) => d.status !== "rejected");
   const done = live.length > 0;
   const rejected = docs.find((d) => d.status === "rejected");
-  const canUpload = cpqCanUpload(status, spec);
+  // A form Groundwork hasn't published yet (no blank PDF): shown as "Pending from Groundwork",
+  // no upload button, so applicants don't guess. Files already uploaded stay visible.
+  const awaitingForm = Boolean(spec.template) && !templateUrl;
+  const canUpload = cpqCanUpload(status, spec) && !(awaitingForm && !docs.length);
   const uploading = !!upload && !upload.error;
 
   const pick = (file: File | undefined) => {
@@ -92,6 +95,7 @@ function DocRow({
       className={cn(
         "cpq-doc",
         done && "is-done",
+        awaitingForm && !done && "is-pending",
         (rejected && !done) || requested ? "is-flagged" : null,
       )}
     >
@@ -102,9 +106,13 @@ function DocRow({
         <div className="cpq-doc-copy">
           <p className="cpq-doc-title">{t(`cpq.doc.${spec.key}`)}</p>
           <p className="cpq-doc-meta">
-            <span className={cn("cpq-req-chip", requirement === "core" && "is-core")}>
-              {t(requirement === "core" ? "cpq.docs.reqCore" : "cpq.docs.reqApproval")}
-            </span>
+            {awaitingForm ? (
+              <span className="cpq-req-chip is-pending">{t("cpq.docs.pendingGroundwork")}</span>
+            ) : (
+              <span className={cn("cpq-req-chip", requirement === "core" && "is-core")}>
+                {t(requirement === "core" ? "cpq.docs.reqCore" : "cpq.docs.reqApproval")}
+              </span>
+            )}
             {spec.multiple ? <span className="pf-muted">{t("cpq.docs.multiple")}</span> : null}
             {requested ? <span className="cpq-req-chip is-flag">{t("cpq.docs.requested")}</span> : null}
           </p>
@@ -112,8 +120,8 @@ function DocRow({
             <a className="text-link cpq-doc-template" href={templateUrl} target="_blank" rel="noreferrer">
               <Download size={13} aria-hidden /> {t("cpq.docs.downloadTemplate")}
             </a>
-          ) : spec.template ? (
-            <p className="pf-hint">{t("cpq.docs.templateComing")}</p>
+          ) : awaitingForm ? (
+            <p className="pf-hint">{t("cpq.docs.pendingHint")}</p>
           ) : null}
         </div>
       </div>

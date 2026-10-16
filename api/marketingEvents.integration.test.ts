@@ -234,6 +234,88 @@ describe.runIf(hasDb)("marketing events API (integration)", () => {
       .expect(200);
   });
 
+  it("QR scans count, attribute RSVPs, and forward past events; past tab + media", async () => {
+    const ev = await asCookie(superCookie)
+      .post("/api/admin/events")
+      .send(eventBody("qr", { capacity: 50 }))
+      .expect(201);
+    const eventId: number = ev.body.event.id;
+
+    const scan = await request(app).post(`/api/public/events/${prefix}qr/qr-scan`).expect(200);
+    expect(scan.body).toMatchObject({ ok: true, slug: `${prefix}qr`, register: true, event_id: eventId });
+
+    await rsvp(eventId, "qrguest", { source: "qr", phone: "5550107788" }).expect(201);
+    const adminView = await asCookie(superCookie).get(`/api/admin/events/${eventId}`).expect(200);
+    expect(adminView.body.event.qr_scan_count).toBe(1);
+    expect(adminView.body.event.qr_rsvp_count).toBe(1);
+    expect(adminView.body.event.qr_last_scanned_at).toBeTruthy();
+
+    // Past event: never live, shows in the past tab, scan forwards (never to itself with register).
+    const past = await asCookie(superCookie)
+      .post("/api/admin/events")
+      .send(
+        eventBody("past", {
+          starts_at: new Date(Date.now() - 3 * DAY).toISOString(),
+          registration_opens_at: new Date(Date.now() - 10 * DAY).toISOString(),
+        }),
+      )
+      .expect(201);
+    // Late registration_closes_at must not reopen RSVPs on a past event.
+    await asCookie(superCookie)
+      .patch(`/api/admin/events/${past.body.event.id}`)
+      .send({ registration_closes_at: new Date(Date.now() + DAY).toISOString() })
+      .expect(200);
+    await rsvp(past.body.event.id, "late", { phone: "5550107799" }).expect(409);
+    const pastScan = await request(app).post(`/api/public/events/${prefix}past/qr-scan`).expect(200);
+    if (pastScan.body.register) expect(pastScan.body.slug).not.toBe(`${prefix}past`);
+    else expect(pastScan.body.slug).toBe(`${prefix}past`);
+
+    const pastTab = await request(app).get("/api/public/events?tab=past").expect(200);
+    const listed = pastTab.body.events.find((e: { id: number }) => e.id === past.body.event.id);
+    expect(listed).toMatchObject({ is_past: true, media_count: 0 });
+    const upcoming = await request(app).get("/api/public/events?tab=upcoming").expect(200);
+    expect(upcoming.body.events.some((e: { id: number }) => e.id === past.body.event.id)).toBe(false);
+
+    // Media: admins only; embeds normalized and shown on the public detail.
+    await asCookie(contentCookie)
+      .post(`/api/admin/events/${past.body.event.id}/media`)
+      .send({ embed_url: "https://youtu.be/dQw4w9WgXcQ" })
+      .expect(403);
+    await asCookie(superCookie)
+      .post(`/api/admin/events/${past.body.event.id}/media`)
+      .send({ embed_url: "https://evil.example.com/x" })
+      .expect(400);
+    const added = await asCookie(superCookie)
+      .post(`/api/admin/events/${past.body.event.id}/media`)
+      .send({ embed_url: "https://youtu.be/dQw4w9WgXcQ", caption_en: "Recap" })
+      .expect(201);
+    const mediaId = added.body.media[0].id;
+
+    // Upcoming events never expose their gallery publicly.
+    await asCookie(superCookie)
+      .post(`/api/admin/events/${eventId}/media`)
+      .send({ embed_url: "https://youtu.be/dQw4w9WgXcQ" })
+      .expect(201);
+    const upcomingDetail = await request(app).get(`/api/public/events/${prefix}qr`).expect(200);
+    expect(upcomingDetail.body.event.media).toEqual([]);
+    expect(upcomingDetail.body.event.media_count).toBe(1);
+    await asCookie(superCookie)
+      .patch(`/api/admin/events/${past.body.event.id}/media/${mediaId}`)
+      .send({ is_highlight: true })
+      .expect(200);
+    const pub = await request(app).get(`/api/public/events/${prefix}past?lang=es`).expect(200);
+    expect(pub.body.event.is_past).toBe(true);
+    expect(pub.body.event.media[0]).toMatchObject({
+      kind: "embed",
+      embed_provider: "youtube",
+      is_highlight: true,
+      caption: "Recap",
+    });
+    await asCookie(superCookie)
+      .delete(`/api/admin/events/${past.body.event.id}/media/${mediaId}`)
+      .expect(200);
+  });
+
   it("RSVP without soft pull succeeds, then waitlists at capacity, with agents viewing attendees", async () => {
     const ev = await asCookie(contentCookie)
       .post("/api/admin/events")

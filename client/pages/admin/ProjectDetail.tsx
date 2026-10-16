@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import AppointmentsPanel from "@/components/admin/AppointmentsPanel";
+import { fetchLenders } from "@/store/slices/schedulerSlice";
 import { Link, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
@@ -64,6 +66,7 @@ export default function AdminProjectDetail() {
   const { data, loading, error } = useAppSelector((s) => s.adminPortal.projectDetail);
   const { saving, saveError } = useAppSelector((s) => s.adminPortal);
   const contractors = useAppSelector((s) => s.adminPortal.contractors.items);
+  const lenders = useAppSelector((s) => s.scheduler.lenders);
   const affiliates = useAppSelector((s) => s.adminPortal.affiliates.items);
   const assignees = useAppSelector((s) => s.adminPortal.assignees.items);
   const plans = useAppSelector((s) => s.adminPortal.plans.items);
@@ -83,6 +86,7 @@ export default function AdminProjectDetail() {
     void dispatch(fetchAdminAffiliates({ status: "active", limit: 100 }));
     void dispatch(fetchAdminAssignees());
     void dispatch(fetchAdminPlans());
+    void dispatch(fetchLenders());
   }, [dispatch, publicId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const d = data?.project.public_id === publicId ? data : null;
@@ -151,6 +155,7 @@ export default function AdminProjectDetail() {
                 loan_status: p.loan_status,
                 loan_lender_type: p.loan_lender_type,
                 loan_lender_name: p.loan_lender_name || "",
+                lender_id: p.lender_id ? String(p.lender_id) : "",
                 anchor_external_id: p.anchor_external_id || "",
                 notes: p.notes || "",
               }}
@@ -172,7 +177,10 @@ export default function AdminProjectDetail() {
                       property_zip: v.property_zip.trim() || null,
                       loan_status: v.loan_status,
                       loan_lender_type: v.loan_lender_type,
-                      loan_lender_name: v.loan_lender_name.trim() || null,
+                      // Directory pick wins (server syncs the name); free text otherwise.
+                      ...(v.lender_id
+                        ? { lender_id: Number(v.lender_id) }
+                        : { lender_id: null, loan_lender_name: v.loan_lender_name.trim() || null }),
                       anchor_external_id: v.anchor_external_id.trim() || null,
                       notes: v.notes.trim() || null,
                     },
@@ -238,6 +246,15 @@ export default function AdminProjectDetail() {
                 <div className="pf-form-grid">
                   <SelectField name="loan_status" labelKey="admin.loanStatus" options={enumOptions(t, "loan", LOAN_STATUSES)} disabled={!canWrite} />
                   <SelectField name="loan_lender_type" labelKey="admin.lenderType" options={enumOptions(t, "lenderType", LENDER_TYPES)} disabled={!canWrite} />
+                  <SelectField
+                    name="lender_id"
+                    labelKey="lenders.pick"
+                    disabled={!canWrite}
+                    options={[
+                      { value: "", label: t("lenders.notInList") },
+                      ...lenders.filter((l) => l.is_active || l.id === p.lender_id).map((l) => ({ value: String(l.id), label: l.company })),
+                    ]}
+                  />
                   <TextField name="loan_lender_name" labelKey="admin.lenderName" disabled={!canWrite} />
                   <TextField name="anchor_external_id" labelKey="admin.anchorId" disabled={!canWrite} />
                 </div>
@@ -272,6 +289,8 @@ export default function AdminProjectDetail() {
               </Form>
             </Formik>
           </section>
+
+          <AppointmentsPanel context={{ project_id: p.id, client_id: p.client_id ?? null, label: p.client_name || p.public_id }} />
 
           {canFinanceWrite ? (
             <section className="pf-section">

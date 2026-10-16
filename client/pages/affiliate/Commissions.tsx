@@ -7,6 +7,7 @@ import {
 } from "@/store/slices/affiliatePortalSlice";
 import { DataTable, ErrorNote, PageHeader, StatCard, StatusBadge } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
+import OnboardingBanner from "@/components/affiliate/OnboardingBanner";
 
 export default function AffiliateCommissions() {
   const { t } = useTranslation();
@@ -24,6 +25,7 @@ export default function AffiliateCommissions() {
   return (
     <div className="portal-page">
       <PageHeader titleKey="portalNav.commissions" leadKey="aff.commissionsLead" />
+      <OnboardingBanner />
       <ErrorNote error={error} />
       {s ? (
         <div className="pf-stats">

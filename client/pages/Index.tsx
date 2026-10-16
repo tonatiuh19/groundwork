@@ -1,3 +1,5 @@
+import EventQrCode from "@/components/events/EventQrCode";
+import { eventQrUrl } from "@/lib/eventQr";
 import { useEffect } from "react";
 import { ArrowRight, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -197,17 +199,7 @@ export default function Index() {
                   {t("event.cardLine2")}
                 </span>
               </div>
-              <div className="qr-placeholder" aria-label={t("event.qrAria")}>
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
+              <EventQrCode url={eventQrUrl(event.slug)} label={t("event.qrAria")} className="event-card-qr" />
               <p>
                 {t("event.scanLine1")}
                 <br />

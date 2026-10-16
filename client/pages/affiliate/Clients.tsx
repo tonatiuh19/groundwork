@@ -23,6 +23,7 @@ import {
   TextField,
 } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
+import DealStatusBadge from "@/components/portal/DealStatusBadge";
 
 export default function AffiliateClients() {
   const { t, i18n } = useTranslation();
@@ -98,7 +99,44 @@ export default function AffiliateClients() {
           {
             key: "status",
             headerKey: "pf.status",
-            render: (c) => <StatusBadge group="milestone" value={c.milestone} />,
+            render: (c) => (
+              <div className="gw-aff-status">
+                <StatusBadge group="milestone" value={c.milestone} />
+                <DealStatusBadge en={c.deal_status_en} es={c.deal_status_es} tone={c.deal_status_tone} />
+              </div>
+            ),
+          },
+          {
+            key: "updates",
+            headerKey: "deal.latestUpdate",
+            className: "pf-col-wide",
+            render: (c) => {
+              const ups = c.updates || [];
+              if (!ups.length) return <span className="pf-muted">—</span>;
+              const line = (u: (typeof ups)[number]) => {
+                const status = i18n.language?.startsWith("es") ? u.deal_status_label_es || u.deal_status_label_en : u.deal_status_label_en;
+                return [status, u.body].filter(Boolean).join(" — ");
+              };
+              return (
+                <div className="gw-aff-updates">
+                  <p>
+                    <span className="pf-muted">{fmt.date(ups[0].created_at)}</span> {line(ups[0])}
+                  </p>
+                  {ups.length > 1 ? (
+                    <details>
+                      <summary>{t("deal.olderUpdates", { count: ups.length - 1 })}</summary>
+                      <ul>
+                        {ups.slice(1).map((u) => (
+                          <li key={u.id}>
+                            <span className="pf-muted">{fmt.date(u.created_at)}</span> {line(u)}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </div>
+              );
+            },
           },
           {
             key: "commission",

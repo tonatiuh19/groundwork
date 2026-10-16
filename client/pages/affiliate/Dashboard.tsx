@@ -1,10 +1,12 @@
-import { useEffect, useMemo } from "react";
+import AffiliateLinkCard from "@/components/affiliate/AffiliateLinkCard";
+import { AffiliateAppointmentsCard } from "@/components/portal/PortalAppointments";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAffiliateOverview } from "@/store/slices/affiliatePortalSlice";
-import { CopyButton, ErrorNote, Loading, PageHeader, StatCard } from "@/components/portal/kit";
-import { buildAffiliateTrackingUrl } from "@/lib/referral";
+import { ErrorNote, Loading, PageHeader, StatCard } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
+import OnboardingBanner from "@/components/affiliate/OnboardingBanner";
 
 export default function Dashboard() {
   const { t } = useTranslation();
@@ -17,32 +19,17 @@ export default function Dashboard() {
   }, [dispatch]);
 
   const s = overview?.stats;
-  const trackingUrl = useMemo(
-    () =>
-      overview
-        ? buildAffiliateTrackingUrl({
-            referral_code: overview.affiliate.referral_code,
-            slug: overview.affiliate.slug,
-          })
-        : "",
-    [overview],
-  );
 
   return (
     <div className="portal-page">
       <PageHeader titleKey="portalDash.affiliateTitle" leadKey="portalDash.affiliateBody" />
+      <AffiliateAppointmentsCard />
+      <OnboardingBanner />
       <ErrorNote error={error} />
       {loading && !overview ? <Loading /> : null}
       {overview && s ? (
         <>
-          <section className="pf-card pf-link-card">
-            <div>
-              <p className="pf-kicker">{t("aff.yourLink")}</p>
-              <code className="pf-code">{trackingUrl}</code>
-              <p className="pf-muted">{t("aff.linkHint")}</p>
-            </div>
-            <CopyButton value={trackingUrl} />
-          </section>
+          <AffiliateLinkCard />
           <div className="pf-stats">
             <StatCard labelKey="aff.clicks" value={s.clicks} />
             <StatCard labelKey="aff.leads" value={s.leads} />

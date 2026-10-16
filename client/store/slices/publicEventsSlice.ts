@@ -1,6 +1,6 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import axios from "axios";
-import type { PublicEventView } from "@shared/api";
+import type { EventQrScanResponse, PublicEventView, PublicEventsListResponse } from "@shared/api";
 import { api, formatAxiosError } from "@/lib/api";
 import { logger } from "@/utils/logger";
 
@@ -50,7 +50,45 @@ export const fetchEventBySlug = createAsyncThunk<
   }
 });
 
+/** `/e/:slug` flyer scan: count it and learn where to land (never blocks — falls back to /events). */
+export const resolveEventQr = createAsyncThunk<EventQrScanResponse, string, { rejectValue: string }>(
+  "publicEvents/qrScan",
+  async (slug, { rejectWithValue }) => {
+    try {
+      const { data } = await api.post<EventQrScanResponse>(
+        `/public/events/${encodeURIComponent(slug)}/qr-scan`,
+      );
+      return data;
+    } catch (error) {
+      const message = failure(error);
+      logger.error("publicEvents", message);
+      return rejectWithValue(message);
+    }
+  },
+);
+
+export type EventsTab = "upcoming" | "past";
+
+/** `/events` list: published upcoming (soonest first) or past (newest first). */
+export const fetchEventsList = createAsyncThunk<
+  PublicEventView[],
+  { tab: EventsTab; lang: EventLang },
+  { rejectValue: string }
+>("publicEvents/list", async ({ tab, lang }, { rejectWithValue }) => {
+  try {
+    const { data } = await api.get<PublicEventsListResponse>("/public/events", {
+      params: { tab, lang },
+    });
+    return data.events;
+  } catch (error) {
+    const message = failure(error);
+    logger.error("publicEvents", message);
+    return rejectWithValue(message);
+  }
+});
+
 type PublicEventsState = {
+  list: Record<EventsTab, { events: PublicEventView[]; loading: boolean; loaded: boolean; error: string | null }>;
   live: { event: PublicEventView | null; loading: boolean; loaded: boolean; error: string | null };
   detail: {
     slug: string | null;
@@ -60,7 +98,10 @@ type PublicEventsState = {
   };
 };
 
+const emptyList = { events: [], loading: false, loaded: false, error: null };
+
 const initialState: PublicEventsState = {
+  list: { upcoming: emptyList, past: emptyList },
   live: { event: null, loading: false, loaded: false, error: null },
   detail: { slug: null, event: null, loading: false, error: null },
 };
@@ -74,6 +115,27 @@ const publicEventsSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    builder
+      .addCase(fetchEventsList.pending, (state, action) => {
+        const l = state.list[action.meta.arg.tab];
+        l.loading = true;
+        l.error = null;
+      })
+      .addCase(fetchEventsList.fulfilled, (state, action) => {
+        state.list[action.meta.arg.tab] = {
+          events: action.payload,
+          loading: false,
+          loaded: true,
+          error: null,
+        };
+      })
+      .addCase(fetchEventsList.rejected, (state, action) => {
+        const l = state.list[action.meta.arg.tab];
+        l.loading = false;
+        l.loaded = true;
+        l.error = action.payload || "errors.server";
+      });
+
     builder
       .addCase(fetchLiveEvent.pending, (state) => {
         state.live.loading = true;

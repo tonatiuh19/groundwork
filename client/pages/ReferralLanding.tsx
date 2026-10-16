@@ -19,9 +19,17 @@ const REDIRECT_LANDINGS: Record<string, string> = {
 };
 
 export default function ReferralLanding() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { code = "" } = useParams();
   const [searchParams] = useSearchParams();
+
+  // Affiliates share an English and a Spanish link (?lang=es); both are their clicks.
+  const langParam = searchParams.get("lang");
+  useEffect(() => {
+    if ((langParam === "es" || langParam === "en") && !i18n.language?.startsWith(langParam)) {
+      void i18n.changeLanguage(langParam);
+    }
+  }, [langParam, i18n]);
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
   const { data, loading, inactive, error } = useAppSelector((s) => s.enroll.affiliate);

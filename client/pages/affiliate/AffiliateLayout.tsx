@@ -6,15 +6,25 @@ import {
   Link2,
   UserCog,
   Network,
-} from "lucide-react";
+  FileSignature, LifeBuoy } from "lucide-react";
 import type { PortalNavItem } from "@/components/portal/PortalShell";
 import PortalShell from "@/components/portal/PortalShell";
+import AffiliateLinkButton from "@/components/affiliate/AffiliateLinkButton";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAffiliateOverview } from "@/store/slices/affiliatePortalSlice";
+import { fetchAffiliateBillingStatus } from "@/store/slices/affiliateOnboardingSlice";
+import AffiliateBillingGate from "@/components/affiliate/AffiliateBillingGate";
+import BillingNotice from "@/components/billing/BillingNotice";
 
 export default function AffiliateLayout() {
   const dispatch = useAppDispatch();
   const overview = useAppSelector((s) => s.affiliatePortal.overview);
+  const user = useAppSelector((s) => s.portalAuth.affiliate.user);
+  const { status: billing, locked } = useAppSelector((s) => s.affiliateOnboarding);
+
+  useEffect(() => {
+    if (user) void dispatch(fetchAffiliateBillingStatus());
+  }, [dispatch, user]);
 
   useEffect(() => {
     if (!overview) void dispatch(fetchAffiliateOverview());
@@ -47,6 +57,8 @@ export default function AffiliateLayout() {
         icon: Banknote,
       },
       { to: "/affiliate/link", labelKey: "portalNav.trackingLink", icon: Link2 },
+      { to: "/affiliate/agreement", labelKey: "portalNav.agreement", icon: FileSignature },
+      { to: "/affiliate/help", labelKey: "portalNav.help", icon: LifeBuoy },
       { to: "/affiliate/profile", labelKey: "portalNav.profile", icon: UserCog },
     );
     return items;
@@ -54,8 +66,13 @@ export default function AffiliateLayout() {
 
   return (
     <PortalShell
+      tabs={["/affiliate", "/affiliate/clients", "/affiliate/commissions", "/affiliate/link"]}
       actor="affiliate"
       loginPath="/affiliate/login"
+      headerAction={<AffiliateLinkButton />}
+      // Failed payment → billing page everywhere (payouts are held too); their public link keeps recording.
+      gate={user && locked ? <AffiliateBillingGate /> : undefined}
+      notice={<BillingNotice billing={billing} to="/affiliate/agreement" />}
       titleKey="portalNav.affiliateTitle"
       nav={nav}
     />

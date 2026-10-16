@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev-sandbox",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "NOTIFY_SANDBOX=true",
+        "npm",
+        "run",
+        "dev"
+      ],
+      "port": 8080,
+      "url": "https://localhost:8080"
+    },
+    {
+      "name": "dev-stripe",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "scripts/dev-stripe.sh"
+      ],
+      "port": 8080,
+      "url": "https://localhost:8080"
+    }
+  ]
+}

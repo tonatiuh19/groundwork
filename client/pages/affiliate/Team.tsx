@@ -121,7 +121,9 @@ export default function AffiliateTeam() {
                   <td data-label={t("pf.status")}>
                     {t(`accountStatus.${m.status}`, { defaultValue: m.status })}
                   </td>
-                  <td data-label={t("portalNav.myClients")}>{m.client_count}</td>
+                  <td data-label={t("portalNav.myClients")}>
+                    {m.client_count}
+                  </td>
                   <td data-label={t("portalNav.commissions")}>
                     {fmt.money(m.commission_cents)}
                   </td>
@@ -138,31 +140,37 @@ export default function AffiliateTeam() {
                         type="button"
                         className="pf-btn pf-btn--sm"
                         disabled={teamMutating}
-                        onClick={() => void dispatch(resendAffiliateSubInvite(m.id))}
+                        onClick={() =>
+                          void dispatch(resendAffiliateSubInvite(m.id))
+                        }
                       >
                         {t("aff.resendInvite")}
                       </button>
-                      <button
-                        type="button"
-                        className="pf-btn pf-btn--sm"
-                        disabled={teamMutating}
-                        onClick={() =>
-                          void dispatch(
-                            patchAffiliateSub({
-                              id: m.id,
-                              status: m.status === "active" ? "inactive" : "active",
-                            }),
-                          ).then((r) => {
-                            if (patchAffiliateSub.fulfilled.match(r)) {
-                              void dispatch(fetchAffiliateTeam());
-                            }
-                          })
-                        }
-                      >
-                        {m.status === "active"
-                          ? t("aff.deactivateSub")
-                          : t("aff.activateSub")}
-                      </button>
+                      {/* Pending subs wait for Groundwork's approval — no toggle until then. */}
+                      {m.status === "pending" ? null : (
+                        <button
+                          type="button"
+                          className="pf-btn pf-btn--sm"
+                          disabled={teamMutating}
+                          onClick={() =>
+                            void dispatch(
+                              patchAffiliateSub({
+                                id: m.id,
+                                status:
+                                  m.status === "active" ? "inactive" : "active",
+                              }),
+                            ).then((r) => {
+                              if (patchAffiliateSub.fulfilled.match(r)) {
+                                void dispatch(fetchAffiliateTeam());
+                              }
+                            })
+                          }
+                        >
+                          {m.status === "active"
+                            ? t("aff.deactivateSub")
+                            : t("aff.activateSub")}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -184,9 +192,9 @@ export default function AffiliateTeam() {
             email: "",
             phone: "",
             company: "",
-            preferred_language: (i18n.language?.startsWith("es") ? "es" : "en") as
-              | "en"
-              | "es",
+            preferred_language: (i18n.language?.startsWith("es")
+              ? "es"
+              : "en") as "en" | "es",
           }}
           validationSchema={schema}
           onSubmit={async (v, helpers) => {
@@ -245,7 +253,11 @@ export default function AffiliateTeam() {
               {detail.tracking_url ? (
                 <>
                   {" · "}
-                  <a href={detail.tracking_url} target="_blank" rel="noreferrer">
+                  <a
+                    href={detail.tracking_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     {t("portalNav.trackingLink")}
                   </a>
                 </>

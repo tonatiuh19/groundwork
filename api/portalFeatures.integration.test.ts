@@ -44,6 +44,23 @@ async function makeSession(actor: Actor, id: number): Promise<string> {
   return `gw_${actor}_sid=${token}`;
 }
 
+/** Agreement Section 2: payouts need a signed agreement + W-9 on file + an active plan (card on file). */
+async function markOnboarded(affiliateId: number): Promise<void> {
+  await db.execute(`UPDATE affiliates SET billing_status = 'trialing' WHERE id = ?`, [affiliateId]);
+  await db.execute(
+    `INSERT INTO affiliate_agreements
+       (affiliate_id, template_version, lang, legal_name, address, email, subscription_price_cents, body_sha256, signature_image)
+     VALUES (?, 1, 'en', 'Test Affiliate', '1 Test Way, Irvine, CA', 'fixture@example.com', 0, REPEAT('a', 64), 'data:image/png;base64,AA==')`,
+    [affiliateId],
+  );
+  await db.execute(
+    `INSERT INTO affiliate_w9s
+       (affiliate_id, legal_name, tax_classification, tin_type, tin_last4, address, city_state_zip, pdf_blob_pathname)
+     VALUES (?, 'Test Affiliate', 'individual', 'ssn', '0000', '1 Test Way', 'Irvine, CA 92618', 'affiliates/test/w9.pdf')`,
+    [affiliateId],
+  );
+}
+
 async function insertId(sql: string, params: any[]): Promise<number> {
   const [r] = await db.execute(sql, params);
   return Number((r as { insertId: number }).insertId);
@@ -124,6 +141,8 @@ describe("portal feature helpers (pure)", () => {
       direct_cents_per_sqft: 1000,
       closer_cents_per_sqft: 700,
       parent_cents_per_sqft: 300,
+      parent_shared_cents_per_sqft: 150,
+      grandparent_cents_per_sqft: 150,
     };
     expect(
       resolveAffiliateCommissionSplit({
@@ -177,6 +196,42 @@ describe("portal feature helpers (pure)", () => {
     expect(ov.closer_cents + ov.parent_cents).toBe(100000);
     expect(ov.parent_cents).toBe(30000);
     expect(ov.closer_cents).toBe(70000);
+  });
+
+  it("two-level plan matches Affiliate Agreement Section 5 (830 sq ft model)", () => {
+    const rates = {
+      direct_cents_per_sqft: 1000,
+      closer_cents_per_sqft: 700,
+      parent_cents_per_sqft: 300,
+      parent_shared_cents_per_sqft: 150,
+      grandparent_cents_per_sqft: 150,
+    };
+    const base = { override_cents: null, sq_ft: 830, rates };
+    // A: no sponsor → $8,300
+    expect(resolveAffiliateCommissionSplit({ ...base, has_parent: false, parent_active: false })).toMatchObject({
+      total_cents: 830000, closer_cents: 830000, grandparent_cents: 0,
+    });
+    // B: sponsor only → $5,810 + $2,490
+    expect(resolveAffiliateCommissionSplit({ ...base, has_parent: true, parent_active: true })).toMatchObject({
+      closer_cents: 581000, parent_cents: 249000, grandparent_cents: 0, total_cents: 830000,
+    });
+    // C: sponsor + senior → $5,810 + $1,245 + $1,245
+    expect(
+      resolveAffiliateCommissionSplit({ ...base, has_parent: true, parent_active: true, has_grandparent: true, grandparent_active: true }),
+    ).toMatchObject({ closer_cents: 581000, parent_cents: 124500, grandparent_cents: 124500, total_cents: 830000 });
+    // Section 13: an ended senior's share is not passed to anyone else.
+    expect(
+      resolveAffiliateCommissionSplit({ ...base, has_parent: true, parent_active: true, has_grandparent: true, grandparent_active: false }),
+    ).toMatchObject({ closer_cents: 581000, parent_cents: 124500, grandparent_cents: 0, total_cents: 705500 });
+    // 445 sq ft: Senior Sponsor $667.50
+    expect(
+      resolveAffiliateCommissionSplit({ ...base, sq_ft: 445, has_parent: true, parent_active: true, has_grandparent: true, grandparent_active: true }).grandparent_cents,
+    ).toBe(66750);
+    // Override splits proportionally across three and sums exactly.
+    const ov = resolveAffiliateCommissionSplit({
+      ...base, override_cents: 100001, has_parent: true, parent_active: true, has_grandparent: true, grandparent_active: true,
+    });
+    expect(ov.closer_cents + ov.parent_cents + ov.grandparent_cents).toBe(100001);
   });
 
   it("adds payout days in UTC", () => {
@@ -364,9 +419,10 @@ describe("portal features (integration)", () => {
       .send(body);
     expect(res.status).toBe(201);
     const sent = __testGetEmailDryRuns();
-    expect(
-      sent.some((m) => m.to === body.email && /recibida/i.test(m.subject)),
-    ).toBe(true);
+    // Welcome (ES): presentation + secure onboarding link, sent right away while pending.
+    const welcome = sent.find((m) => m.to === body.email && /bienvenido/i.test(m.subject));
+    expect(welcome).toBeTruthy();
+    expect(String(welcome!.html)).toMatch(/\/affiliate\/welcome\/[a-f0-9]{64}/);
     expect(sent.length).toBeGreaterThan(1); // + staff alerts
 
     expect(
@@ -1118,6 +1174,15 @@ describe("portal features (integration)", () => {
           .send({ status: "approved" })
       ).status,
     ).toBe(200);
+    // Payout hold until the affiliate's agreement + W-9 are on file.
+    expect(
+      (
+        await as(financeCookie)
+          .patch(`/api/admin/commissions/${commission.id}`)
+          .send({ status: "paid" })
+      ).body.error,
+    ).toBe("errors.affiliateOnboardingIncomplete");
+    await markOnboarded(affId);
     __testClearEmailDryRuns();
     expect(
       (
@@ -1160,7 +1225,7 @@ describe("portal features (integration)", () => {
     );
     const parentCookie = await makeSession("affiliate", parentId);
 
-    // Top-level can invite; invite activates immediately.
+    // Top-level can invite; the sub starts pending until Groundwork approves.
     const invite = await as(parentCookie)
       .post("/api/affiliate/team")
       .send({
@@ -1177,9 +1242,10 @@ describe("portal features (integration)", () => {
       `SELECT status, parent_affiliate_id, preferred_language FROM affiliates WHERE id = ?`,
       [subId],
     )) as any;
-    expect(subRow.status).toBe("active");
+    expect(subRow.status).toBe("pending");
     expect(Number(subRow.parent_affiliate_id)).toBe(parentId);
     expect(subRow.preferred_language).toBe("es");
+    expect((await as(superCookie).patch(`/api/admin/affiliates/${subId}`).send({ status: "active" })).status).toBe(200);
 
     // Self-parent corrupt pointer is ignored → treated as direct (no parent split).
     await db.execute(
@@ -1211,19 +1277,23 @@ describe("portal features (integration)", () => {
     );
 
     const subCookie = await makeSession("affiliate", subId);
-    expect((await as(subCookie).get("/api/affiliate/team")).status).toBe(403);
-    expect(
-      (
-        await as(subCookie)
-          .post("/api/affiliate/team")
-          .send({
-            first_name: "Nope",
-            last_name: "Nest",
-            email: em("nested"),
-            phone: ph("0101"),
-          })
-      ).body.error,
-    ).toBe("errors.subCannotInvite");
+    // Agreement §9: subs may recruit too; their recruit's Senior Sponsor is the top parent.
+    expect((await as(subCookie).get("/api/affiliate/team")).status).toBe(200);
+    const nested = await as(subCookie)
+      .post("/api/affiliate/team")
+      .send({
+        first_name: "Nia",
+        last_name: "Nested",
+        email: em("nested"),
+        phone: ph("0101"),
+      });
+    expect(nested.status).toBe(201);
+    const nestedId = Number(nested.body.affiliate_id);
+    const [[nestedRow]] = (await db.query(`SELECT parent_affiliate_id FROM affiliates WHERE id = ?`, [nestedId])) as any;
+    expect(Number(nestedRow.parent_affiliate_id)).toBe(subId);
+    // Admin sponsor edits refuse cycles (top parent cannot report to its own recruit).
+    const cycle = await as(superCookie).patch(`/api/admin/affiliates/${parentId}`).send({ parent_affiliate_id: nestedId });
+    expect(cycle.body.error).toBe("errors.sponsorCycle");
 
     // Sub registers a client → project snapshots closer + parent.
     const reg = await as(subCookie)
@@ -1390,6 +1460,8 @@ describe("portal features (integration)", () => {
       closerAfter.amount_cents + parentAfter.amount_cents,
     );
 
+    await markOnboarded(subId);
+    await markOnboarded(parentId);
     // Partial pay: pay closer → parent still payable; amount edits locked; paid_at only when both paid.
     const closerId = closerAfter.id;
     const parentIdRow = parentAfter.id;
@@ -1440,7 +1512,8 @@ describe("portal features (integration)", () => {
       `/api/admin/projects/${splitPublicId}`,
     );
     expect(allPaid.body.project.commission_paid_at).toBeTruthy();
-  });
+    // ~17 multi-query requests against the shared remote TiDB (~55s locally).
+  }, 120_000);
 
   it("contractor draws: budget guard, submit, admin review", async () => {
     // other contractors cannot reach the project

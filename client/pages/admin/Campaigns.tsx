@@ -17,8 +17,11 @@ import {
   BusyButton,
   ErrorNote,
   HeaderAction,
+  Modal,
   PageHeader,
 } from "@/components/portal/kit";
+import { fetchAdminEvents } from "@/store/slices/adminPortalSlice";
+import { useFormatters } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
 export default function AdminCampaigns() {
@@ -27,24 +30,37 @@ export default function AdminCampaigns() {
   const { items, active, preview, loading, saving, sending, error, lastStats } =
     useAppSelector((s) => s.campaigns);
   const [confirmLive, setConfirmLive] = useState(false);
+  const fmt = useFormatters();
 
   useEffect(() => {
     dispatch(clearCampaignError());
     void dispatch(fetchCampaigns());
   }, [dispatch]);
 
-  const createFontana = async () => {
+  const events = useAppSelector((s) => s.adminPortal.events);
+  const [pickEvent, setPickEvent] = useState(false);
+  const [eventId, setEventId] = useState("");
+
+  useEffect(() => {
+    if (pickEvent) void dispatch(fetchAdminEvents({ limit: 100 }));
+  }, [dispatch, pickEvent]);
+
+  /** Lead follow-up for any event: audience = that event's RSVPs, templates use its title/city. */
+  const createEventFollowup = async () => {
+    const ev = events.items.find((e) => String(e.id) === eventId);
+    if (!ev) return;
     const r = await dispatch(
       createCampaign({
-        name: "Fontana Discovery Night — lead follow-up",
+        name: t("admin.campaignsEventName", { title: ev.title_en }),
         audience_kind: "leads",
-        // Server resolves fontana-oct-6 → event_id when preset is fontana_followup.
-        audience_filter: {},
+        audience_filter: { event_id: ev.id },
         channels: { email: true, sms: false },
-        preset: "fontana_followup",
+        preset: "event_followup",
       }),
     );
     if (createCampaign.fulfilled.match(r)) {
+      setPickEvent(false);
+      setEventId("");
       setConfirmLive(false);
       void dispatch(previewCampaign({ id: r.payload.id }));
     }
@@ -58,13 +74,43 @@ export default function AdminCampaigns() {
         actions={
           <HeaderAction
             icon={Plus}
-            labelKey="admin.campaignsCreateFontana"
-            onClick={() => void createFontana()}
+            labelKey="admin.campaignsCreateEvent"
+            onClick={() => setPickEvent(true)}
             disabled={saving}
           />
         }
       />
       <ErrorNote error={error} />
+
+      <Modal open={pickEvent} titleKey="admin.campaignsPickEventTitle" onClose={() => setPickEvent(false)}>
+        <div className="pf-form">
+          <p className="pf-muted">{t("admin.campaignsPickEventHelp")}</p>
+          <label className="pf-field">
+            <span>{t("admin.campaignsPickEvent")}</span>
+            <select value={eventId} onChange={(e) => setEventId(e.target.value)}>
+              <option value="">{events.loading ? t("pf.loading") : t("admin.campaignsPickEventPlaceholder")}</option>
+              {events.items.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.title_en} · {e.city} · {fmt.date(e.starts_at)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="pf-actions">
+            <button type="button" className="pf-btn" onClick={() => setPickEvent(false)}>
+              {t("pf.cancel")}
+            </button>
+            <BusyButton
+              tone="gold"
+              className="pf-submit"
+              label={t("admin.campaignsCreateEvent")}
+              busy={saving}
+              disabled={!eventId}
+              onClick={() => void createEventFollowup()}
+            />
+          </div>
+        </div>
+      </Modal>
 
       <div className="gw-campaigns-layout">
         <section className="pf-card gw-campaigns-list">

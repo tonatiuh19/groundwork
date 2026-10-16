@@ -249,9 +249,30 @@ paths:
           description: Rate limited
         "500":
           description: Server error
+  /api/public/events:
+    get:
+      summary: Published events list (upcoming or past)
+      tags: [public-events]
+      description: "No auth. tab=upcoming (default; starts_at ASC) or tab=past (starts_at DESC). Past = the Pacific calendar day of ends_at (or starts_at) is over. Each PublicEventView includes is_past, cover_url (media cover → first photo → image_url) and media_count."
+      parameters:
+        - { name: tab, in: query, required: false, schema: { type: string, enum: [upcoming, past] } }
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "{ ok, tab, events: PublicEventView[] }" }
+        "500": { description: errors.server }
+  /api/public/events/{slug}/qr-scan:
+    post:
+      summary: Count a flyer QR scan and resolve its landing
+      tags: [public-events]
+      description: "No auth (rate limited). Printed QR codes encode /e/<slug>; the SPA calls this, which increments marketing_events.qr_scan_count for a published event. Returns { ok, slug, register, event_id }: the scanned event while registration is open; once it is over/closed, the next live event (else the scanned slug with register=false for highlights). Unknown/unpublished slugs return the live event or slug=null (→ /events). RSVPs submitted after a scan use source='qr'."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: EventQrScanResponse }
+        "429": { description: errors.tooMany }
   /api/public/events/live:
     get:
-      summary: Live marketing event for the homepage (or null)
+      summary: Live marketing event for the homepage (or null; never a past event)
       tags: [public-events]
       description: "No auth. Returns the featured published event with open registration, else the next published event with open registration by starts_at; `event` is null when none (homepage falls back to the standard form). Bilingual fields are resolved for `lang`."
       parameters:
@@ -686,13 +707,13 @@ paths:
         "401": { description: "Not signed in" }
   /api/affiliate/team:
     get:
-      summary: "List sub-affiliates for this top-level affiliate"
+      summary: "List sub-affiliates recruited by this affiliate"
       tags: [portal-affiliate]
-      description: "Requires gw_affiliate_sid. Sub-affiliates receive errors.subCannotInvite / 403."
+      description: "Requires gw_affiliate_sid. Any active affiliate may recruit (Agreement §9); pay stops at the Senior Sponsor."
       responses:
         "200": { description: "{ ok, team[] }" }
         "401": { description: "Not signed in" }
-        "403": { description: "errors.subCannotInvite or inactive" }
+        "403": { description: "errors.forbidden (inactive affiliate)" }
     post:
       summary: "Invite a sub-affiliate (activates immediately with welcome email)"
       tags: [portal-affiliate]
@@ -713,12 +734,13 @@ paths:
       responses:
         "201": { description: "{ ok, affiliate_id }" }
         "401": { description: "Not signed in" }
-        "403": { description: "errors.subCannotInvite" }
+        "403": { description: "errors.forbidden (inactive affiliate)" }
         "409": { description: "errors.affiliateExists" }
   /api/affiliate/team/{id}:
     patch:
-      summary: "Activate or deactivate an owned sub-affiliate"
+      summary: "Pause or resume an owned, already-approved sub-affiliate"
       tags: [portal-affiliate]
+      description: "Sub-affiliates start pending; only Groundwork approves them (409 errors.affiliatePendingApproval)."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -732,6 +754,7 @@ paths:
       responses:
         "200": { description: "OK" }
         "403": { description: "Not owner / sub cannot manage team" }
+        "409": { description: "errors.affiliatePendingApproval" }
   /api/affiliate/team/{id}/resend:
     post:
       summary: "Resend sub-affiliate welcome email"
@@ -805,7 +828,7 @@ paths:
     get:
       summary: "Clients registered by or attributed to this affiliate (milestone only; no loan or money fields)"
       tags: [portal-affiliate]
-      description: "Requires the gw_affiliate_sid session cookie."
+      description: "Requires the gw_affiliate_sid session cookie. Each row includes deal_status_en/es/tone and `updates` (up to 5 updates staff shared with affiliates; internal notes are never returned)."
       responses:
         "200": { description: "OK" }
         "401": { description: "Not signed in" }
@@ -1129,7 +1152,7 @@ paths:
     post:
       summary: "Create a draft campaign"
       tags: [portal-admin]
-      description: "Body: name, audience_kind (leads|affiliates|contractors), audience_filter, channels, optional preset=fontana_followup (seeds bilingual CTA opener + reply_1..4; when event_id omitted, resolves marketing event slug fontana-oct-6)."
+      description: "Body: name, audience_kind (leads|affiliates|contractors), audience_filter, channels, optional preset=event_followup (requires audience_filter.event_id; seeds bilingual CTA opener + reply_1..4 using that event title/city). Legacy preset=fontana_followup still accepted (when event_id omitted, resolves marketing event slug fontana-oct-6)."
       responses:
         "201": { description: "Created { campaign }" }
         "400": { description: "validation.invalidField" }
@@ -1343,6 +1366,67 @@ paths:
         "409": { description: errors.invalidTransition }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/events/{id}/media:
+    get:
+      summary: "Event photos / videos / reel embeds (admin)"
+      tags: [portal-admin]
+      description: "Requires `events` or `leads`. { ok, media: AdminEventMedia[] } (highlight reel first, then sort_order)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "404": { description: errors.eventNotFound }
+    post:
+      summary: "Register an uploaded file or add a reel link"
+      tags: [portal-admin]
+      description: "Requires `approvals` (super_admin, admin). Body either { pathname, caption_en?, caption_es? } after a direct Blob upload (bytes are sniffed: JPG/PNG/WebP photo, MP4/MOV/WebM video; mismatches are deleted) or { embed_url, caption_en?, caption_es? } for Instagram (p/reel), YouTube (watch/youtu.be/shorts) or TikTok video links, normalized to embed URLs. Max 200 items per event. 201 { ok, media }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: Created }
+        "400": { description: "validation.eventMediaFile | validation.embedUrl" }
+        "409": { description: errors.documentLimit }
+        "503": { description: errors.storageNotConfigured }
+  /api/admin/events/{id}/media/upload-token:
+    post:
+      summary: "Mint a public Blob client token for one event media upload"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { content_type, size_bytes }. Photos ≤ 15 MB (image/jpeg|png|webp), videos ≤ 500 MB (video/mp4|quicktime|webm). Returns { ok, client_token, pathname } (pathname under events/{id}/, 30-minute token)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "400": { description: "validation.eventMediaFile | validation.documentTooLarge" }
+  /api/admin/events/{id}/media/reorder:
+    post:
+      summary: "Reorder event media"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { ids: number[] } in display order. Returns { ok, media }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+  /api/admin/events/{id}/media/{mediaId}:
+    patch:
+      summary: "Edit captions / cover / highlight reel"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body any of { caption_en, caption_es, is_cover (photos only; one per event), is_highlight (videos/embeds only; one per event) }. Returns { ok, media }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: mediaId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "404": { description: errors.notFound }
+    delete:
+      summary: "Delete event media (and its Blob file)"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Returns { ok, media }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: mediaId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "404": { description: errors.notFound }
   /api/admin/events/{id}/attendees:
     get:
       summary: "RSVPs (leads) for an event"
@@ -1360,9 +1444,174 @@ paths:
         "404": { description: errors.eventNotFound }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/affiliate/onboarding:
+    get:
+      summary: "Affiliate portal: agreement + W-9 status, published template text (lang), sponsor names"
+      tags: [portal-affiliate]
+      parameters:
+        - { name: lang, in: query, required: false, schema: { type: string, enum: [en, es] } }
+      responses:
+        "200": { description: "AffiliateOnboardingResponse" }
+        "401": { description: "Not signed in (pending affiliates cannot sign in)" }
+  /api/affiliate/onboarding/agreement:
+    post:
+      summary: "E-sign the Affiliate Agreement"
+      tags: [portal-affiliate]
+      description: "Body AffiliateAgreementSignBody { version, lang, legal_name, business_name?, title?, address, phone?, signature_image (PNG data URL), consent:true }. Requires an active affiliate with a staff-set subscription price. Spanish signing also signs the controlling English text. Stores a signed PDF (text + signature page + IP/UA/SHA-256 record) in the private Blob vault; notifies staff (affiliate_onboarding). 409 errors.agreementPricePending | errors.agreementAlreadySigned | errors.agreementVersionChanged."
+      responses:
+        "201": { description: "AffiliateOnboardingResponse" }
+        "400": { description: "validation.signerNameRequired | validation.addressRequired | validation.signatureRequired | validation.esignConsentRequired" }
+        "409": { description: "See description" }
+  /api/affiliate/onboarding/w9:
+    post:
+      summary: "Submit the W-9 online (fills + signs the official IRS form)"
+      tags: [portal-affiliate]
+      description: "Body AffiliateW9Body. Requires a signed agreement. SSN/EIN is validated, written only into the private PDF (Rev. March 2024 form, flattened, signed and dated); the database keeps tin_type + last 4. Resubmission allowed after a rejection."
+      responses:
+        "201": { description: "AffiliateOnboardingResponse" }
+        "400": { description: "validation.w9Tin | validation.w9Classification | validation.w9LlcClass | validation.w9CertifyRequired | validation.signatureRequired" }
+        "409": { description: "errors.agreementRequiredFirst | errors.w9AlreadySubmitted" }
+  /api/affiliate/onboarding/agreement/pdf:
+    get:
+      summary: "Own signed agreement PDF (302 to a 5-minute presigned private URL)"
+      tags: [portal-affiliate]
+      responses:
+        "302": { description: Redirect }
+        "404": { description: errors.notFound }
+  /api/affiliate/onboarding/w9/pdf:
+    get:
+      summary: "Own W-9 PDF (302 to a 5-minute presigned private URL)"
+      tags: [portal-affiliate]
+      responses:
+        "302": { description: Redirect }
+        "404": { description: errors.notFound }
+  /api/admin/affiliates/{id}/onboarding:
+    get:
+      summary: "Agreement + W-9 history and payout readiness for an affiliate"
+      tags: [portal-admin]
+      description: "Requires people.read. W-9 rows expose only tin_type + tin_last4."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: AdminAffiliateOnboarding }
+  /api/admin/affiliates/{id}/subscription-price:
+    patch:
+      summary: "Set the monthly platform price printed in the agreement (Section 3)"
+      tags: [portal-admin]
+      description: "Requires approvals. Body { subscription_price_cents: integer | null }. The first price set on an active affiliate emails them that the agreement is ready. 409 errors.agreementAlreadySigned once signed (void to change)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, state, emailed }" }
+        "409": { description: errors.agreementAlreadySigned }
+  /api/admin/affiliates/{id}/agreements/{agreementId}/pdf:
+    get:
+      summary: "Signed agreement PDF (302 presigned)"
+      tags: [portal-admin]
+      description: "Requires people.read."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: agreementId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "302": { description: Redirect }
+  /api/admin/affiliates/{id}/agreements/{agreementId}/void:
+    post:
+      summary: "Void a signed agreement (keeps the PDF; payouts go back on hold until re-signed)"
+      tags: [portal-admin]
+      description: "Requires approvals. Body { reason } (5+ chars)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: agreementId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, state }" }
+  /api/admin/affiliates/{id}/w9s/{w9Id}/pdf:
+    get:
+      summary: "W-9 PDF with full TIN (302 presigned) — finance only"
+      tags: [portal-admin]
+      description: "Requires finance.read."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: w9Id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "302": { description: Redirect }
+        "403": { description: errors.forbidden }
+  /api/admin/affiliates/{id}/w9s/{w9Id}/review:
+    post:
+      summary: "Accept or reject a W-9"
+      tags: [portal-admin]
+      description: "Requires finance.write. Body { status: accepted | rejected, note } (note required to reject; emailed to the affiliate, who can resubmit)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: w9Id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, state }" }
+  /api/admin/affiliate-agreement/template:
+    get:
+      summary: "Latest published Affiliate Agreement template (EN/ES) + signed count"
+      tags: [portal-admin]
+      description: "Requires people.read. Seeds v1 from the bundled 2026-10-09 drafts on first use."
+      responses:
+        "200": { description: AffiliateAgreementTemplateResponse }
+    post:
+      summary: "Publish a new template version"
+      tags: [portal-admin]
+      description: "Requires settings. Body { body_en, body_es, notes? }. Only effective_date / affiliate_party / subscription_price placeholders are allowed. Signed agreements keep the text they signed."
+      responses:
+        "201": { description: AffiliateAgreementTemplateResponse }
+        "400": { description: "validation.invalidField | validation.unknownPlaceholder" }
+  /api/admin/deal-statuses:
+    get:
+      summary: Deal statuses (editable list; separate from portal account status)
+      tags: [portal-admin]
+      description: "Requires people.read. { ok, statuses: DealStatus[] }"
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Add a deal status
+      tags: [portal-admin]
+      description: "Requires settings. Body { label_en, label_es?, tone (neutral|warn|bad|good), sort_order? }."
+      responses:
+        "201": { description: "{ ok, statuses }" }
+  /api/admin/deal-statuses/{id}:
+    patch:
+      summary: Rename / recolor / reorder / (de)activate a deal status
+      tags: [portal-admin]
+      description: "Requires settings. Deactivate instead of delete (history keeps labels)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, statuses }" }
+        "404": { description: errors.notFound }
+  /api/admin/clients/{id}/updates:
+    get:
+      summary: Client updates feed (internal notes, shared notes, status changes) + referring affiliate
+      tags: [portal-admin]
+      description: "Requires people.read."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, updates: ClientUpdate[], affiliate }" }
+    post:
+      summary: Add a client update (internal, or shared with the referring affiliate)
+      tags: [portal-admin]
+      description: "Requires people.write. Body { body, share_with_affiliate }. Shared → affiliate portal feed + short text from the primary line + email with the full note."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok, updates }" }
+  /api/admin/clients/{id}/deal-status:
+    patch:
+      summary: Set a client's deal status (Credit repair, Not enough equity, …)
+      tags: [portal-admin]
+      description: "Requires people.write. Body { deal_status_id | null, note?, notify_affiliate (default true) }. Logs a feed entry; notifies the referring affiliate (text + email + portal) unless notify_affiliate=false."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, updates }" }
+        "400": { description: errors.invalidReference }
   /api/admin/leads:
     get:
-      summary: "List leads (query: status, q, mode, event_id, event_registration_status, limit, offset) — returns total"
+      summary: "List leads (query: view=active|converted|all [default all], status, q, mode, event_id, event_registration_status, limit, offset) — returns total; each lead includes last_sms / last_call (LeadTouch, matched by phone last-10) or null"
       tags: [portal-admin]
       description: "Requires gw_admin_sid and permission `leads`. Each lead includes event_id, event_registration_status and event_title (English title via LEFT JOIN marketing_events)."
       parameters:
@@ -1475,7 +1724,7 @@ paths:
     patch:
       summary: "Update affiliate (approve = status active; sends welcome email)"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `approvals`."
+      description: "Requires gw_admin_sid and permission `approvals`. Editable: first_name, last_name, email (sign-in identity), preferred_language, phone, company, slug, status, notes. An email change notifies the old and new address, updates the billing customer and is audited (people_dedupe_log action=email_change); duplicates across roles → 409. Also accepts parent_affiliate_id (sponsor, Agreement §4; null clears) — 400 errors.sponsorCycle when it is this affiliate or one of its recruits; applies to new projects only."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -1638,7 +1887,7 @@ paths:
     patch:
       summary: "Update client"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `people.write`. Setting status from pending → prospect also requires `approvals` and issues a portal invite email."
+      description: "Requires gw_admin_sid and permission `people.write`. Setting status from pending → prospect also requires `approvals` and issues a portal invite email. An email change (sign-in identity) notifies the old and new address and is audited (people_dedupe_log action=email_change)."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -1933,13 +2182,13 @@ paths:
     post:
       summary: "E-sign and submit the application"
       tags: [portal-public]
-      description: "Body { signer_name, signer_title, signer_email, signer_phone, signature_image (PNG data URL), certify: true, lang }. Requires every required answer and every applicable core document. Records IP, user agent, timestamp, certification version + SHA-256 of the certified text. Emails the contractor and notifies staff (`contractor_application_submitted`)."
+      description: "Body { signer_name, signer_title, signer_email, signer_phone, signature_image (PNG data URL), certify: true, lang }. Requires every required answer, every applicable core document and a saved membership card (unless waived / billing not configured). Records IP, user agent, timestamp, certification version + SHA-256 of the certified text. Emails the contractor and notifies staff (`contractor_application_submitted`)."
       parameters:
         - { name: token, in: path, required: true, schema: { type: string } }
       responses:
         "200": { description: "{ ok, status: submitted, missing_docs[] (approval-level docs still owed) }" }
         "400": { description: "validation.applicationIncomplete { missing_fields } | validation.applicationDocsMissing { missing_docs } | validation.signatureRequired | validation.certifyRequired" }
-        "409": { description: "errors.applicationLocked" }
+        "409": { description: "errors.applicationLocked | errors.cardRequiredToSubmit" }
   /api/contractor/application:
     get:
       summary: "Signed-in contractor's prequalification summary (portal banner)"
@@ -2104,6 +2353,652 @@ paths:
       description: "Requires `people.read`. Groups leads / clients / affiliates / contractors sharing an email or last-10-digit phone into clusters (kind same_role | cross_role | lead_of_person | repeat_leads) with linked-row counts and delete blockers. Clusters marked \"not duplicates\" are hidden until a new member appears."
       responses:
         "200": { description: "{ ok, clusters[], total }" }
+  /api/admin/clients/{id}/revert-preview:
+    get:
+      summary: "Preview \"Move back to Leads\" for a client (undo a conversion)"
+      tags: [portal-admin]
+      description: "Requires `approvals` (super_admin, admin). Returns the plan: origin (lead | contact | unknown | new_lead), the lead(s) that would return to Active, the CRM contact / Conversations unknown contact(s), counts (conversations moved, projects removed, notes copied, unused invites revoked) and blockers (portal_used, projects_in_progress, contractor_assigned, commissions, missing_contact_info). Changes nothing."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, dry_run: true, plan, result: null }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/clients/{id}/revert-to-lead:
+    post:
+      summary: "Move a client back to Leads (undo a conversion)"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { lead_status?: new|contacted|qualified|closed (default: keep; new leads default to contacted), reason?, dry_run? }. In one transaction: threads move off the client (to the CRM contact, or each line's open unknown contact), lead(s) are un-linked (or a new lead is created for direct clients), client notes + deal-status history are appended to the lead / contact notes (or an internal note on the thread), empty projects and unused portal invites are removed, the client is deleted, and a full snapshot is written to people_dedupe_log (action=revert). Staff get a \"Conversion undone\" notice (lead_converted prefs); the homeowner and affiliate are not messaged."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, dry_run, plan, result: { lead_id, contact_id, unknown_contact_id } | null }" }
+        "400": { description: "validation.invalidField (lead_status)" }
+        "404": { description: "errors.notFound" }
+        "409": { description: "errors.clientRevertBlocked { blockers[], plan }" }
+  /api/affiliate/onboarding/billing:
+    get:
+      summary: "Affiliate billing status (card on file, free period, next charge)"
+      tags: [portal-affiliate]
+      description: "Affiliate session or the secure welcome link (header `x-onboarding-token`). Returns { billing: { configured, status: none|trialing|active|past_due|canceled|incomplete, price_cents, trial_days, trial_ends_at, current_period_end, card: { brand, last4, exp } | null } }."
+      responses:
+        "200": { description: "{ ok, billing }" }
+        "401": { description: "errors.unauthorized" }
+  /api/affiliate/onboarding/billing/setup:
+    post:
+      summary: "Start saving a card (one-time setup secret for the card form)"
+      tags: [portal-affiliate]
+      description: "Affiliate session or welcome link. Requires a signed agreement. Creates the billing customer once and a card setup intent."
+      responses:
+        "200": { description: "{ ok, client_secret }" }
+        "409": { description: "errors.agreementRequiredFirst" }
+        "503": { description: "errors.billingNotConfigured" }
+  /api/affiliate/onboarding/billing/activate:
+    post:
+      summary: "Confirm the saved card and start (or update) the monthly plan"
+      tags: [portal-affiliate]
+      description: "Body { setup_intent_id }. The setup intent must belong to this affiliate and be succeeded. Sets the card as default. The plan (and its free period, setting affiliate_trial_days, default 90) starts only once the affiliate is approved (status active) — a pending affiliate's card is saved and the plan starts on approval. Existing plans just switch card."
+      responses:
+        "200": { description: "{ ok, billing }" }
+        "400": { description: "validation.invalidField" }
+        "409": { description: "errors.cardNotConfirmed | errors.agreementRequiredFirst" }
+  /api/affiliate/billing/cancel:
+    post:
+      summary: "Cancel (or resume) the platform subscription at the end of the paid month"
+      tags: [portal-affiliate]
+      description: "Affiliate session only. Body { resume?: true }."
+      responses:
+        "200": { description: "{ ok, billing }" }
+        "404": { description: "errors.notFound" }
+  /api/contractor/billing:
+    get:
+      summary: "Contractor platform membership + whether the portal is locked"
+      tags: [portal-contractor]
+      description: "Contractor session. { ok, billing, locked }. Approved (active) contractors need a membership in free period or paid ($99.90/mo default, setting contractor_default_price_cents; 30 days free from approval, contractor_trial_days). While locked, other /api/contractor/* routes return 402 errors.billingRequired."
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "401": { description: "errors.unauthorized" }
+  /api/contractor/billing/setup:
+    post:
+      summary: "One-time setup secret for the secure card form"
+      tags: [portal-contractor]
+      responses:
+        "200": { description: "{ ok, client_secret }" }
+        "503": { description: "errors.billingNotConfigured" }
+  /api/contractor/billing/activate:
+    post:
+      summary: "Confirm the saved card; start the membership if approved (or switch card)"
+      tags: [portal-contractor]
+      description: "Body { setup_intent_id }. The free period is granted once; a returning member is billed right away. When the plan is past due, the open invoice is charged to the new card immediately (unlocks the portal on success). The replaced card is detached from the processor (one card on file)."
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "400": { description: "validation.invalidField" }
+        "402": { description: "errors.cardChargeFailed (new card declined on the open invoice)" }
+        "409": { description: "errors.cardNotConfirmed" }
+  /api/contractor/billing/cancel:
+    post:
+      summary: "Cancel (or resume) the membership at the end of the paid month"
+      tags: [portal-contractor]
+      description: "Body { resume?: true }."
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "404": { description: "errors.notFound" }
+  /api/public/contractor-application/{token}/billing:
+    get:
+      summary: "Membership card status during the prequalification application"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, billing }" }
+        "404": { description: "errors.applicationLinkInvalid" }
+  /api/public/contractor-application/{token}/billing/setup:
+    post:
+      summary: "Setup secret for the membership card (application link)"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, client_secret }" }
+        "409": { description: "errors.applicationLocked" }
+  /api/public/contractor-application/{token}/billing/activate:
+    post:
+      summary: "Save the membership card (nothing is charged; the free period starts on approval)"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      description: "Body { setup_intent_id }. Submitting the application requires a saved card (409 errors.cardRequiredToSubmit) unless the fee is waived or billing isn't configured. A denied application releases the card."
+      responses:
+        "200": { description: "{ ok, billing }" }
+        "409": { description: "errors.cardNotConfirmed | errors.applicationLocked" }
+  /api/admin/contractors/{id}/billing:
+    get:
+      summary: "A contractor's membership (admin)"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+    patch:
+      summary: "Set a contractor's monthly price (null = default, 0 = waived)"
+      tags: [portal-admin]
+      description: "Perm finance.write. Body { price_cents: integer | null }. A live plan moves to the new price at the next cycle (no proration); 0 cancels it. Without a plan, starts one if approved with a card on file."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "400": { description: "validation.invalidField" }
+        "404": { description: "errors.notFound" }
+  /api/affiliate/billing/status:
+    get:
+      summary: "Affiliate platform plan + whether the portal is paused"
+      tags: [portal-affiliate]
+      description: "Affiliate session. { ok, billing, locked }. An approved affiliate whose payment failed (past_due / incomplete) is paused: other /api/affiliate/* routes return 402 errors.billingRequired except billing, onboarding (agreement / W-9 / card), FAQ, assistant and /me. Commission payouts are held (payout_ready). The public referral link keeps recording."
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "401": { description: "errors.unauthorized" }
+  /api/cron/billing-card-expiry:
+    get:
+      summary: "Daily card-expiry reminders (Vercel Cron)"
+      tags: [cron]
+      description: "Bearer CRON_SECRET. Email + SMS to members (affiliates, contractors) whose card on file expires within 30 days and again within 7 days of the end of its expiry month; once per card per threshold (billing_expiry_notice). Staff see a 'Card expiring' badge."
+      responses:
+        "200": { description: "{ ok, sent }" }
+        "401": { description: "errors.unauthorized" }
+    post:
+      summary: "Daily card-expiry reminders (manual trigger)"
+      tags: [cron]
+      description: "Same as GET (Bearer CRON_SECRET)."
+      responses:
+        "200": { description: "{ ok, sent }" }
+        "401": { description: "errors.unauthorized" }
+  /api/admin/last-touch:
+    get:
+      summary: "Latest text and call with one phone number (record pages)"
+      tags: [portal-admin]
+      description: "Perm people.read. Same shape as the Leads list last_sms / last_call (direction, when, preview or duration, thread link). The clients, affiliates, contractors and contacts list endpoints include last_sms / last_call per row."
+      parameters:
+        - { name: phone, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, last_sms, last_call }" }
+  /api/admin/affiliate-agreement/outdated:
+    get:
+      summary: "How many affiliates signed an older agreement version"
+      tags: [portal-admin]
+      description: "Perm approvals. Active / pending affiliates whose latest signed version is below the latest published one."
+      responses:
+        "200": { description: "{ ok, current_version, count }" }
+  /api/admin/affiliate-agreement/resign-notice:
+    post:
+      summary: "Email affiliates on an older version a link to review and sign the current agreement"
+      tags: [portal-admin]
+      description: "Perm approvals. Body { confirm: true }. Staff-triggered only (never automatic). Their signed older version stays in effect until they sign; the portal also shows a banner (state.agreement_outdated)."
+      responses:
+        "200": { description: "{ ok, current_version, sent }" }
+        "400": { description: "validation.confirmRequired" }
+  /api/admin/search/records:
+    get:
+      summary: "Staff search across clients, leads and projects (pickers)"
+      tags: [portal-admin]
+      description: "Any staff session; groups follow permissions (people.read → clients, leads → leads, projects.read → projects). q ≥ 2 chars; matches name, email, phone (digits), address or project id. Up to 6 per group."
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, clients[], leads[], projects[] }" }
+  /api/admin/people/{entity}/{id}/erase-preview:
+    get:
+      summary: "What deleting this person removes (confirm modal)"
+      tags: [portal-admin]
+      description: "Perm approvals (super admin, admin). entity: client | affiliate | contractor. Returns counts to delete, records kept-but-unlinked, subscription / card flags and stored-file count."
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string, enum: [client, affiliate, contractor] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, person, counts, kept, subscription, card_on_file, files }" }
+        "403": { description: "errors.forbidden" }
+        "404": { description: "errors.notFound" }
+  /api/admin/people/{entity}/{id}:
+    delete:
+      summary: "Erase a person completely (cannot be undone)"
+      tags: [portal-admin]
+      description: "Perm approvals. Body { confirm: true, reason? }. Cancels any subscription and deletes the processor customer, then removes the record, sign-in access, their projects (clients) with photos / draws / contracts / commissions, appointments, conversations, agreements / W-9 (affiliates), application documents / draws (contractors), their source lead and stored files. People they're linked to (referred homeowners, sub-affiliates, assigned projects) are kept and unlinked. Logged in people_dedupe_log (action delete)."
+      parameters:
+        - { name: entity, in: path, required: true, schema: { type: string, enum: [client, affiliate, contractor] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, person, counts, kept, … }" }
+        "400": { description: "validation.confirmRequired" }
+        "403": { description: "errors.forbidden" }
+        "404": { description: "errors.notFound" }
+  /api/admin/command-center:
+    get:
+      summary: "Staff dashboard: what needs you now, today's appointments, money, activity, trends — by role"
+      tags: [portal-admin]
+      description: "Any staff session. Sections follow permissions: inbox items (leads, approvals, applications, draws, unread texts, billing past due / paused / free periods ending, commissions, upcoming events, scheduled campaigns), appointments today (Pacific; projects.read), money (finance.read: membership MRR, commissions, pipeline value by stage, closed net), activity (last 14 days), trends (12 weekly buckets, 90-day funnel, lead sources, event RSVPs). Query mine=1 narrows appointments and conversations to the viewer."
+      parameters:
+        - { name: mine, in: query, required: false, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200": { description: "{ ok, role, generated_at, inbox[], appointments[], money|null, activity[], trends|null }" }
+        "401": { description: "errors.unauthorized" }
+  /api/admin/billing/overview:
+    get:
+      summary: "Admin → Billing: totals + every contractor / affiliate membership"
+      tags: [portal-admin]
+      description: "Perm people.read. totals: mrr_cents (active + past_due monthly price), active, trialing, past_due, paused, trials_ending_7d, awaiting_approval, canceling. members[]: role, id, name, email, company, member_status, billing, locked."
+      responses:
+        "200": { description: "{ ok, configured, totals, members[] }" }
+  /api/admin/billing/{role}/{id}:
+    get:
+      summary: "One membership: plan, card, last 12 invoices (refunds + receipts), staff action log, open card link"
+      tags: [portal-admin]
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, member, billing, locked, invoices[], actions[], open_link }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/billing/{role}/{id}/cancel:
+    post:
+      summary: "Cancel a membership now or at period end"
+      tags: [portal-admin]
+      description: "Perm finance.write. Body { when: now | period_end, reason }. Logged; the member is emailed."
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "400": { description: "validation.billingReasonRequired" }
+        "409": { description: "errors.billingNoPlan" }
+  /api/admin/billing/{role}/{id}/resume:
+    post:
+      summary: "Undo a period-end cancellation"
+      tags: [portal-admin]
+      description: "Perm finance.write."
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "409": { description: "errors.billingNoPlan | errors.billingAlreadyEnded" }
+  /api/admin/billing/{role}/{id}/extend:
+    post:
+      summary: "Add courtesy free days (no charge until the new date)"
+      tags: [portal-admin]
+      description: "Perm finance.write. Body { days: 1-365, reason }. Moves the plan's free-period end past the later of now / current free end / next charge; nothing prorated. Logged; member emailed."
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "400": { description: "validation.invalidField | validation.billingReasonRequired" }
+        "409": { description: "errors.billingNoPlan | errors.billingAlreadyEnded" }
+  /api/admin/billing/{role}/{id}/refund:
+    post:
+      summary: "Refund all or part of a paid invoice to the member's card"
+      tags: [portal-admin]
+      description: "Perm finance.write. Body { invoice_id, amount_cents? (default: everything not yet refunded), reason }. The invoice must belong to this member. Logged; member emailed."
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, refund: { id, amount_cents, status } }" }
+        "400": { description: "validation.invalidField | validation.refundAmount | validation.billingReasonRequired" }
+        "404": { description: "errors.notFound" }
+        "409": { description: "errors.billingNothingToRefund" }
+  /api/admin/billing/{role}/{id}/price:
+    patch:
+      summary: "Set the monthly price (null = default / agreement price, 0 = waived)"
+      tags: [portal-admin]
+      description: "Perm finance.write. Body { price_cents, reason? }. Affiliates: overrides the agreement price going forward. A live plan moves to the new price next cycle; 0 cancels it."
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing, locked }" }
+        "400": { description: "validation.invalidField" }
+  /api/admin/billing/{role}/{id}/card-link:
+    post:
+      summary: "Manual start: email + text the member a secure link to add their card"
+      tags: [portal-admin]
+      description: "Perm finance.write. Body { price_cents?, free_days? (0-365), note? }. Approved members without a running plan only. One live link per member (14 days); staff never handle card data."
+      parameters:
+        - { name: role, in: path, required: true, schema: { type: string, enum: [contractor, affiliate] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok, sent }" }
+        "409": { description: "errors.billingNotApproved | errors.billingAlreadyActive" }
+  /api/public/billing-link/{token}:
+    get:
+      summary: "Member's secure card link: terms preview"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, member, billing, expires_at }" }
+        "404": { description: "errors.billingLinkInvalid" }
+  /api/public/billing-link/{token}/setup:
+    post:
+      summary: "Setup secret for the card form (card link)"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, client_secret }" }
+        "404": { description: "errors.billingLinkInvalid" }
+  /api/public/billing-link/{token}/activate:
+    post:
+      summary: "Save the card and start the plan with the staff terms; the link is then used up"
+      tags: [portal-public]
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, billing }" }
+        "404": { description: "errors.billingLinkInvalid" }
+        "409": { description: "errors.cardNotConfirmed" }
+  /api/webhooks/billing:
+    post:
+      summary: "Payment processor webhook (subscription + invoice events)"
+      tags: [webhooks]
+      description: "Verified by signature over the raw body when available; otherwise the event is re-fetched from the processor by id. Idempotent (billing_webhook_events). Syncs affiliates.billing_* / contractors.billing_* (by metadata affiliate_id / contractor_id, or customer); card details refreshed by the bank (payment_method.automatically_updated / payment_method.updated) update the stored brand / last 4 / expiry; payment failures and renewals that need bank authentication (invoice.payment_action_required) email the member and alert staff (a failed contractor payment pauses the contractor portal)."
+      responses:
+        "200": { description: "{ received: true }" }
+        "400": { description: "errors.invalidSignature | validation.invalidField" }
+  /api/affiliate/faqs:
+    get:
+      summary: "Active affiliate FAQ (EN/ES)"
+      tags: [portal-affiliate]
+      description: "Affiliate session or welcome link."
+      responses:
+        "200": { description: "{ ok, faqs[] }" }
+  /api/admin/affiliate-faqs:
+    get:
+      summary: "All affiliate FAQ entries"
+      tags: [portal-admin]
+      description: "Requires `people.read`."
+      responses:
+        "200": { description: "{ ok, faqs[] }" }
+    post:
+      summary: "Add an affiliate FAQ entry"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { question_en, answer_en, question_es?, answer_es?, sort_order?, is_active? }."
+      responses:
+        "201": { description: "{ ok, faqs[] }" }
+        "400": { description: "validation.faqRequired" }
+  /api/admin/affiliate-faqs/{id}:
+    put:
+      summary: "Edit an affiliate FAQ entry"
+      tags: [portal-admin]
+      description: "Requires `approvals`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, faqs[] }" }
+        "404": { description: "errors.notFound" }
+    delete:
+      summary: "Delete an affiliate FAQ entry"
+      tags: [portal-admin]
+      description: "Requires `approvals`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, faqs[] }" }
+  /api/affiliate/assistant:
+    get:
+      summary: "Affiliate assistant history"
+      tags: [portal-affiliate]
+      description: "Affiliate session or welcome link. Returns { enabled, messages[] }."
+      responses:
+        "200": { description: "{ ok, enabled, messages[] }" }
+    post:
+      summary: "Ask the affiliate assistant"
+      tags: [portal-affiliate]
+      description: "Body { message, lang? }. Answers only from the affiliate's agreement + the FAQ (Claude). Questions it can't answer are handed off to staff (handoff: true + staff alert). 40 questions per affiliate per day."
+      responses:
+        "200": { description: "{ ok, reply, handoff }" }
+        "429": { description: "errors.assistantDailyLimit | errors.assistantBusy" }
+        "503": { description: "errors.assistantNotConfigured" }
+  /api/admin/affiliates/{id}/assistant:
+    get:
+      summary: "An affiliate's assistant conversation (staff review)"
+      tags: [portal-admin]
+      description: "Requires `people.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, messages[] }" }
+  /api/admin/affiliates/{id}/welcome:
+    post:
+      summary: "Re-send the affiliate welcome (presentation + new secure link)"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Revokes older links."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+  /api/admin/affiliates/{id}/billing:
+    get:
+      summary: "An affiliate's billing status"
+      tags: [portal-admin]
+      description: "Requires `people.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, billing }" }
+  /api/admin/lenders:
+    get:
+      summary: "Lenders directory"
+      tags: [portal-admin]
+      description: "Requires `projects.read`. Each lender includes project_count."
+      responses:
+        "200": { description: "{ ok, lenders[] }" }
+    post:
+      summary: "Add a lender"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Body { company, contact_name?, email?, phone?, preferred_language?, notes?, is_active? }."
+      responses:
+        "201": { description: "{ ok, lenders[] }" }
+        "400": { description: "validation.lenderCompany | validation.emailInvalid" }
+  /api/admin/lenders/{id}:
+    put:
+      summary: "Edit a lender"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Linked projects keep loan_lender_name in sync."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, lenders[] }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/appointments:
+    get:
+      summary: "Appointments in a range (calendar)"
+      tags: [portal-admin]
+      description: "Requires `projects.read`. Query from, to (≤120 days), client_id, project_id, lead_id, admin_id (owner or tagged), include_cancelled=1."
+      responses:
+        "200": { description: "{ ok, appointments[] }" }
+    post:
+      summary: "Schedule an appointment"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Body { kind, date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block)."
+      responses:
+        "201": { description: "{ ok, appointment, conflicts[] }" }
+        "400": { description: "validation.appointmentTime | validation.attendeeContact | validation.invalidReference" }
+  /api/admin/appointments/{id}:
+    get:
+      summary: "One appointment"
+      tags: [portal-admin]
+      description: "Requires `projects.read`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, appointment }" }
+        "404": { description: "errors.notFound" }
+    patch:
+      summary: "Edit / reschedule an appointment"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Any create field. Time / place changes bump the invite sequence and send 'updated' invites; newly tagged people get the invite, untagged ones get a cancellation. Reminders reset when the time changes. client_id / lead_id / project_id set or clear who it's for (a project implies its client)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, appointment, conflicts[] }" }
+        "409": { description: "errors.appointmentCancelled" }
+  /api/admin/appointments/{id}/cancel:
+    post:
+      summary: "Cancel an appointment"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Body { reason? }. Everyone tagged gets a cancellation (METHOD:CANCEL invite)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+  /api/admin/appointments/{id}/status:
+    post:
+      summary: "Mark completed / no-show"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Body { status: completed|no_show|scheduled }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+        "404": { description: "errors.notFound" }
+  /api/contractor/appointments:
+    get:
+      summary: "My appointments (contractor)"
+      tags: [portal-contractor]
+      description: "Appointments the contractor is tagged on (last 30 days onward). No internal notes."
+      responses:
+        "200": { description: "{ ok, appointments[] }" }
+  /api/affiliate/appointments:
+    get:
+      summary: "Appointments for my referred clients"
+      tags: [portal-affiliate]
+      description: "Time, type and status only (no address / notes)."
+      responses:
+        "200": { description: "{ ok, appointments[] }" }
+  /api/admin/scheduler:
+    get:
+      summary: "My booking link settings"
+      tags: [portal-admin]
+      description: "Any staff. Creates defaults on first use (Mon–Fri 9–5, disabled). Returns settings, availability, upcoming blocked ranges and booking_url (/book/:slug)."
+      responses:
+        "200": { description: "{ ok, settings, booking_url, blocked[] }" }
+    put:
+      summary: "Update my booking link"
+      tags: [portal-admin]
+      description: "Any staff. is_enabled, slug, titles/descriptions (EN/ES), kind, duration_minutes, buffer_minutes, advance_days, min_notice_hours, timezone, allow_phone/video/office/onsite, video_url, availability[] (day_of_week 0–6, HH:mm)."
+      responses:
+        "200": { description: "{ ok, settings, booking_url }" }
+        "409": { description: "errors.slugTaken" }
+        "400": { description: "validation.availability" }
+  /api/admin/scheduler/blocked:
+    post:
+      summary: "Block time off on my booking link"
+      tags: [portal-admin]
+      description: "Body { from_date, to_date?, from_time?, to_time?, label? } in the link's timezone."
+      responses:
+        "201": { description: "OK" }
+  /api/admin/scheduler/blocked/{id}:
+    delete:
+      summary: "Remove a blocked range"
+      tags: [portal-admin]
+      description: "Own ranges only."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+  /api/public/book/{slug}:
+    get:
+      summary: "Public booking page info"
+      tags: [public]
+      description: "Host name, title / description (lang), duration, timezone, location types, weekdays with availability. 404 when disabled."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "PublicBookingInfo" }
+        "404": { description: "errors.notFound" }
+    post:
+      summary: "Book a time"
+      tags: [public]
+      description: "Rate limited. Body { date, time, name, email, phone, location_type, address? (onsite), notes?, lang }. Slot re-checked at booking (409 errors.slotTaken). Matches an existing client / lead by email or phone, else creates a lead (source booking). Host + booker get email + invite; the booker's email has a manage link."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "{ ok, appointment_id }" }
+        "409": { description: "errors.slotTaken" }
+  /api/public/book/{slug}/slots:
+    get:
+      summary: "Open times for a day"
+      tags: [public]
+      description: "Query date=YYYY-MM-DD. Availability minus appointments (with buffer), blocked ranges, minimum notice and booking horizon."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, date, slots[] }" }
+  /api/public/appointments/{token}:
+    get:
+      summary: "Manage my appointment (booker / homeowner)"
+      tags: [public]
+      description: "Token from the confirmation email."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "PublicAppointmentView" }
+        "404": { description: "errors.notFound" }
+  /api/public/appointments/{token}/cancel:
+    post:
+      summary: "Cancel my appointment"
+      tags: [public]
+      description: "Body { reason? }."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.appointmentPast" }
+  /api/public/appointments/{token}/reschedule:
+    post:
+      summary: "Reschedule my appointment"
+      tags: [public]
+      description: "Body { date, time } — must be an open slot on the host's booking link."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "OK" }
+        "409": { description: "errors.slotTaken | errors.rescheduleUnavailable" }
+  /api/cron/appointment-reminders:
+    get:
+      summary: "Vercel Cron: appointment reminders"
+      tags: [cron]
+      description: "Bearer CRON_SECRET. Every 15 min: 24h and 1h reminders (skipped when booked inside the window)."
+      responses:
+        "200": { description: "{ ok, reminded_24h, reminded_1h }" }
+        "401": { description: "errors.unauthorized" }
+    post:
+      summary: "Manual run of appointment reminders"
+      tags: [cron]
+      description: "Same as GET."
+      responses:
+        "200": { description: "{ ok, reminded_24h, reminded_1h }" }
+  /api/affiliate/link:
+    get:
+      summary: "My referral link (EN/ES URLs, short display, stats, link-name rule)"
+      tags: [portal-affiliate]
+      description: "Returns { slug, referral_code, urls: { en, es (?lang=es) }, display, can_change_slug_at, stats: { clicks_total, clicks_7d, leads, clients } }."
+      responses:
+        "200": { description: "AffiliateLinkInfo" }
+    patch:
+      summary: "Change my link name (/r/<slug>)"
+      tags: [portal-affiliate]
+      description: "Body { slug }. Same rules as admins (format, reserved, unique, not another affiliate's code or a name retired < 30 days). Once per 30 days; the previous name keeps resolving for 30 days."
+      responses:
+        "200": { description: "AffiliateLinkInfo" }
+        "400": { description: "validation.slugFormat | validation.slugReserved" }
+        "409": { description: "errors.slugTaken" }
+        "429": { description: "errors.slugChangeTooSoon" }
+  /api/affiliate/link/flyer:
+    get:
+      summary: "Printable homeowner flyer (PDF) with my QR + link"
+      tags: [portal-affiliate]
+      description: "Query lang=en|es. Letter-size branded flyer: headline, bullets, QR to the (language) link, short URL, 'Referred by'."
+      responses:
+        "200": { description: "application/pdf" }
   /api/admin/duplicates/merge:
     post:
       summary: "Merge one duplicate into a survivor of the same role"
@@ -2704,6 +3599,7 @@ paths:
       summary: Contact-centric inbox (client + CRM contact + unknown)
       tags: [conversations]
       description: |
+        Unknown threads include `match` (role, id, name, others) when the number belongs to a client, affiliate, contractor, contact, lead or staff member; `display_name` then shows that name.
         True SQL pagination via UNION ALL of client, CRM contact, and unknown
         hub rows (shared columns), ORDER BY last_message_at DESC, with separate
         COUNT for total. Supports view + q filters.
@@ -2819,6 +3715,7 @@ paths:
   /api/admin/conversations/unknown/{id}/create-prospect:
     post:
       summary: Create client prospect from unknown contact and link threads
+      description: "Name, email and language default to the most recent open lead with the same phone (body fields override); that lead gets client_id so it leaves the Active leads list. Response adds lead_id (or null)."
       tags: [conversations]
       parameters:
         - in: path
@@ -2861,9 +3758,19 @@ paths:
         "200": { description: Send result }
         "400": { description: validation.invalidField }
         "403": { description: conversations_number_required }
+  /api/admin/conversations/lead-search:
+    get:
+      summary: Leads matching a Conversations search (name / email / phone)
+      tags: [conversations]
+      description: "q ≥ 2 chars; up to 8 leads that are not affiliates/contractors and not spam, newest first. Each has unknown_contact_id (open unknown-number thread for that phone) and client_id when already linked. { ok, leads: ConversationLeadMatch[] }."
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: OK }
   /api/admin/conversations/start:
     post:
       summary: Start SMS by phone (client → contact → unknown)
+      description: "400 errors.noPhoneLine when the admin has no assigned Groundwork number."
       tags: [conversations]
       requestBody:
         required: true
@@ -2941,6 +3848,63 @@ paths:
       responses:
         "200": { description: "{ kind, contact, threads, messages }" }
         "403": { description: conversations_number_required }
+  /api/admin/conversation-templates/{id}/used:
+    post:
+      summary: Bump a template's usage count (when inserted into a message)
+      tags: [conversations]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+  /api/admin/phone-lines/available:
+    get:
+      summary: Twilio numbers on the account not yet connected to Groundwork
+      tags: [conversations]
+      description: "super_admin / admin. Each has current_host + in_use_elsewhere (another app's webhooks, e.g. Encore)."
+      responses:
+        "200": { description: "{ ok, numbers: AvailableTwilioNumber[] }" }
+        "403": { description: errors.forbidden }
+  /api/admin/phone-lines/connect:
+    post:
+      summary: Connect a Twilio number (sets Groundwork webhooks) as a personal or shared line
+      tags: [conversations]
+      description: "super_admin / admin. Body { sid, line_mode (personal|shared), assigned_admin_id (required for personal), take_over (required when another app answers it) }. 409 errors.lineInUseElsewhere without take_over."
+      responses:
+        "201": { description: PhoneLineSettings }
+        "400": { description: "validation.personalLineOwner | validation.invalidField" }
+        "404": { description: errors.notFound }
+        "409": { description: errors.lineInUseElsewhere }
+  /api/admin/phone-lines/{id}/disconnect:
+    post:
+      summary: Disconnect a line (clears our webhooks only if they still point here; history kept)
+      tags: [conversations]
+      description: "super_admin / admin. Body { confirm: <exact e164> }. The main (primary) line can't be disconnected."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "400": { description: validation.confirmNumber }
+        "409": { description: errors.cannotDisconnectPrimary }
+  /api/admin/phone-lines/{id}:
+    get:
+      summary: Phone line settings (members, ring phones, ring time, bilingual voicemail, live summary)
+      tags: [conversations]
+      description: "super_admin / admin. Returns PhoneLineSettings incl. `now` (what rings right now)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: PhoneLineSettings }
+        "403": { description: errors.forbidden }
+    put:
+      summary: Save phone line settings
+      tags: [conversations]
+      description: "super_admin / admin. Body PhoneLineSettingsBody { line_mode (shared | personal — personal needs an owner and has no members; visible to owner + all admins; deactivated owner → main shared line team), assigned_admin_id, members[{admin_id, ring_browser}] (super_admin/admin/agent only), ring_numbers[{label, e164, is_active}] (≤5, US, never another brand line), ring_timeout_sec 10–60, voicemail_greeting_en/es (≤600, null = default) }. Members see the line's conversations and calls."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: PhoneLineSettings }
+        "400": { description: "validation.ringNumberInvalid | validation.ringNumberLoop | validation.ringNumberLimit | validation.invalidField" }
+        "403": { description: errors.forbidden }
   /api/admin/conversation-templates:
     get:
       summary: List SMS conversation templates
@@ -3069,7 +4033,7 @@ paths:
       tags: [conversations]
       description: Under VITEST returns dry_run without calling Twilio.
       responses:
-        "200": { description: "{ ok, upserted, numbers[] }" }
+        "200": { description: "{ ok, upserted, skipped, numbers[] } — only numbers whose SMS or voice webhook points at this app (PUBLIC_APP_URL host) are imported; other brands' lines on the shared Twilio account are skipped" }
         "403": { description: errors.forbidden }
   /api/admin/phone-numbers/{id}:
     patch:
@@ -3194,9 +4158,24 @@ paths:
       responses:
         "204": { description: No content }
         "403": { description: Invalid Twilio signature }
+  /api/voice/screen:
+    post:
+      summary: Call screening for ring phones ("Groundwork Capital call, press 1 to accept", EN/ES)
+      tags: [webhooks]
+      description: "Twilio <Number url> on cell legs. Gather 1 digit → /api/voice/screen-accept; no input → that leg hangs up (other legs keep ringing)."
+      responses:
+        "200": { description: TwiML Gather }
+        "403": { description: Invalid signature }
+  /api/voice/screen-accept:
+    post:
+      summary: Screening result — Digits=1 bridges the call, anything else drops this leg
+      tags: [webhooks]
+      responses:
+        "200": { description: TwiML (empty = connect, Hangup = decline) }
+        "403": { description: Invalid signature }
   /api/voice/dial-status:
     post:
-      summary: Twilio Dial action callback (voicemail fallback)
+      summary: Twilio Dial action callback (no answer → the line's bilingual voicemail; never a hang-up)
       tags: [conversations]
       responses:
         "200": { description: TwiML XML }
@@ -3225,14 +4204,18 @@ paths:
         "403": { description: conversations_number_required }
   /api/voice/incoming:
     post:
-      summary: Twilio inbound voice webhook (brand line → forward to assignee cell)
+      summary: Twilio inbound voice webhook (one call plan per line)
       tags: [webhooks]
       description: |
         Validates X-Twilio-Signature when TWILIO_AUTH_TOKEN is set.
-        Resolves To → admin_phone_numbers assignee; Dial call_forwarding_phone (or admins.phone)
-        with CallerID = Groundwork brand e164 when call_forwarding_enabled.
+        Resolves To → line; the Phone line settings decide what rings: members with
+        "Ring in CRM" whose softphone is online (Client admin_{id}) + the line's ring
+        phones (screened via /api/voice/screen so carrier voicemail can't answer), for
+        ring_timeout_sec. Lines with no members use the owner's softphone + personal
+        forwarding. Nothing to ring, errors, or no answer → the line's bilingual voicemail
+        (never a hang-up). CallerID = the brand line.
       responses:
-        "200": { description: TwiML Dial or Say }
+        "200": { description: TwiML Dial or voicemail }
         "403": { description: Invalid signature }
         "503": { description: Auth token missing in production }
   /api/webhooks/twilio/sms:

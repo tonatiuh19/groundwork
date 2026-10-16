@@ -2,8 +2,10 @@
  * Brand Twilio line assignment — list, assign to staff, sync from Twilio.
  * Used on Settings and Staff.
  */
-import { useEffect, useMemo } from "react";
-import { Phone, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Link2, Phone, RefreshCw, Settings2 } from "lucide-react";
+import ConnectTwilioNumberModal from "@/components/admin/ConnectTwilioNumberModal";
+import PhoneLineSettingsModal from "@/components/admin/PhoneLineSettingsModal";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAdminStaff } from "@/store/slices/adminPortalSlice";
@@ -32,6 +34,8 @@ export function AdminPhoneNumbersPanel({ className }: Props) {
   const dispatch = useAppDispatch();
   const me = useAppSelector((s) => s.portalAuth.admin.user);
   const staff = useAppSelector((s) => s.adminPortal.staff.items);
+  const [configureId, setConfigureId] = useState<number | null>(null);
+  const [connectOpen, setConnectOpen] = useState(false);
   const {
     phoneNumbers,
     phoneNumbersLoading,
@@ -67,6 +71,12 @@ export function AdminPhoneNumbersPanel({ className }: Props) {
           </h3>
           <p className="pf-muted">{t("admin.phoneNumbersLead")}</p>
         </div>
+        <div className="gw-line-toolbar">
+        {canAssign ? (
+          <button type="button" className="pf-btn" onClick={() => setConnectOpen(true)}>
+            <Link2 size={15} aria-hidden /> {t("phoneLine.connectCta")}
+          </button>
+        ) : null}
         {canSync ? (
           <button
             type="button"
@@ -82,7 +92,13 @@ export function AdminPhoneNumbersPanel({ className }: Props) {
             {t("admin.syncTwilio")}
           </button>
         ) : null}
+        </div>
       </div>
+      {phoneNumbers.some((n) => n.needs_owner) ? (
+        <p className="gw-line-alert" role="alert">
+          <AlertTriangle size={15} aria-hidden /> {t("phoneLine.needsOwnerBanner")}
+        </p>
+      ) : null}
       <ErrorNote error={phoneNumbersError} />
       <DataTable
         rows={phoneNumbers}
@@ -177,7 +193,36 @@ export function AdminPhoneNumbersPanel({ className }: Props) {
               );
             },
           },
+          {
+            key: "settings",
+            headerKey: "phoneLine.column",
+            render: (n) => (
+              <div className="gw-line-cell">
+                <span className="pf-muted">
+                  {n.line_mode === "shared"
+                    ? t("phoneLine.sharedCount", { count: n.member_count || 0 })
+                    : t("phoneLine.personal")}
+                </span>
+                {n.needs_owner ? <span className="pf-badge pf-badge--bad">{t("phoneLine.needsOwnerShort")}</span> : null}
+                {canAssign ? (
+                  <button type="button" className="pf-btn pf-btn--sm" onClick={() => setConfigureId(n.id)}>
+                    <Settings2 size={14} aria-hidden /> {t("phoneLine.configure")}
+                  </button>
+                ) : null}
+              </div>
+            ),
+          },
         ]}
+      />
+      <PhoneLineSettingsModal lineId={configureId} onClose={() => setConfigureId(null)} />
+      <ConnectTwilioNumberModal
+        open={connectOpen}
+        onClose={() => setConnectOpen(false)}
+        staff={assignableStaff.map((x) => ({ id: x.id, name: `${x.first_name} ${x.last_name}` }))}
+        onConnected={(id) => {
+          setConnectOpen(false);
+          setConfigureId(id);
+        }}
       />
     </section>
   );

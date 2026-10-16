@@ -41,13 +41,31 @@ export default defineConfig(() => ({
   },
 }));
 
+/**
+ * Vite re-bundles this config (and api/index.ts inside it) when the API
+ * changes and builds the new dev server *before* closing the old one, so the
+ * previous API listener must be closed first or :8081 is still taken
+ * (EADDRINUSE crashed `npm run dev` on every api/index.ts edit). The handle
+ * lives on globalThis because the reloaded config is a fresh module.
+ */
+const devApi = globalThis as typeof globalThis & { __gwDevApiServer?: http.Server };
+
 function expressPlugin(): Plugin {
   return {
     name: "express-plugin",
     apply: "serve",
-    configureServer() {
-      const app = createServer();
-      http.createServer(app).listen(API_PORT, () => {
+    async configureServer() {
+      const prev = devApi.__gwDevApiServer;
+      if (prev?.listening) {
+        await new Promise<void>((resolve) => {
+          prev.close(() => resolve());
+          prev.closeAllConnections();
+        });
+      }
+      const server = http.createServer(createServer());
+      devApi.__gwDevApiServer = server;
+      server.on("error", (e) => console.error(`❌ Express API failed to start on :${API_PORT}:`, e.message));
+      server.listen(API_PORT, () => {
         console.log(`✅ Express API → http://localhost:${API_PORT}`);
       });
     },

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
+import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import { Link, useNavigate } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
@@ -202,12 +204,14 @@ export default function AdminClients() {
             headerKey: "pf.name",
             render: (c) => (
               <>
-                <strong>{c.first_name} {c.last_name}</strong>
+                <strong>{c.first_name} {c.last_name}</strong>{" "}
+                <DealStatusBadge en={c.deal_status_en} es={c.deal_status_es} tone={c.deal_status_tone} />
                 <br />
                 <span className="pf-muted">{c.email}{c.phone ? ` · ${c.phone}` : ""}</span>
               </>
             ),
           },
+          ...touchColumns(),
           { key: "address", headerKey: "pf.address", render: (c) => [c.address_line1, c.city].filter(Boolean).join(", ") || "—" },
           { key: "aff", headerKey: "admin.affiliate", render: (c) => c.affiliate_name || "—" },
           { key: "projects", headerKey: "portalNav.projects", render: (c) => c.project_count },

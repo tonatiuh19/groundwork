@@ -20,6 +20,19 @@ import contractorApplicationReducer from "./slices/contractorApplicationSlice";
 import adminContractorApplicationReducer from "./slices/adminContractorApplicationSlice";
 import personConflictReducer from "./slices/personConflictSlice";
 import duplicatesReducer from "./slices/duplicatesSlice";
+import clientRevertReducer from "./slices/clientRevertSlice";
+import affiliateHelpReducer from "./slices/affiliateHelpSlice";
+import schedulerReducer from "./slices/schedulerSlice";
+import bookingReducer from "./slices/bookingSlice";
+import affiliateLinkReducer from "./slices/affiliateLinkSlice";
+import contractorBillingReducer from "./slices/contractorBillingSlice";
+import billingAdminReducer from "./slices/billingAdminSlice";
+import commandCenterReducer from "./slices/commandCenterSlice";
+import recordsReducer from "./slices/recordsSlice";
+import eventMediaReducer from "./slices/eventMediaSlice";
+import affiliateOnboardingReducer from "./slices/affiliateOnboardingSlice";
+import phoneLinesReducer from "./slices/phoneLinesSlice";
+import dealStatusReducer from "./slices/dealStatusSlice";
 
 export const store = configureStore({
   // Photo uploads pass a `File` through a thunk arg (never stored in state).
@@ -56,6 +69,19 @@ export const store = configureStore({
     adminContractorApplication: adminContractorApplicationReducer,
     personConflict: personConflictReducer,
     duplicates: duplicatesReducer,
+    clientRevert: clientRevertReducer,
+    affiliateHelp: affiliateHelpReducer,
+    scheduler: schedulerReducer,
+    booking: bookingReducer,
+    affiliateLink: affiliateLinkReducer,
+    contractorBilling: contractorBillingReducer,
+    billingAdmin: billingAdminReducer,
+    commandCenter: commandCenterReducer,
+    records: recordsReducer,
+    eventMedia: eventMediaReducer,
+    affiliateOnboarding: affiliateOnboardingReducer,
+    phoneLines: phoneLinesReducer,
+    dealStatus: dealStatusReducer,
   },
 });
 

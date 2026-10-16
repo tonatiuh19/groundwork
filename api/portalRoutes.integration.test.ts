@@ -1463,6 +1463,10 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
             before.commission_closer_cents_per_sqft,
           commission_parent_cents_per_sqft:
             before.commission_parent_cents_per_sqft,
+          commission_parent_shared_cents_per_sqft:
+            before.commission_parent_shared_cents_per_sqft,
+          commission_grandparent_cents_per_sqft:
+            before.commission_grandparent_cents_per_sqft,
         });
       } finally {
         await as(superCookie).put("/api/admin/settings").send(before);

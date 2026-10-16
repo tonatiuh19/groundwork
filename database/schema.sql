@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS `marketing_events` (
   `location_label_es` VARCHAR(200) DEFAULT NULL,
   `cta_en` VARCHAR(120) DEFAULT NULL,
   `cta_es` VARCHAR(120) DEFAULT NULL,
+  `qr_scan_count` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Scans of the /e/<slug> QR short link',
+  `qr_last_scanned_at` DATETIME DEFAULT NULL,
   `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -102,6 +104,32 @@ CREATE TABLE IF NOT EXISTS `marketing_events` (
   KEY `idx_marketing_events_status_featured` (`status`, `is_featured`),
   KEY `idx_marketing_events_starts` (`starts_at`),
   CONSTRAINT `fk_marketing_events_admin`
+    FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Past-event highlights (photos / uploaded videos / embedded reels)
+CREATE TABLE IF NOT EXISTS `event_media` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `event_id` INT UNSIGNED NOT NULL,
+  `kind` ENUM('photo','video','embed') NOT NULL,
+  `url` VARCHAR(1000) NOT NULL COMMENT 'Public Blob URL (photo/video) or normalized embed URL',
+  `source_url` VARCHAR(1000) DEFAULT NULL COMMENT 'Original pasted link for embeds',
+  `embed_provider` ENUM('instagram','youtube','tiktok') DEFAULT NULL,
+  `blob_pathname` VARCHAR(500) DEFAULT NULL,
+  `mime_type` VARCHAR(100) DEFAULT NULL,
+  `size_bytes` BIGINT UNSIGNED DEFAULT NULL,
+  `caption_en` VARCHAR(300) DEFAULT NULL,
+  `caption_es` VARCHAR(300) DEFAULT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_cover` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_highlight` TINYINT(1) NOT NULL DEFAULT 0,
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_event_media_event` (`event_id`, `sort_order`),
+  CONSTRAINT `fk_event_media_event`
+    FOREIGN KEY (`event_id`) REFERENCES `marketing_events`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_event_media_admin`
     FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -230,9 +258,27 @@ CREATE TABLE IF NOT EXISTS `affiliates` (
   `approved_by_admin_id` INT UNSIGNED DEFAULT NULL,
   `parent_affiliate_id` INT UNSIGNED DEFAULT NULL
     COMMENT 'Immediate parent affiliate; NULL = top-level Affiliate',
+  `subscription_price_cents` INT UNSIGNED DEFAULT NULL
+    COMMENT 'Monthly platform price printed in the agreement; NULL = pending',
   `last_login_at` DATETIME DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `billing_customer_id` VARCHAR(64) DEFAULT NULL COMMENT 'Payment processor customer id',
+  `billing_subscription_id` VARCHAR(64) DEFAULT NULL COMMENT 'Payment processor subscription id',
+  `billing_payment_method_id` VARCHAR(64) DEFAULT NULL COMMENT 'Saved card (subscription starts on approval)',
+  `billing_status` ENUM('none','trialing','active','past_due','canceled','incomplete') NOT NULL DEFAULT 'none',
+  `billing_trial_ends_at` DATETIME DEFAULT NULL,
+  `billing_current_period_end` DATETIME DEFAULT NULL,
+  `billing_card_brand` VARCHAR(20) DEFAULT NULL,
+  `billing_card_last4` CHAR(4) DEFAULT NULL,
+  `billing_card_exp` VARCHAR(7) DEFAULT NULL COMMENT 'MM/YYYY',
+  `billing_cancel_at_period_end` TINYINT(1) NOT NULL DEFAULT 0,
+  `billing_updated_at` DATETIME DEFAULT NULL,
+  `slug_changed_at` DATETIME DEFAULT NULL COMMENT 'Last self-service link-name change (once per 30 days)',
+  `billing_price_override_cents` INT UNSIGNED DEFAULT NULL
+    COMMENT 'Staff override of the agreement price; NULL = agreement price, 0 = waived',
+  `billing_trial_used_at` DATETIME DEFAULT NULL COMMENT 'Free period granted (once per person)',
+  `billing_expiry_notice` VARCHAR(16) DEFAULT NULL COMMENT 'Last card-expiry reminder sent: MM/YYYY:30 or MM/YYYY:7',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_affiliates_email` (`email`),
   UNIQUE KEY `uq_affiliates_referral` (`referral_code`),
@@ -242,7 +288,9 @@ CREATE TABLE IF NOT EXISTS `affiliates` (
   CONSTRAINT `fk_affiliates_approver`
     FOREIGN KEY (`approved_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_affiliates_parent`
-    FOREIGN KEY (`parent_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL
+    FOREIGN KEY (`parent_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL,
+  KEY `idx_affiliates_billing_customer` (`billing_customer_id`),
+  KEY `idx_affiliates_billing_subscription` (`billing_subscription_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `affiliate_otp_codes` (
@@ -338,9 +386,26 @@ CREATE TABLE IF NOT EXISTS `contractors` (
   `last_login_at` DATETIME DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `subscription_price_cents` INT UNSIGNED DEFAULT NULL
+    COMMENT 'Monthly platform price override; NULL = default setting, 0 = waived',
+  `billing_customer_id` VARCHAR(64) DEFAULT NULL COMMENT 'Payment processor customer id',
+  `billing_subscription_id` VARCHAR(64) DEFAULT NULL COMMENT 'Payment processor subscription id',
+  `billing_payment_method_id` VARCHAR(64) DEFAULT NULL COMMENT 'Saved card (subscription starts on approval)',
+  `billing_status` ENUM('none','trialing','active','past_due','canceled','incomplete') NOT NULL DEFAULT 'none',
+  `billing_trial_ends_at` DATETIME DEFAULT NULL,
+  `billing_current_period_end` DATETIME DEFAULT NULL,
+  `billing_card_brand` VARCHAR(20) DEFAULT NULL,
+  `billing_card_last4` CHAR(4) DEFAULT NULL,
+  `billing_card_exp` VARCHAR(7) DEFAULT NULL COMMENT 'MM/YYYY',
+  `billing_cancel_at_period_end` TINYINT(1) NOT NULL DEFAULT 0,
+  `billing_updated_at` DATETIME DEFAULT NULL,
+  `billing_trial_used_at` DATETIME DEFAULT NULL COMMENT 'Free period granted (once per person)',
+  `billing_expiry_notice` VARCHAR(16) DEFAULT NULL COMMENT 'Last card-expiry reminder sent: MM/YYYY:30 or MM/YYYY:7',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_contractors_email` (`email`),
   KEY `idx_contractors_status` (`status`),
+  KEY `idx_contractors_billing_customer` (`billing_customer_id`),
+  KEY `idx_contractors_billing_subscription` (`billing_subscription_id`),
   CONSTRAINT `fk_contractors_inviter`
     FOREIGN KEY (`invited_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -527,7 +592,7 @@ CREATE TABLE IF NOT EXISTS `contractor_application_events` (
 -- Audit trail for merges, deletes, phone overrides, links and dismissals.
 CREATE TABLE IF NOT EXISTS `people_dedupe_log` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `action` ENUM('merge','delete','phone_override','link','dismiss','blocked') NOT NULL,
+  `action` ENUM('merge','delete','phone_override','link','dismiss','blocked','revert','email_change') NOT NULL,
   `entity` ENUM('lead','client','affiliate','contractor') NOT NULL,
   `record_id` BIGINT UNSIGNED DEFAULT NULL,
   `target_entity` ENUM('lead','client','affiliate','contractor') DEFAULT NULL,
@@ -561,6 +626,19 @@ CREATE TABLE IF NOT EXISTS `people_dedupe_dismissals` (
 -- ---------------------------------------------------------------------------
 -- 4) Clients / homeowners (portal identity)
 -- ---------------------------------------------------------------------------
+-- Deal statuses (separate from portal account status; editable in Settings)
+CREATE TABLE IF NOT EXISTS `deal_statuses` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `label_en` VARCHAR(80) NOT NULL,
+  `label_es` VARCHAR(80) NOT NULL,
+  `tone` ENUM('neutral','warn','bad','good') NOT NULL DEFAULT 'warn',
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `clients` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `email` VARCHAR(255) DEFAULT NULL,
@@ -578,6 +656,8 @@ CREATE TABLE IF NOT EXISTS `clients` (
   `assigned_admin_id` INT UNSIGNED DEFAULT NULL,
   `lead_id` BIGINT UNSIGNED DEFAULT NULL,
   `avatar_url` VARCHAR(500) DEFAULT NULL,
+  `deal_status_id` INT UNSIGNED DEFAULT NULL COMMENT 'Deal status (credit repair, not enough equity, …); NULL = none',
+  `deal_status_changed_at` DATETIME DEFAULT NULL,
   `admin_notes` TEXT DEFAULT NULL,
   `email_verified_at` DATETIME DEFAULT NULL,
   `last_login_at` DATETIME DEFAULT NULL,
@@ -586,6 +666,7 @@ CREATE TABLE IF NOT EXISTS `clients` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_clients_email` (`email`),
   KEY `idx_clients_status` (`status`),
+  KEY `idx_clients_deal_status` (`deal_status_id`),
   KEY `idx_clients_affiliate` (`affiliate_id`),
   KEY `idx_clients_admin` (`assigned_admin_id`),
   KEY `idx_clients_lead` (`lead_id`),
@@ -594,7 +675,9 @@ CREATE TABLE IF NOT EXISTS `clients` (
   CONSTRAINT `fk_clients_admin`
     FOREIGN KEY (`assigned_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_clients_lead`
-    FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL
+    FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_clients_deal_status`
+    FOREIGN KEY (`deal_status_id`) REFERENCES `deal_statuses`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `client_otp_codes` (
@@ -686,6 +769,25 @@ ON DUPLICATE KEY UPDATE
   `sq_ft` = VALUES(`sq_ft`),
   `default_commission_cents` = VALUES(`default_commission_cents`);
 
+-- Lenders directory (projects.lender_id → lenders)
+CREATE TABLE IF NOT EXISTS `lenders` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `company` VARCHAR(200) NOT NULL,
+  `contact_name` VARCHAR(200) DEFAULT NULL,
+  `email` VARCHAR(255) DEFAULT NULL,
+  `phone` VARCHAR(40) DEFAULT NULL,
+  `preferred_language` ENUM('en','es') NOT NULL DEFAULT 'en',
+  `notes` TEXT DEFAULT NULL,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_lenders_active` (`is_active`),
+  CONSTRAINT `fk_lenders_admin`
+    FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `projects` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `public_id` VARCHAR(24) NOT NULL,
@@ -718,6 +820,7 @@ CREATE TABLE IF NOT EXISTS `projects` (
   `net_profit_per_sqft_cents` INT DEFAULT NULL,
   `loan_lender_type` ENUM('anchor','external','unknown') NOT NULL DEFAULT 'unknown',
   `loan_lender_name` VARCHAR(200) DEFAULT NULL,
+  `lender_id` INT UNSIGNED DEFAULT NULL COMMENT 'Lenders directory (loan_lender_name kept in sync)',
   `loan_status` ENUM(
     'not_started','in_process','underwriting','approved','finalized','denied','withdrawn'
   ) NOT NULL DEFAULT 'not_started',
@@ -732,6 +835,14 @@ CREATE TABLE IF NOT EXISTS `projects` (
     COMMENT 'Frozen closer $/sqft cents at accrual',
   `commission_rate_parent_cents_per_sqft` INT UNSIGNED DEFAULT NULL
     COMMENT 'Frozen parent $/sqft cents at accrual',
+  `commission_rate_parent_shared_cents_per_sqft` INT UNSIGNED DEFAULT NULL
+    COMMENT 'Frozen sponsor rate when a senior sponsor also earns',
+  `commission_rate_grandparent_cents_per_sqft` INT UNSIGNED DEFAULT NULL
+    COMMENT 'Frozen senior sponsor rate',
+  `grandparent_affiliate_id` INT UNSIGNED DEFAULT NULL
+    COMMENT 'Senior Sponsor (sponsor''s sponsor) at project creation',
+  `commission_plan` ENUM('one_level','two_level') NOT NULL DEFAULT 'two_level'
+    COMMENT 'Pre-2026-10-15 projects stay one_level',
   `commission_expected_pay_at` DATE DEFAULT NULL,
   `commission_paid_at` DATETIME DEFAULT NULL,
   `notes` TEXT DEFAULT NULL,
@@ -743,6 +854,7 @@ CREATE TABLE IF NOT EXISTS `projects` (
   KEY `idx_projects_affiliate` (`affiliate_id`),
   KEY `idx_projects_closer` (`closer_affiliate_id`),
   KEY `idx_projects_parent_aff` (`parent_affiliate_id`),
+  KEY `idx_projects_grandparent_aff` (`grandparent_affiliate_id`),
   KEY `idx_projects_contractor` (`contractor_id`),
   KEY `idx_projects_milestone` (`milestone`),
   KEY `idx_projects_loan_status` (`loan_status`),
@@ -757,12 +869,16 @@ CREATE TABLE IF NOT EXISTS `projects` (
     FOREIGN KEY (`closer_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_projects_parent_aff`
     FOREIGN KEY (`parent_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_projects_grandparent_aff`
+    FOREIGN KEY (`grandparent_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_projects_contractor`
     FOREIGN KEY (`contractor_id`) REFERENCES `contractors`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_projects_admin`
     FOREIGN KEY (`assigned_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_projects_plan`
-    FOREIGN KEY (`adu_plan_id`) REFERENCES `adu_plans`(`id`) ON DELETE SET NULL
+    FOREIGN KEY (`adu_plan_id`) REFERENCES `adu_plans`(`id`) ON DELETE SET NULL,
+  KEY `idx_projects_lender` (`lender_id`),
+  CONSTRAINT `fk_projects_lender` FOREIGN KEY (`lender_id`) REFERENCES `lenders`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `project_milestone_events` (
@@ -826,8 +942,8 @@ CREATE TABLE IF NOT EXISTS `draw_requests` (
 CREATE TABLE IF NOT EXISTS `affiliate_commissions` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `affiliate_id` INT UNSIGNED NOT NULL,
-  `role` ENUM('direct','closer','parent') NOT NULL DEFAULT 'direct'
-    COMMENT 'direct = full rate; closer = sub share; parent = override share',
+  `role` ENUM('direct','closer','parent','grandparent') NOT NULL DEFAULT 'direct'
+    COMMENT 'direct = full rate; closer = referring share; parent = sponsor; grandparent = senior sponsor',
   `project_id` BIGINT UNSIGNED NOT NULL,
   `client_id` INT UNSIGNED DEFAULT NULL,
   `amount_cents` INT NOT NULL,
@@ -852,6 +968,113 @@ CREATE TABLE IF NOT EXISTS `affiliate_commissions` (
   CONSTRAINT `fk_aff_comm_client`
     FOREIGN KEY (`client_id`) REFERENCES `clients`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_aff_comm_admin`
+    FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Affiliate onboarding: versioned agreement, signatures, W-9 (TIN only in private PDF)
+-- 1) Versioned agreement text (super_admin edits → publishes a new version).
+CREATE TABLE IF NOT EXISTS `affiliate_agreement_templates` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `version` INT UNSIGNED NOT NULL,
+  `body_en` MEDIUMTEXT NOT NULL COMMENT 'Light markup: # / ## headings, - bullets, | tables, **bold**, {{placeholders}}',
+  `body_es` MEDIUMTEXT NOT NULL,
+  `notes` VARCHAR(500) DEFAULT NULL,
+  `published_at` DATETIME DEFAULT NULL COMMENT 'NULL = draft; latest published version is signed',
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_aff_agreement_version` (`version`),
+  CONSTRAINT `fk_aff_agreement_tpl_admin`
+    FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 2) One row per signature (re-sign on a new version adds a row; latest wins).
+CREATE TABLE IF NOT EXISTS `affiliate_agreements` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `affiliate_id` INT UNSIGNED NOT NULL,
+  `template_version` INT UNSIGNED NOT NULL,
+  `lang` ENUM('en','es') NOT NULL DEFAULT 'en',
+  `status` ENUM('signed','void') NOT NULL DEFAULT 'signed',
+  `legal_name` VARCHAR(200) NOT NULL,
+  `business_name` VARCHAR(200) DEFAULT NULL,
+  `title` VARCHAR(120) DEFAULT NULL,
+  `address` VARCHAR(400) NOT NULL,
+  `phone` VARCHAR(40) DEFAULT NULL,
+  `email` VARCHAR(255) NOT NULL,
+  `subscription_price_cents` INT UNSIGNED NOT NULL,
+  `sponsor_affiliate_id` INT UNSIGNED DEFAULT NULL COMMENT 'Snapshot of parent at signing',
+  `sponsor_name` VARCHAR(200) DEFAULT NULL,
+  `body_sha256` CHAR(64) NOT NULL COMMENT 'Hash of the exact rendered text signed',
+  `signature_image` MEDIUMTEXT NOT NULL COMMENT 'PNG data URL',
+  `signed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `signed_ip` VARCHAR(45) DEFAULT NULL,
+  `signed_user_agent` VARCHAR(500) DEFAULT NULL,
+  `pdf_blob_pathname` VARCHAR(500) DEFAULT NULL COMMENT 'Private Blob: signed PDF',
+  `voided_at` DATETIME DEFAULT NULL,
+  `voided_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `void_reason` VARCHAR(500) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_aff_agreements_affiliate` (`affiliate_id`, `status`),
+  CONSTRAINT `fk_aff_agreements_affiliate`
+    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_aff_agreements_sponsor`
+    FOREIGN KEY (`sponsor_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_aff_agreements_voider`
+    FOREIGN KEY (`voided_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3) W-9 submissions. Full TIN lives only inside the private PDF.
+CREATE TABLE IF NOT EXISTS `affiliate_w9s` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `affiliate_id` INT UNSIGNED NOT NULL,
+  `status` ENUM('submitted','accepted','rejected') NOT NULL DEFAULT 'submitted',
+  `legal_name` VARCHAR(200) NOT NULL,
+  `business_name` VARCHAR(200) DEFAULT NULL,
+  `tax_classification` ENUM('individual','c_corp','s_corp','partnership','trust_estate','llc','other') NOT NULL,
+  `llc_tax_class` CHAR(1) DEFAULT NULL COMMENT 'C | S | P when tax_classification = llc',
+  `other_classification` VARCHAR(120) DEFAULT NULL,
+  `tin_type` ENUM('ssn','ein') NOT NULL,
+  `tin_last4` CHAR(4) NOT NULL,
+  `address` VARCHAR(255) NOT NULL,
+  `city_state_zip` VARCHAR(255) NOT NULL,
+  `pdf_blob_pathname` VARCHAR(500) NOT NULL,
+  `signed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `signed_ip` VARCHAR(45) DEFAULT NULL,
+  `signed_user_agent` VARCHAR(500) DEFAULT NULL,
+  `reviewed_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `reviewed_at` DATETIME DEFAULT NULL,
+  `review_note` VARCHAR(500) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_aff_w9_affiliate` (`affiliate_id`, `status`),
+  CONSTRAINT `fk_aff_w9_affiliate`
+    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_aff_w9_reviewer`
+    FOREIGN KEY (`reviewed_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Client updates feed (internal or shared with the referring affiliate)
+CREATE TABLE IF NOT EXISTS `client_updates` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `client_id` INT UNSIGNED NOT NULL,
+  `kind` ENUM('note','deal_status') NOT NULL DEFAULT 'note',
+  `visibility` ENUM('internal','affiliate') NOT NULL DEFAULT 'internal',
+  `body` TEXT DEFAULT NULL,
+  `deal_status_id` INT UNSIGNED DEFAULT NULL,
+  `deal_status_label_en` VARCHAR(80) DEFAULT NULL COMMENT 'Snapshot (status may be renamed later)',
+  `deal_status_label_es` VARCHAR(80) DEFAULT NULL,
+  `notified_affiliate_id` INT UNSIGNED DEFAULT NULL,
+  `notified_at` DATETIME DEFAULT NULL,
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_client_updates_client` (`client_id`, `id`),
+  CONSTRAINT `fk_client_updates_client`
+    FOREIGN KEY (`client_id`) REFERENCES `clients`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_client_updates_status`
+    FOREIGN KEY (`deal_status_id`) REFERENCES `deal_statuses`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_client_updates_affiliate`
+    FOREIGN KEY (`notified_affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_client_updates_admin`
     FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -882,6 +1105,8 @@ INSERT INTO `system_settings` (`setting_key`, `setting_value`, `description`) VA
   ('commission_direct_cents_per_sqft', '1000', 'Affiliate direct commission $/sqft in cents ($10) when no sub in chain'),
   ('commission_closer_cents_per_sqft', '700', 'Sub-affiliate (closer) share $/sqft in cents ($7)'),
   ('commission_parent_cents_per_sqft', '300', 'Parent affiliate override $/sqft in cents ($3) when sub closes'),
+  ('commission_parent_shared_cents_per_sqft', '150', 'Sponsor share $/sqft cents ($1.50) when a Senior Sponsor also earns'),
+  ('commission_grandparent_cents_per_sqft', '150', 'Senior Sponsor share $/sqft cents ($1.50)'),
   ('portal_session_days', '30', 'Portal session lifetime in days'),
   ('cpq_template_master_contractor_agreement', NULL, 'Prequalification: blank Master Contractor Agreement PDF URL (contractor signs + uploads)'),
   ('cpq_template_background_check_authorization', NULL, 'Prequalification: blank Background Check Authorization PDF URL')
@@ -970,6 +1195,11 @@ CREATE TABLE IF NOT EXISTS `admin_phone_numbers` (
   `assigned_admin_id` INT UNSIGNED DEFAULT NULL,
   `capabilities_json` JSON DEFAULT NULL COMMENT '{"sms":true,"mms":true,"voice":true}',
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `is_primary` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Preferred default sending line (staff + campaigns)',
+  `line_mode` ENUM('shared','personal') NOT NULL DEFAULT 'personal' COMMENT 'shared = members + ring list; personal = one staff owner',
+  `ring_timeout_sec` INT UNSIGNED NOT NULL DEFAULT 25 COMMENT 'Seconds to ring before voicemail',
+  `voicemail_greeting_en` TEXT DEFAULT NULL COMMENT 'Line voicemail greeting (English); NULL = system default',
+  `voicemail_greeting_es` TEXT DEFAULT NULL COMMENT 'Line voicemail greeting (Spanish); NULL = system default',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -1012,6 +1242,34 @@ CREATE TABLE IF NOT EXISTS `contacts` (
     FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_contacts_converted_client`
     FOREIGN KEY (`converted_client_id`) REFERENCES `clients`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Phone line settings: members (see threads / browser rings) + screened ring numbers
+CREATE TABLE IF NOT EXISTS `phone_line_members` (
+  `line_id` INT UNSIGNED NOT NULL,
+  `admin_id` INT UNSIGNED NOT NULL,
+  `ring_browser` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`line_id`, `admin_id`),
+  KEY `idx_line_members_admin` (`admin_id`),
+  CONSTRAINT `fk_line_members_line`
+    FOREIGN KEY (`line_id`) REFERENCES `admin_phone_numbers`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_line_members_admin`
+    FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `phone_line_ring_numbers` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `line_id` INT UNSIGNED NOT NULL,
+  `label` VARCHAR(80) NOT NULL,
+  `e164` VARCHAR(20) NOT NULL,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_line_ring_number` (`line_id`, `e164`),
+  CONSTRAINT `fk_line_ring_line`
+    FOREIGN KEY (`line_id`) REFERENCES `admin_phone_numbers`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `conversation_unknown_contacts` (
@@ -1124,6 +1382,9 @@ CREATE TABLE IF NOT EXISTS `conversation_templates` (
   `body_es` TEXT DEFAULT NULL,
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `sort_order` INT NOT NULL DEFAULT 0,
+  `category` ENUM('general','welcome','follow_up','reminder','status_update','documents','scheduling') NOT NULL DEFAULT 'general',
+  `usage_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `last_used_at` DATETIME DEFAULT NULL,
   `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1215,4 +1476,230 @@ CREATE TABLE IF NOT EXISTS `campaign_recipient_state` (
   KEY `idx_campaign_recipient_lookup` (`recipient_kind`, `recipient_id`),
   CONSTRAINT `fk_campaign_recipient_campaign`
     FOREIGN KEY (`campaign_id`) REFERENCES `campaigns`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Affiliate welcome flow: onboarding links, billing webhooks, FAQ, AI assistant log
+CREATE TABLE IF NOT EXISTS `affiliate_onboarding_links` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `affiliate_id` INT UNSIGNED NOT NULL,
+  `token_hash` CHAR(64) NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `revoked_at` DATETIME DEFAULT NULL,
+  `last_used_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_aff_onboarding_token` (`token_hash`),
+  KEY `idx_aff_onboarding_affiliate` (`affiliate_id`),
+  CONSTRAINT `fk_aff_onboarding_affiliate`
+    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `billing_webhook_events` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `event_id` VARCHAR(80) NOT NULL,
+  `event_type` VARCHAR(80) NOT NULL,
+  `processed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_billing_webhook_event` (`event_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `affiliate_faqs` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `question_en` VARCHAR(300) NOT NULL,
+  `answer_en` TEXT NOT NULL,
+  `question_es` VARCHAR(300) DEFAULT NULL,
+  `answer_es` TEXT DEFAULT NULL,
+  `sort_order` INT NOT NULL DEFAULT 0,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_affiliate_faqs_active` (`is_active`, `sort_order`),
+  CONSTRAINT `fk_affiliate_faqs_admin`
+    FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `affiliate_assistant_messages` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `affiliate_id` INT UNSIGNED NOT NULL,
+  `role` ENUM('user','assistant') NOT NULL,
+  `content` TEXT NOT NULL,
+  `handoff` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Assistant could not answer from the agreement/FAQ',
+  `input_tokens` INT UNSIGNED DEFAULT NULL,
+  `output_tokens` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_aff_assistant_affiliate` (`affiliate_id`, `created_at`),
+  CONSTRAINT `fk_aff_assistant_affiliate`
+    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Lenders directory + scheduler (appointments, attendees, booking links)
+
+
+CREATE TABLE IF NOT EXISTS `appointments` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `title` VARCHAR(200) NOT NULL,
+  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','other') NOT NULL DEFAULT 'consultation',
+  `starts_at` DATETIME NOT NULL COMMENT 'UTC',
+  `ends_at` DATETIME NOT NULL COMMENT 'UTC',
+  `timezone` VARCHAR(64) NOT NULL DEFAULT 'America/Los_Angeles',
+  `location_type` ENUM('onsite','office','phone','video') NOT NULL DEFAULT 'onsite',
+  `location` VARCHAR(500) DEFAULT NULL,
+  `video_url` VARCHAR(500) DEFAULT NULL,
+  `description` TEXT DEFAULT NULL COMMENT 'Shared with attendees',
+  `notes` TEXT DEFAULT NULL COMMENT 'Internal (staff only)',
+  `client_id` INT UNSIGNED DEFAULT NULL,
+  `lead_id` BIGINT UNSIGNED DEFAULT NULL,
+  `project_id` BIGINT UNSIGNED DEFAULT NULL,
+  `owner_admin_id` INT UNSIGNED DEFAULT NULL,
+  `status` ENUM('scheduled','cancelled','completed','no_show') NOT NULL DEFAULT 'scheduled',
+  `source` ENUM('staff','booking') NOT NULL DEFAULT 'staff',
+  `notify_homeowner` TINYINT(1) NOT NULL DEFAULT 1,
+  `manage_token_hash` CHAR(64) DEFAULT NULL COMMENT 'Homeowner / booker cancel + reschedule link',
+  `ics_uid` VARCHAR(120) NOT NULL,
+  `ics_sequence` INT UNSIGNED NOT NULL DEFAULT 0,
+  `reminder_24h_sent_at` DATETIME DEFAULT NULL,
+  `reminder_1h_sent_at` DATETIME DEFAULT NULL,
+  `cancelled_reason` VARCHAR(500) DEFAULT NULL,
+  `cancelled_at` DATETIME DEFAULT NULL,
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_appointments_manage_token` (`manage_token_hash`),
+  KEY `idx_appointments_starts` (`starts_at`),
+  KEY `idx_appointments_owner_starts` (`owner_admin_id`, `starts_at`),
+  KEY `idx_appointments_client` (`client_id`),
+  KEY `idx_appointments_lead` (`lead_id`),
+  KEY `idx_appointments_project` (`project_id`),
+  KEY `idx_appointments_status` (`status`),
+  CONSTRAINT `fk_appointments_client` FOREIGN KEY (`client_id`) REFERENCES `clients`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_appointments_lead` FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_appointments_project` FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_appointments_owner` FOREIGN KEY (`owner_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_appointments_creator` FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `appointment_attendees` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `appointment_id` INT UNSIGNED NOT NULL,
+  `kind` ENUM('admin','contractor','lender','homeowner','guest') NOT NULL,
+  `admin_id` INT UNSIGNED DEFAULT NULL,
+  `contractor_id` INT UNSIGNED DEFAULT NULL,
+  `lender_id` INT UNSIGNED DEFAULT NULL,
+  `name` VARCHAR(200) DEFAULT NULL,
+  `email` VARCHAR(255) DEFAULT NULL,
+  `phone` VARCHAR(40) DEFAULT NULL,
+  `preferred_language` ENUM('en','es') NOT NULL DEFAULT 'en',
+  `notified_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_appt_attendees_appt` (`appointment_id`),
+  KEY `idx_appt_attendees_contractor` (`contractor_id`),
+  KEY `idx_appt_attendees_admin` (`admin_id`),
+  KEY `idx_appt_attendees_lender` (`lender_id`),
+  CONSTRAINT `fk_appt_attendees_appt` FOREIGN KEY (`appointment_id`) REFERENCES `appointments`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_appt_attendees_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_appt_attendees_contractor` FOREIGN KEY (`contractor_id`) REFERENCES `contractors`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_appt_attendees_lender` FOREIGN KEY (`lender_id`) REFERENCES `lenders`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `scheduler_settings` (
+  `admin_id` INT UNSIGNED NOT NULL,
+  `is_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `slug` VARCHAR(80) NOT NULL,
+  `title_en` VARCHAR(200) NOT NULL DEFAULT 'ADU consultation',
+  `title_es` VARCHAR(200) NOT NULL DEFAULT 'Consulta de ADU',
+  `description_en` TEXT DEFAULT NULL,
+  `description_es` TEXT DEFAULT NULL,
+  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','other') NOT NULL DEFAULT 'consultation',
+  `duration_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  `buffer_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 15,
+  `advance_days` SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  `min_notice_hours` SMALLINT UNSIGNED NOT NULL DEFAULT 4,
+  `timezone` VARCHAR(64) NOT NULL DEFAULT 'America/Los_Angeles',
+  `allow_phone` TINYINT(1) NOT NULL DEFAULT 1,
+  `allow_video` TINYINT(1) NOT NULL DEFAULT 0,
+  `allow_office` TINYINT(1) NOT NULL DEFAULT 0,
+  `allow_onsite` TINYINT(1) NOT NULL DEFAULT 1,
+  `video_url` VARCHAR(500) DEFAULT NULL COMMENT 'Default video room for video bookings',
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`admin_id`),
+  UNIQUE KEY `uq_scheduler_settings_slug` (`slug`),
+  CONSTRAINT `fk_scheduler_settings_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `scheduler_availability` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `admin_id` INT UNSIGNED NOT NULL,
+  `day_of_week` TINYINT UNSIGNED NOT NULL COMMENT '0=Sunday … 6=Saturday',
+  `start_time` TIME NOT NULL,
+  `end_time` TIME NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_scheduler_availability_admin` (`admin_id`, `day_of_week`),
+  CONSTRAINT `fk_scheduler_availability_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `scheduler_blocked_ranges` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `admin_id` INT UNSIGNED NOT NULL,
+  `starts_at` DATETIME NOT NULL COMMENT 'UTC',
+  `ends_at` DATETIME NOT NULL COMMENT 'UTC',
+  `label` VARCHAR(200) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_scheduler_blocked_admin` (`admin_id`, `starts_at`),
+  CONSTRAINT `fk_scheduler_blocked_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Affiliate link-name history (old /r/<slug> keeps working 30 days)
+CREATE TABLE IF NOT EXISTS `affiliate_slug_history` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `affiliate_id` INT UNSIGNED NOT NULL,
+  `slug` VARCHAR(64) NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_aff_slug_history_slug` (`slug`, `expires_at`),
+  KEY `idx_aff_slug_history_affiliate` (`affiliate_id`),
+  CONSTRAINT `fk_aff_slug_history_affiliate`
+    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Admin billing: action log + staff-sent card links
+CREATE TABLE IF NOT EXISTS `billing_admin_actions` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `member_role` ENUM('affiliate','contractor') NOT NULL,
+  `member_id` INT UNSIGNED NOT NULL,
+  `admin_id` INT UNSIGNED DEFAULT NULL,
+  `action` VARCHAR(40) NOT NULL COMMENT 'cancel_now | cancel_period_end | resume | extend | refund | price | card_link',
+  `reason` TEXT DEFAULT NULL,
+  `detail_json` JSON DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_billing_actions_member` (`member_role`, `member_id`),
+  CONSTRAINT `fk_billing_actions_admin`
+    FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `billing_card_links` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `member_role` ENUM('affiliate','contractor') NOT NULL,
+  `member_id` INT UNSIGNED NOT NULL,
+  `token_hash` CHAR(64) NOT NULL,
+  `price_cents` INT UNSIGNED DEFAULT NULL COMMENT 'NULL = keep the member price',
+  `free_days` INT UNSIGNED DEFAULT NULL COMMENT 'NULL = standard rule (trial once)',
+  `note` VARCHAR(500) DEFAULT NULL,
+  `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `used_at` DATETIME DEFAULT NULL,
+  `revoked_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_billing_card_link_token` (`token_hash`),
+  KEY `idx_billing_card_link_member` (`member_role`, `member_id`),
+  CONSTRAINT `fk_billing_card_link_admin`
+    FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

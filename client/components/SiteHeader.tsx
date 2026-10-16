@@ -19,6 +19,7 @@ export default function SiteHeader() {
       <nav className="desktop-nav" aria-label={t("nav.aria")}>
         <Link to="/about">{t("nav.about")}</Link>
         <Link to="/partners">{t("nav.partners")}</Link>
+        <Link to="/events">{t("nav.events")}</Link>
         <Link to="/contact">{t("nav.contact")}</Link>
         <Link to="/client/login">{t("nav.clientPortal")}</Link>
       </nav>

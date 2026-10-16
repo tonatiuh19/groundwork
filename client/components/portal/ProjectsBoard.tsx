@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import { useNavigate } from "react-router-dom";
 
 import { GripVertical, Loader2 } from "lucide-react";
@@ -38,6 +39,8 @@ export default function ProjectsBoard({ canWrite }: { canWrite: boolean }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<ProjectMilestone | null>(null);
   const [pending, setPending] = useState<PendingMove | null>(null);
+  // Phones: one stage at a time (tabs) instead of a sideways-scrolling board.
+  const [stage, setStage] = useState<ProjectMilestone>(BOARD_MILESTONES[0]);
   const confirmBusy = useBusyAction(700);
 
   const draggingProject = useMemo(() => {
@@ -147,6 +150,21 @@ export default function ProjectsBoard({ canWrite }: { canWrite: boolean }) {
     <div className="pf-board-wrap">
       <ErrorNote error={error} />
       <ErrorNote error={saveError} />
+      <div className="pf-board-tabs" role="tablist" aria-label={t("admin.boardStages")}>
+        {BOARD_MILESTONES.map((m) => (
+          <button
+            key={m}
+            type="button"
+            role="tab"
+            aria-selected={stage === m}
+            className={stage === m ? "pf-board-tab is-on" : "pf-board-tab"}
+            onClick={() => setStage(m)}
+          >
+            {t(`milestone.${m}`)}
+            <span>{columns[m]?.total ?? 0}</span>
+          </button>
+        ))}
+      </div>
       <div className="pf-board" role="list">
         {BOARD_MILESTONES.map((m) => {
           const col = columns[m];
@@ -160,7 +178,7 @@ export default function ProjectsBoard({ canWrite }: { canWrite: boolean }) {
           return (
             <section
               key={m}
-              className={`pf-board-col pf-board-col--${m}${dragOver === m ? " is-drop" : ""}${
+              className={`pf-board-col pf-board-col--${m}${stage === m ? " is-stage" : ""}${dragOver === m ? " is-drop" : ""}${
                 draggingProject && !dropOk ? " is-blocked" : ""
               }`}
               aria-label={t(`milestone.${m}`)}
@@ -214,6 +232,9 @@ export default function ProjectsBoard({ canWrite }: { canWrite: boolean }) {
                         <strong>{p.public_id}</strong>
                       </div>
                       <p className="pf-board-card-title">{p.client_name}</p>
+                      {p.deal_status_en ? (
+                        <DealStatusBadge en={p.deal_status_en} es={p.deal_status_es} tone={p.deal_status_tone} />
+                      ) : null}
                       <p className="pf-muted">
                         {p.property_city || p.property_address || "—"}
                       </p>

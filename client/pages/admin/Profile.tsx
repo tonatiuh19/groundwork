@@ -3,6 +3,7 @@ import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import { Camera, Loader2, PhoneForwarded, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import BookingLinkPanel from "@/components/admin/BookingLinkPanel";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   updateAdminProfile,
@@ -371,6 +372,8 @@ export default function AdminProfile() {
           )}
         </section>
       ) : null}
+
+      <BookingLinkPanel />
 
       <AvatarCropModal
         open={Boolean(cropSrc)}

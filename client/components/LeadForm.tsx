@@ -1,3 +1,4 @@
+import { cameFromQr } from "@/lib/eventQr";
 import { useMemo } from "react";
 import { ArrowRight, Check, Clock } from "lucide-react";
 import { Formik, Form, Field } from "formik";
@@ -162,7 +163,7 @@ export default function LeadForm({
             mode: event ? "event" : "standard",
             event_id: event ? event.id : null,
             event_city: event ? event.city : null,
-            source: "website",
+            source: event && cameFromQr(event.id) ? "qr" : "website",
           }),
         );
       }}

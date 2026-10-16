@@ -18,6 +18,10 @@ import {
 } from "@/components/portal/kit";
 import { TeamNotificationsPanel } from "@/components/admin/TeamNotificationsPanel";
 import { AdminPhoneNumbersPanel } from "@/components/admin/AdminPhoneNumbersPanel";
+import AgreementTemplatePanel from "@/components/admin/AgreementTemplatePanel";
+import DealStatusesPanel from "@/components/admin/DealStatusesPanel";
+import AffiliateFaqPanel from "@/components/admin/AffiliateFaqPanel";
+import LendersPanel from "@/components/admin/LendersPanel";
 import { centsToDollars, dollarsToCents } from "@/lib/format";
 
 export default function AdminSettings() {
@@ -63,6 +67,8 @@ export default function AdminSettings() {
               ),
               closer: centsToDollars(settings.commission_closer_cents_per_sqft),
               parent: centsToDollars(settings.commission_parent_cents_per_sqft),
+              parentShared: centsToDollars(settings.commission_parent_shared_cents_per_sqft ?? 150),
+              grandparent: centsToDollars(settings.commission_grandparent_cents_per_sqft ?? 150),
             }}
             validationSchema={commissionSchema}
             onSubmit={async (v) => {
@@ -73,6 +79,8 @@ export default function AdminSettings() {
                   commission_direct_cents_per_sqft: dollarsToCents(v.direct) ?? 0,
                   commission_closer_cents_per_sqft: dollarsToCents(v.closer) ?? 0,
                   commission_parent_cents_per_sqft: dollarsToCents(v.parent) ?? 0,
+                  commission_parent_shared_cents_per_sqft: dollarsToCents(v.parentShared) ?? 0,
+                  commission_grandparent_cents_per_sqft: dollarsToCents(v.grandparent) ?? 0,
                 }),
               );
               if (saveAdminSettings.fulfilled.match(r)) {
@@ -92,6 +100,9 @@ export default function AdminSettings() {
               <p className="pf-muted">{t("admin.rateCloserHelp")}</p>
               <TextField name="parent" labelKey="admin.rateParent" />
               <p className="pf-muted">{t("admin.rateParentHelp")}</p>
+              <TextField name="parentShared" labelKey="admin.rateParentShared" />
+              <TextField name="grandparent" labelKey="admin.rateGrandparent" />
+              <p className="pf-muted">{t("admin.rateTwoLevelHelp")}</p>
               <SubmitButton busy={saving} labelKey="pf.save" />
               {saved ? <p className="pf-success-inline">{t("pf.saved")}</p> : null}
             </Form>
@@ -106,6 +117,12 @@ export default function AdminSettings() {
       {showPhonePanel ? (
         <AdminPhoneNumbersPanel className="pf-section gw-phone-panel" />
       ) : null}
+
+      {showTeamNotify ? <DealStatusesPanel className="pf-section" /> : null}
+
+      {showTeamNotify ? <AgreementTemplatePanel className="pf-section" /> : null}
+      {showTeamNotify ? <AffiliateFaqPanel className="pf-section" /> : null}
+      {showTeamNotify ? <LendersPanel className="pf-section" /> : null}
     </div>
   );
 }

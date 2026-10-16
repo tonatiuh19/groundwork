@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import { Link, useNavigate } from "react-router-dom";
 import { Check, MessageSquare, Phone } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -132,6 +133,7 @@ export default function AdminAffiliates() {
               </>
             ),
           },
+          ...touchColumns(),
           { key: "company", headerKey: "pf.company", render: (a) => a.company || "—" },
           {
             key: "link",

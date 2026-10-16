@@ -15,4 +15,4 @@ alwaysApply: false
 - Only add endpoints when needed (secrets, DB, server-only logic)
 - Keep TypeScript types consistent across `client/`, `api/index.ts`, and `shared/`
 - Return `{ error: string }` with correct status (400/402/403/404/409) — use friendly messages, not driver errors
-- Vitest: never send live Resend mail; clean TiDB fixtures via `api/testDbCleanup.ts`
+- Vitest: never send live Resend mail; clean TiDB fixtures via `api/testDbCleanup.ts` (run prefix `gw<suite>-${Date.now()}-` + `cleanupPortalFixturesByPrefix`; global sweep in `api/testGlobalSetup.ts`)

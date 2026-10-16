@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import { Link, useNavigate } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
@@ -214,6 +215,7 @@ export default function AdminContractors() {
               </>
             ),
           },
+          ...touchColumns(),
           { key: "company", headerKey: "pf.company", render: (c) => c.company || "—" },
           { key: "license", headerKey: "admin.license", render: (c) => c.license_number || "—" },
           { key: "projects", headerKey: "portalNav.projects", render: (c) => c.project_count },

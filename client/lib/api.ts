@@ -1,5 +1,6 @@
 import axios from "axios";
 import i18n from "@/i18n";
+import { getOnboardingToken } from "@/lib/onboardingToken";
 
 export const api = axios.create({
   baseURL: "/api",
@@ -10,6 +11,11 @@ export const api = axios.create({
 api.interceptors.request.use((config) => {
   const lang = i18n.language?.startsWith("es") ? "es" : "en";
   config.headers.set("Accept-Language", lang);
+  // Affiliate welcome link (no login yet): authorizes /affiliate/* onboarding calls.
+  const onboarding = getOnboardingToken();
+  if (onboarding && String(config.url || "").startsWith("/affiliate/")) {
+    config.headers.set("x-onboarding-token", onboarding);
+  }
   return config;
 });
 

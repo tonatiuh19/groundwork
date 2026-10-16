@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef } from "react";
-import { useParams } from "react-router-dom";
+import LastContactStrip from "@/components/admin/LastContactStrip";
+import DeletePersonButton from "@/components/admin/DeletePersonButton";
+import { useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import { Check, ClipboardCheck, Send, ShieldAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -35,6 +37,7 @@ import { useAdminCan } from "@/hooks/useAdminCan";
 import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
 import { isDemotingAccountStatus } from "@/lib/accountStatus";
 import AdminApplicationPanel from "@/components/contractorApplication/AdminApplicationPanel";
+import ContractorBillingAdmin from "@/components/admin/ContractorBillingAdmin";
 import {
   clearCpqActionError,
   overrideActivateContractor,
@@ -51,6 +54,7 @@ type ContractorForm = {
 };
 
 export default function AdminContractorDetail() {
+  const navigate = useNavigate();
   const { t, i18n } = useTranslation();
   const { id: rawId = "" } = useParams();
   const id = Number(rawId);
@@ -218,6 +222,7 @@ export default function AdminContractorDetail() {
               </>
             }
           />
+          <LastContactStrip phone={k.phone} name={`${k.first_name} ${k.last_name}`.trim()} />
 
           <div className="pf-stats">
             <StatCard labelKey="portalNav.projects" value={k.project_count} />
@@ -305,6 +310,21 @@ export default function AdminContractorDetail() {
             contractorId={k.id}
             onContractorChanged={() => void dispatch(fetchAdminContractorDetail(k.id))}
           />
+
+          <ContractorBillingAdmin contractorId={k.id} canWrite={canWrite} refreshKey={String(k.status)} />
+
+          <section className="pf-section gw-danger-zone">
+            <div>
+              <h2 className="pf-h2">{t("erase.zoneTitle")}</h2>
+              <p className="pf-hint">{t("erase.zoneLead.contractor")}</p>
+            </div>
+            <DeletePersonButton
+              entity="contractor"
+              id={k.id}
+              name={`${k.first_name} ${k.last_name}`.trim()}
+              onDeleted={() => navigate("/admin/contractors", { replace: true })}
+            />
+          </section>
 
           <Modal open={overrideOpen} titleKey="cpq.admin.overrideTitle" onClose={() => setOverrideOpen(false)}>
             <div className="pf-form">

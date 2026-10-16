@@ -1,5 +1,6 @@
 import {
   LayoutDashboard,
+  CreditCard,
   Inbox,
   Users,
   Handshake,
@@ -10,10 +11,12 @@ import {
   ShieldCheck,
   Home,
   Settings,
+  CalendarClock,
   CalendarDays,
   MessagesSquare,
   BookUser,
   Megaphone,
+  FileText,
 } from "lucide-react";
 import PortalShell from "@/components/portal/PortalShell";
 import GlobalVoiceManager from "@/components/GlobalVoiceManager";
@@ -26,12 +29,14 @@ export default function AdminLayout() {
 
   const shell = (
     <PortalShell
+      tabs={["/admin", "/admin/leads", "/admin/projects", "/admin/conversations"]}
       actor="admin"
       loginPath="/admin/login"
       titleKey="portalNav.adminTitle"
       nav={[
         { to: "/admin", end: true, labelKey: "portalNav.dashboard", icon: LayoutDashboard },
         { to: "/admin/leads", labelKey: "portalNav.leads", icon: Inbox, perm: "leads" },
+        { to: "/admin/calendar", labelKey: "portalNav.calendar", icon: CalendarClock, perm: "projects.read" },
         // Visible to content (events) and agents (leads, read-only); writes gate inside the pages.
         { to: "/admin/events", labelKey: "portalNav.events", icon: CalendarDays, perm: ["events", "leads"] },
         {
@@ -47,6 +52,12 @@ export default function AdminLayout() {
           requiresConversations: true,
         },
         {
+          to: "/admin/templates",
+          labelKey: "portalNav.templates",
+          icon: FileText,
+          requiresConversations: true,
+        },
+        {
           to: "/admin/contacts",
           labelKey: "portalNav.contacts",
           icon: BookUser,
@@ -58,6 +69,7 @@ export default function AdminLayout() {
         { to: "/admin/contractors", labelKey: "portalNav.contractors", icon: HardHat, perm: "people.read" },
         { to: "/admin/draws", labelKey: "portalNav.draws", icon: Wallet, perm: "projects.read" },
         { to: "/admin/commissions", labelKey: "portalNav.commissions", icon: Coins, perm: "finance.read" },
+        { to: "/admin/billing", labelKey: "portalNav.billing", icon: CreditCard, perm: "people.read" },
         { to: "/admin/plans", labelKey: "portalNav.plans", icon: Home },
         { to: "/admin/staff", labelKey: "portalNav.staff", icon: ShieldCheck, perm: "staff" },
         { to: "/admin/settings", labelKey: "portalNav.settings", icon: Settings, perm: "settings" },

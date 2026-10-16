@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Formik, Form } from "formik";
+import { Formik, Form, useFormikContext } from "formik";
 import * as Yup from "yup";
-import { CalendarPlus, Star } from "lucide-react";
+import { CalendarPlus, Star, Wand2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -24,11 +24,75 @@ import {
   TextField,
   enumOptions,
 } from "@/components/portal/kit";
-import { EVENT_STATUSES } from "@/lib/eventOptions";
+import { EVENT_STATUSES, slugifyEvent, suggestEventSlug } from "@/lib/eventOptions";
 import { fromDateTimeLocalValue, useFormatters } from "@/lib/format";
 import { useAdminCan } from "@/hooks/useAdminCan";
 
 const PAGE_SIZE = 50;
+
+type NewEventValues = { title_en: string; title_es: string; slug: string; city: string; starts_at: string };
+
+/**
+ * Auto slug: follows city + start date (`fontana-oct-2026`) until the admin edits
+ * the slug by hand; "Generate" re-applies the suggestion. Shows the public URL.
+ */
+function SlugField() {
+  const { t } = useTranslation();
+  const { values, errors, touched, setFieldValue, setFieldTouched } = useFormikContext<NewEventValues>();
+  const [manual, setManual] = useState(false);
+  const suggestion = suggestEventSlug(values);
+
+  useEffect(() => {
+    if (!manual && values.slug !== suggestion) void setFieldValue("slug", suggestion, false);
+  }, [manual, suggestion, values.slug, setFieldValue]);
+
+  return (
+    <div className="gw-slug-field">
+      <div className="gw-slug-row">
+        <label className="pf-field">
+          <span>{t("admin.eventSlug")}</span>
+          <input
+            name="slug"
+            value={values.slug}
+            placeholder="fontana-oct-2026"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => {
+              setManual(true);
+              void setFieldValue("slug", e.target.value);
+            }}
+            onBlur={(e) => {
+              void setFieldValue("slug", slugifyEvent(e.target.value));
+              void setFieldTouched("slug", true, false);
+            }}
+            aria-invalid={Boolean(touched.slug && errors.slug)}
+          />
+          {touched.slug && errors.slug ? <span className="form-error">{errors.slug}</span> : null}
+        </label>
+        <button
+          type="button"
+          className="pf-btn gw-slug-generate"
+          disabled={!suggestion}
+          onClick={() => {
+            setManual(false);
+            void setFieldValue("slug", suggestion);
+          }}
+        >
+          <Wand2 size={14} aria-hidden /> {t("admin.eventSlugGenerate")}
+        </button>
+      </div>
+      <p className="pf-muted">
+        {values.slug ? (
+          <>
+            {t("admin.eventSlugPreview")} <code>/events/{slugifyEvent(values.slug)}</code>
+          </>
+        ) : (
+          t("admin.eventSlugHelp")
+        )}
+      </p>
+    </div>
+  );
+}
 
 export default function AdminEvents() {
   const { t, i18n } = useTranslation();
@@ -181,7 +245,7 @@ export default function AdminEvents() {
               createAdminEvent({
                 title_en: v.title_en.trim(),
                 title_es: v.title_es.trim(),
-                slug: v.slug.trim() || undefined,
+                slug: slugifyEvent(v.slug) || undefined,
                 city: v.city.trim(),
                 starts_at: fromDateTimeLocalValue(v.starts_at),
                 status: "draft",
@@ -207,8 +271,7 @@ export default function AdminEvents() {
               <TextField name="city" labelKey="pf.city" />
               <TextField name="starts_at" labelKey="admin.startsAt" type="datetime-local" />
             </div>
-            <TextField name="slug" labelKey="admin.eventSlug" placeholder="fontana-oct-2026" />
-            <p className="pf-muted">{t("admin.eventSlugHelp")}</p>
+            <SlugField />
             <SubmitButton busy={saving} labelKey="pf.create" />
           </Form>
         </Formik>

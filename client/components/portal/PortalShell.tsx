@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import {
   Link,
   NavLink,
@@ -6,7 +6,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { Lock, LogOut, Menu, X, type LucideIcon } from "lucide-react";
+import { Lock, LogOut, MoreHorizontal, X, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { adminCan, type AdminPerm, type PortalActor } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -40,6 +40,14 @@ type Props = {
   loginPath: string;
   titleKey: string;
   nav: PortalNavItem[];
+  /** Extra header control (phone top bar + desktop sidebar), e.g. the affiliate "My link". */
+  headerAction?: ReactNode;
+  /** Replaces the page (e.g. contractor membership lock) while the shell stays usable. */
+  gate?: ReactNode;
+  /** Slim banner above every page (e.g. "your card expires soon"). */
+  notice?: ReactNode;
+  /** Phones: paths shown in the bottom tab bar (max 4, in order); everything else lives under "More". */
+  tabs?: string[];
 };
 
 export default function PortalShell({
@@ -47,6 +55,10 @@ export default function PortalShell({
   loginPath,
   titleKey,
   nav,
+  headerAction,
+  gate,
+  notice,
+  tabs,
 }: Props) {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
@@ -114,6 +126,14 @@ export default function PortalShell({
           : "/client";
 
   const closeNav = () => setNavOpen(false);
+  const isLocked = (item: PortalNavItem) =>
+    !!item.requiresConversations && actor === "admin" && !user.conversations_enabled;
+  // Phones: up to 4 primary tabs (preferred order from `tabs`, then the nav order) + "More".
+  const usable = visibleNav.filter((item) => !isLocked(item));
+  const tabItems = [
+    ...(tabs ?? []).map((to) => usable.find((i) => i.to === to)).filter((i): i is PortalNavItem => Boolean(i)),
+    ...usable.filter((i) => !(tabs ?? []).includes(i.to)),
+  ].slice(0, 4);
 
   return (
     <div
@@ -127,25 +147,10 @@ export default function PortalShell({
           <span className="portal-mobile-kicker">{t(titleKey)}</span>
         </Link>
         <div className="portal-mobile-bar-actions">
+          {headerAction}
           {actor === "admin" ? (
             <AdminNotificationBell variant="embedded" />
           ) : null}
-          <button
-            type="button"
-            className="portal-menu-toggle"
-            aria-expanded={navOpen}
-            aria-controls={navId}
-            aria-label={
-              navOpen ? t("portalAuth.closeMenu") : t("portalAuth.openMenu")
-            }
-            onClick={() => setNavOpen((v) => !v)}
-          >
-            {navOpen ? (
-              <X size={20} strokeWidth={1.8} />
-            ) : (
-              <Menu size={20} strokeWidth={1.8} />
-            )}
-          </button>
         </div>
       </header>
 
@@ -157,11 +162,19 @@ export default function PortalShell({
         onClick={closeNav}
       />
 
-      <aside className="portal-sidebar" id={navId}>
+      <aside className="portal-sidebar" id={navId} aria-label={t("portalAuth.menu")}>
+        <div className="portal-sheet-head">
+          <span className="portal-sheet-grip" aria-hidden />
+          <strong>{t("portalAuth.menu")}</strong>
+          <button type="button" className="portal-sheet-close" onClick={closeNav} aria-label={t("portalAuth.closeMenu")}>
+            <X size={18} aria-hidden />
+          </button>
+        </div>
         <Link to="/" className="portal-sidebar-brand" onClick={closeNav}>
           <img src="/logos/groundwork-logo.png" alt="Groundwork Capital" />
         </Link>
         <p className="portal-sidebar-kicker">{t(titleKey)}</p>
+        {headerAction ? <div className="portal-sidebar-action">{headerAction}</div> : null}
         <nav className="portal-sidebar-nav" aria-label={t(titleKey)}>
           {visibleNav.map((item) => {
             const numberGated =
@@ -284,8 +297,41 @@ export default function PortalShell({
         </div>
       </aside>
       <main className="portal-main">
-        <Outlet />
+        {gate ? null : notice}
+        {gate ?? <Outlet />}
       </main>
+
+      <nav className="portal-tabbar" aria-label={t("portalAuth.quickNav")}>
+        {tabItems.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            onClick={closeNav}
+            className={({ isActive }) => (isActive && !navOpen ? "portal-tab is-active" : "portal-tab")}
+          >
+            <span className="portal-tab-icon">
+              <item.icon size={21} strokeWidth={1.8} aria-hidden />
+              {item.requiresConversations && navBadgeUnread > 0 ? (
+                <span className="portal-tab-badge">{navBadgeUnread > 99 ? "99+" : navBadgeUnread}</span>
+              ) : null}
+            </span>
+            <span className="portal-tab-label">{t(item.labelKey)}</span>
+          </NavLink>
+        ))}
+        <button
+          type="button"
+          className={navOpen ? "portal-tab is-active" : "portal-tab"}
+          aria-expanded={navOpen}
+          aria-controls={navId}
+          onClick={() => setNavOpen((v) => !v)}
+        >
+          <span className="portal-tab-icon">
+            <MoreHorizontal size={21} strokeWidth={1.8} aria-hidden />
+          </span>
+          <span className="portal-tab-label">{t("portalAuth.more")}</span>
+        </button>
+      </nav>
     </div>
   );
 }

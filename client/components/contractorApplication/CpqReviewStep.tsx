@@ -16,6 +16,7 @@ import { yupPhoneRequired } from "@/lib/validation";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { submitContractorApplication } from "@/store/slices/contractorApplicationSlice";
 import CpqSummary from "./CpqSummary";
+import ContractorMembership from "@/components/contractor/ContractorMembership";
 
 export default function CpqReviewStep({
   token,
@@ -40,7 +41,10 @@ export default function CpqReviewStep({
   const coreMissing = reqs.docs.filter((r) => r.applicable && r.requirement === "core" && !have.has(r.key));
   const fieldMissing = missingFields.length ? missingFields : reqs.missing_fields;
   const missingSections = [...new Set(fieldMissing.map(contractorApplicationPathSection))];
-  const blocked = fieldMissing.length > 0 || coreMissing.length > 0;
+  const membership = useAppSelector((s) => s.contractorBilling.application);
+  // Membership card before signing (nothing is charged until approval).
+  const needsCard = Boolean(membership && membership.configured && !membership.waived && !membership.card);
+  const blocked = fieldMissing.length > 0 || coreMissing.length > 0 || needsCard;
   const lang = i18n.language?.startsWith("es") ? "es" : "en";
 
   const schema = Yup.object({
@@ -84,6 +88,13 @@ export default function CpqReviewStep({
       ) : null}
 
       <CpqSummary data={data} onEdit={onEditSection} missing={fieldMissing} />
+
+      <ContractorMembership
+        mode="application"
+        token={token}
+        name={`${view.contractor.first_name} ${view.contractor.last_name}`.trim()}
+        email={view.contractor.email}
+      />
 
       <section className="cpq-sign">
         <h3 className="cpq-sign-title">
@@ -150,6 +161,7 @@ export default function CpqReviewStep({
             ) : (
               <ErrorNote error={submitError} />
             )}
+            {needsCard ? <p className="pf-hint">{t("ctrBilling.cardFirst")}</p> : null}
             <button
               type="submit"
               className={`button button-gold cpq-submit${submitting ? " pf-btn--busy" : ""}`}
