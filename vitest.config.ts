@@ -3,8 +3,8 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
 const alias = {
-  "@": path.resolve(__dirname, "client"),
-  "@shared": path.resolve(__dirname, "shared"),
+  "@": path.resolve(import.meta.dirname, "client"),
+  "@shared": path.resolve(import.meta.dirname, "shared"),
 };
 
 export default defineConfig({
