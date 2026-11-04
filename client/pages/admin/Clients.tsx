@@ -45,6 +45,7 @@ import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
 import { useAdminCan } from "@/hooks/useAdminCan";
 import { useStatusQueryParam } from "@/hooks/useStatusQueryParam";
 import { isDemotingAccountStatus } from "@/lib/accountStatus";
+import CityField from "@/components/CityField";
 
 const STATUSES = ["prospect", "active", "inactive", "suspended"] as const;
 const FILTER_STATUSES = ["pending", ...STATUSES] as const;
@@ -143,6 +144,7 @@ export default function AdminClients() {
     phone: string;
     address_line1: string;
     city: string;
+    city_id: number | "";
     zip: string;
     affiliate_id: string;
     send_invite: boolean;
@@ -151,10 +153,11 @@ export default function AdminClients() {
   /** Create (or re-send with a staff shared-phone reason after a phone-only match). */
   const submitClient = async (v: NewClient, sharedPhoneReason?: string) => {
     lastClient.current = v;
-    const { affiliate_id, ...rest } = v;
+    const { affiliate_id, city_id, ...rest } = v;
     const r = await dispatch(
       createAdminClient({
         ...rest,
+        city_id: city_id ? Number(city_id) : null,
         affiliate_id: affiliate_id ? Number(affiliate_id) : null,
         preferred_language: i18n.language?.startsWith("es") ? "es" : "en",
         ...(sharedPhoneReason ? { shared_phone_reason: sharedPhoneReason } : {}),
@@ -375,7 +378,7 @@ export default function AdminClients() {
 
       <Modal open={open} titleKey="admin.addClient" onClose={() => setOpen(false)}>
         <Formik
-          initialValues={{ first_name: "", last_name: "", email: "", phone: "", address_line1: "", city: "", zip: "", affiliate_id: "", send_invite: true }}
+          initialValues={{ first_name: "", last_name: "", email: "", phone: "", address_line1: "", city: "", city_id: "" as number | "", zip: "", affiliate_id: "", send_invite: true }}
           validationSchema={schema}
           onSubmit={(v) => submitClient(v)}
         >
@@ -393,7 +396,7 @@ export default function AdminClients() {
             </div>
             <TextField name="address_line1" labelKey="form.address" />
             <div className="pf-form-grid">
-              <TextField name="city" labelKey="pf.city" />
+              <CityField textName="city" admin />
               <TextField name="zip" labelKey="pf.zip" />
             </div>
             <SelectField

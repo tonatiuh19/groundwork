@@ -49,6 +49,7 @@ import {
 import { CommissionActions, DrawActions } from "@/components/portal/AdminActions";
 import { centsToDollars, dollarsToCents, useFormatters } from "@/lib/format";
 import { useAdminCan } from "@/hooks/useAdminCan";
+import CityField from "@/components/CityField";
 
 const LOAN_STATUSES = [
   "not_started",
@@ -158,6 +159,7 @@ export default function AdminProjectDetail() {
                 sq_ft: p.sq_ft ?? "",
                 property_address: p.property_address || "",
                 property_city: p.property_city || "",
+                city_id: p.city_id ?? "",
                 property_state: p.property_state || "",
                 property_zip: p.property_zip || "",
                 loan_status: p.loan_status,
@@ -179,6 +181,7 @@ export default function AdminProjectDetail() {
                       sq_ft: v.sq_ft === "" ? null : Number(v.sq_ft),
                       property_address: v.property_address.trim() || null,
                       property_city: v.property_city.trim() || null,
+                      city_id: v.city_id ? Number(v.city_id) : null,
                       property_state: v.property_state.trim() || null,
                       property_zip: v.property_zip.trim() || null,
                       loan_status: v.loan_status,
@@ -240,7 +243,7 @@ export default function AdminProjectDetail() {
                 </div>
                 <div className="pf-form-grid">
                   <TextField name="property_address" labelKey="form.address" disabled={!canWrite} />
-                  <TextField name="property_city" labelKey="pf.city" disabled={!canWrite} />
+                  <CityField textName="property_city" admin disabled={!canWrite} />
                   <TextField name="property_state" labelKey="pf.state" disabled={!canWrite} />
                   <TextField name="property_zip" labelKey="pf.zip" disabled={!canWrite} />
                   <TextField name="sq_ft" labelKey="pf.sqft" type="number" disabled={!canWrite} />

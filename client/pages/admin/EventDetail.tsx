@@ -47,6 +47,7 @@ import {
   useFormatters,
 } from "@/lib/format";
 import { useAdminCan } from "@/hooks/useAdminCan";
+import CityField from "@/components/CityField";
 
 const ATTENDEE_PAGE = 50;
 // API caps list pages at 100 rows.
@@ -64,6 +65,7 @@ const toValues = (e: MarketingEvent) => ({
   slug: e.slug,
   is_featured: Boolean(e.is_featured),
   city: e.city || "",
+  city_id: (e.city_id ?? "") as number | "",
   starts_at: toDateTimeLocalValue(e.starts_at),
   ends_at: toDateTimeLocalValue(e.ends_at),
   registration_opens_at: toDateTimeLocalValue(e.registration_opens_at),
@@ -196,7 +198,7 @@ export default function AdminEventDetail() {
       .trim()
       .matches(/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/, t("validation.slugFormat"))
       .required(t("validation.slugFormat")),
-    city: Yup.string().trim().required(t("validation.eventCity")),
+    city_id: Yup.mixed().test("picked", t("validation.eventCity"), (v) => Boolean(v)),
     starts_at: Yup.string().required(t("validation.eventStartsAt")),
     ends_at: Yup.string().test("after-start", t("validation.eventEndsBeforeStart"), function (v) {
       const start = this.parent.starts_at as string;
@@ -341,6 +343,7 @@ export default function AdminEventDetail() {
                       slug: v.slug.trim(),
                       is_featured: v.is_featured,
                       city: v.city.trim(),
+                      city_id: v.city_id ? Number(v.city_id) : null,
                       starts_at: fromDateTimeLocalValue(v.starts_at),
                       ends_at: fromDateTimeLocalValue(v.ends_at),
                       registration_opens_at: fromDateTimeLocalValue(v.registration_opens_at),
@@ -381,7 +384,7 @@ export default function AdminEventDetail() {
                     disabled={!canWrite}
                   />
                   <TextField name="slug" labelKey="admin.eventSlug" disabled={!canWrite} />
-                  <TextField name="city" labelKey="pf.city" disabled={!canWrite} />
+                  <CityField textName="city" admin required disabled={!canWrite} />
                 </div>
                 <CheckField name="is_featured" labelKey="admin.isFeatured" disabled={!canWrite} />
                 <p className="pf-muted">{t("admin.isFeaturedHelp")}</p>

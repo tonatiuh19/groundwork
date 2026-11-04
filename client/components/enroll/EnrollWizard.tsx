@@ -23,6 +23,7 @@ import { fetchPublicPlans } from "@/store/slices/affiliatePortalSlice";
 import { resetEnrollForm, submitEnroll } from "@/store/slices/enrollSlice";
 import { CheckField, SelectField, TextField } from "@/components/portal/kit";
 import { translateApiError } from "@/lib/api";
+import CityField from "@/components/CityField";
 
 export const ENROLL_STEP_COUNT = 4;
 
@@ -242,6 +243,7 @@ export default function EnrollWizard({
               phone: prefill?.phone || "",
               property_address: prefill?.property_address || "",
               property_city: "",
+              city_id: "" as number | "",
               property_zip: "",
               adu_plan_id: "",
               preferred_language: prefill?.preferred_language || (i18n.language?.startsWith("es") ? "es" : "en"),
@@ -265,6 +267,7 @@ export default function EnrollWizard({
                   phone: values.phone.trim(),
                   property_address: values.property_address.trim(),
                   property_city: values.property_city.trim() || null,
+                  city_id: values.city_id ? Number(values.city_id) : null,
                   property_zip: values.property_zip.trim() || null,
                   adu_plan_id: values.adu_plan_id ? Number(values.adu_plan_id) : null,
                   preferred_language: values.preferred_language as "en" | "es",
@@ -293,6 +296,7 @@ export default function EnrollWizard({
                         phone: "9495550148",
                         property_address: "123 Test ADU Lane",
                         property_city: "Fontana",
+                        city_id: "",
                         property_zip: "92335",
                         adu_plan_id: plans[0] ? String(plans[0].id) : "",
                         preferred_language: i18n.language?.startsWith("es")
@@ -327,7 +331,7 @@ export default function EnrollWizard({
                   <div className="enroll-fields">
                     <TextField name="property_address" labelKey="form.address" />
                     <div className="enroll-field-row">
-                      <TextField name="property_city" labelKey="pf.city" />
+                      <CityField textName="property_city" />
                       <TextField name="property_zip" labelKey="pf.zip" />
                     </div>
                   </div>

@@ -433,7 +433,8 @@
     "cityInUse": "This city is still in use. Archive or merge it instead.",
     "cityArchivedTarget": "You can't merge into an archived city. Restore it first.",
     "cityRateLocked": "The rate is locked because the partner already signed.",
-    "cityCompanyLocked": "The LLC name is locked because the partner already signed."
+    "cityCompanyLocked": "The LLC name is locked because the partner already signed.",
+    "viewOnly": "You're viewing as this partner, read-only. Nothing can be changed here."
   },
   "getCreditReport": {
     "metaTitle": "Free credit report · No score impact",
@@ -4750,7 +4751,13 @@
       "people": "Partners, affiliates or contractors covering it: {{count}}",
       "activities": "Pipeline activities: {{count}}"
     },
-    "createNew": "Create a new city"
+    "createNew": "Create a new city",
+    "notListed": "My city isn't listed",
+    "pickFromList": "Pick from the list",
+    "unlistedLabel": "Your city",
+    "unlistedPlaceholder": "Type your city",
+    "unlistedHint": "We'll add it to the list and tag your record.",
+    "typedBefore": "Typed before: \"{{name}}\". Pick it from the list or add it as a new city."
   },
   "cityPartner": {
     "navPipeline": "City pipeline",
@@ -5107,7 +5114,8 @@
       "last_name": "Last name changed",
       "phone": "Phone changed",
       "preferred_language": "Language changed",
-      "cities": "Cities changed"
+      "cities": "Cities changed",
+      "viewed_as": "Viewed as partner"
     },
     "hello": {
       "morning": "Good morning, {{name}}",
@@ -5161,7 +5169,10 @@
     "heroOverdue_one": "{{count}} follow-up is overdue. Start there.",
     "heroOverdue_other": "{{count}} follow-ups are overdue. Start there.",
     "previewInvite": "Preview email",
-    "allInPipeline": "Every city is already in the pipeline."
+    "allInPipeline": "Every city is already in the pipeline.",
+    "viewAs": "View as {{name}}",
+    "viewingAs": "Viewing as {{name}} · read-only (opened by {{admin}})",
+    "exitView": "Exit view"
   },
   "danger": {
     "typeToConfirm": "Type \"{{text}}\" to confirm",

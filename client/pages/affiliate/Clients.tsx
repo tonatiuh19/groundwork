@@ -24,6 +24,7 @@ import {
 } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
+import CityField from "@/components/CityField";
 
 export default function AffiliateClients() {
   const { t, i18n } = useTranslation();
@@ -175,6 +176,7 @@ export default function AffiliateClients() {
               phone: "",
               property_address: "",
               property_city: "",
+              city_id: "" as number | "",
               property_zip: "",
               adu_plan_id: "",
               homeowner_consent: false,
@@ -189,6 +191,7 @@ export default function AffiliateClients() {
                   phone: v.phone.trim(),
                   property_address: v.property_address.trim(),
                   property_city: v.property_city.trim() || null,
+                  city_id: v.city_id ? Number(v.city_id) : null,
                   property_zip: v.property_zip.trim() || null,
                   adu_plan_id: v.adu_plan_id ? Number(v.adu_plan_id) : null,
                   preferred_language: i18n.language?.startsWith("es") ? "es" : "en",
@@ -211,7 +214,7 @@ export default function AffiliateClients() {
               </div>
               <TextField name="property_address" labelKey="form.address" />
               <div className="pf-form-grid">
-                <TextField name="property_city" labelKey="pf.city" />
+                <CityField textName="property_city" />
                 <TextField name="property_zip" labelKey="pf.zip" />
               </div>
               <SelectField

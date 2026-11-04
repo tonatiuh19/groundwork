@@ -41,6 +41,8 @@ export const createCityPartner = createApiThunk<{ id: number }, Record<string, u
 export const fetchCityPartner = createApiThunk<CityPartnerDetail, number>("cityPartner/partner", "admin", async (id) => (await api.get(`/admin/city-partners/${id}`)).data);
 export const updateCityPartner = createApiThunk<{ ok: true }, { id: number; body: Record<string, unknown> }>("cityPartner/partnerUpdate", "admin", async ({ id, body }) => (await api.patch(`/admin/city-partners/${id}`, body)).data);
 export const resendCityPartnerInvite = createApiThunk<{ ok: true }, number>("cityPartner/invite", "admin", async (id) => (await api.post(`/admin/city-partners/${id}/invite`)).data);
+/** Super admins: open the partner portal read-only in this browser (30 minutes, logged on the partner). */
+export const viewAsCityPartner = createApiThunk<{ ok: true; url: string; expires_at: string }, number>("cityPartner/viewAs", "admin", async (id) => (await api.post(`/admin/city-partners/${id}/view-as`)).data);
 export type EmailPreview = { subject: string; html: string };
 /** Render the invite email without sending it: draft fields (invite modal) or a saved partner (resend). */
 export const previewCityInvite = createApiThunk<EmailPreview, number | Record<string, unknown>>("cityPartner/invitePreview", "admin", async (arg) =>

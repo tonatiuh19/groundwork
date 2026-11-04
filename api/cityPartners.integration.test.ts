@@ -262,6 +262,38 @@ describe.runIf(hasDb)("City Partners (integration)", () => {
     expect((await request(app).get(`/api/admin/city-partners/${temp}`).set("Cookie", admin)).status).toBe(404);
   });
 
+  it("cities are picked: city_id wins and fills the text, exact typed names are tagged, bad ids are refused", async () => {
+    const typed = await request(app).post("/api/admin/clients").set("Cookie", admin).send({ email: em("typed"), first_name: "Tia", last_name: "Typed", city: `${prefix}FONTANA` }).expect(201);
+    const typedRow = ((await db.query(`SELECT city, city_id FROM clients WHERE id = ?`, [typed.body.client_id ?? typed.body.id])) as any)[0][0];
+    expect(typedRow).toMatchObject({ city_id: openCity, city: `${prefix}Fontana` });
+    const cid = typed.body.client_id ?? typed.body.id;
+    await request(app).patch(`/api/admin/clients/${cid}`).set("Cookie", admin).send({ city_id: otherCity }).expect(200);
+    expect(((await db.query(`SELECT city, city_id FROM clients WHERE id = ?`, [cid])) as any)[0][0]).toMatchObject({ city_id: otherCity, city: `${prefix}Rialto` });
+    await request(app).patch(`/api/admin/clients/${cid}`).set("Cookie", admin).send({ city_id: 999999999 }).expect(400);
+    // Not on the list: kept as typed, no city (staff tag it in Settings → Cities).
+    const loose = await request(app).post("/api/admin/clients").set("Cookie", admin).send({ email: em("loose"), first_name: "Lu", last_name: "Loose", city: `${prefix}Nowhere` }).expect(201);
+    expect(((await db.query(`SELECT city, city_id FROM clients WHERE id = ?`, [loose.body.client_id ?? loose.body.id])) as any)[0][0]).toMatchObject({ city_id: null, city: `${prefix}Nowhere` });
+    // Events carry the picked city.
+    const ev = await request(app).post("/api/admin/events").set("Cookie", admin).send({ slug: `${prefix}evt`, title_en: "City event", city_id: openCity, starts_at: new Date(Date.now() + 86400000).toISOString() }).expect(201);
+    expect(ev.body.event).toMatchObject({ city_id: openCity, city: `${prefix}Fontana` });
+  });
+
+  it("View as partner: super admins only, read-only, logged on the partner", async () => {
+    await request(app).post(`/api/admin/city-partners/${partnerId}/view-as`).set("Cookie", plainAdmin).expect(403);
+    const r = await request(app).post(`/api/admin/city-partners/${partnerId}/view-as`).set("Cookie", admin).expect(200);
+    const cookie = String([].concat(r.headers["set-cookie"] as never).find((c: string) => c.startsWith("gw_city_sid=")) || "").split(";")[0];
+    expect(cookie).toMatch(/^gw_city_sid=[a-f0-9]{64}$/);
+    const me = await request(app).get("/api/city/auth/me").set("Cookie", cookie).expect(200);
+    expect(me.body.user.view_as_admin).toMatchObject({ name: "Cp Admin" });
+    await request(app).get("/api/city/clients").set("Cookie", cookie).expect(200);
+    const blocked = await request(app).patch("/api/city/profile").set("Cookie", cookie).send({ first_name: "Hacked" }).expect(403);
+    expect(blocked.body.error).toBe("errors.viewOnly");
+    const log = ((await db.query(`SELECT field, admin_id FROM city_partner_changes WHERE city_partner_id = ? AND field = 'viewed_as'`, [partnerId])) as any)[0];
+    expect(log.length).toBe(1);
+    // The partner's own session is untouched and still read-write.
+    expect((await request(app).get("/api/city/auth/me").set("Cookie", partner).expect(200)).body.user.view_as_admin ?? null).toBeNull();
+  });
+
   it("an inactive partner is signed out and can't request a code", async () => {
     await request(app).patch(`/api/admin/city-partners/${partnerId}`).set("Cookie", admin).send({ status: "inactive" }).expect(200);
     expect((await request(app).get("/api/city/overview").set("Cookie", partner)).status).toBe(401);

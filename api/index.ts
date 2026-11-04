@@ -3060,7 +3060,7 @@ async function loadPortalUser(
   const token = readCookie(req, cfg.cookie);
   if (!token) return null;
   const [sessions] = await pool.execute<RowDataPacket[]>(
-    `SELECT s.${cfg.idCol} AS actor_id, a.*
+    `SELECT s.${cfg.idCol} AS actor_id, ${actor === "city" ? "s.viewer_admin_id AS view_as_admin_id," : ""} a.*
      FROM \`${cfg.sessionTable}\` s
      INNER JOIN \`${cfg.table}\` a ON a.id = s.${cfg.idCol}
      WHERE s.token_hash = ? AND s.is_active = 1 AND s.expires_at > NOW()
@@ -3070,7 +3070,14 @@ async function loadPortalUser(
   const row = sessions[0];
   if (!row) return null;
   if (!["active", "prospect"].includes(String(row.status))) return null;
-  return toPortalUser(actor, row);
+  const user = toPortalUser(actor, row);
+  // Read-only "View as partner" session opened by a super admin.
+  if (row.view_as_admin_id) {
+    const [[ad]] = (await pool.execute<RowDataPacket[]>(`SELECT id, first_name, last_name FROM admins WHERE id = ? AND status = 'active'`, [row.view_as_admin_id])) as unknown as [RowDataPacket[]];
+    if (!ad) return null;
+    user.view_as_admin = { id: Number(ad.id), name: `${String(ad.first_name || "")} ${String(ad.last_name || "")}`.trim() };
+  }
+  return user;
 }
 
 // ─── Portal feature layer: helpers ───────────────────────────────────────────
@@ -3202,6 +3209,8 @@ function requirePortal(actor: PortalActor) {
       const user = await loadPortalUser(actor, req);
       if (!user) return res.status(401).json({ error: "errors.unauthorized" });
       res.locals.portalUser = user;
+      // "View as partner" is read-only: nothing can be signed, logged or edited from it.
+      if (user.view_as_admin && req.method !== "GET") return res.status(403).json({ error: "errors.viewOnly" });
       // Contractor membership: unpaid → only billing (and the application) stay open.
       if (
         actor === "contractor" &&
@@ -3321,6 +3330,7 @@ function mapMarketingEventRow(
     qr_last_scanned_at: isoDate(r.qr_last_scanned_at),
     qr_rsvp_count: extras?.qr_rsvp_count,
     rsvp_flow_id: r.rsvp_flow_id == null ? null : Number(r.rsvp_flow_id),
+    city_id: r.city_id == null ? null : Number(r.city_id),
   };
 }
 
@@ -5941,6 +5951,8 @@ async function createClientWithProject(
     lang: Lang;
     property_address: string | null;
     property_city: string | null;
+    /** Picked city (wins over the text); otherwise an exact match on property_city tags it. */
+    city_id?: number | null;
     property_zip: string | null;
     affiliate_id: number | null;
     lead_id: number | null;
@@ -5952,12 +5964,13 @@ async function createClientWithProject(
   },
 ): Promise<{ clientId: number; projectId: number; publicId: string }> {
   let clientId = input.existingClientId ?? null;
+  const city = await resolveCity(input.city_id, input.property_city);
   if (!clientId) {
     const [c] = await conn.execute<ResultSetHeader>(
       `INSERT INTO clients
          (email, first_name, last_name, phone, preferred_language, status,
-          address_line1, city, zip, affiliate_id, assigned_admin_id, lead_id)
-       VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?, ?, ?, ?, ?)`,
+          address_line1, city, city_id, zip, affiliate_id, assigned_admin_id, lead_id)
+       VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.email,
         input.first_name,
@@ -5965,7 +5978,8 @@ async function createClientWithProject(
         input.phone,
         input.lang,
         input.property_address,
-        input.property_city,
+        city.text,
+        city.city_id,
         input.property_zip,
         input.affiliate_id,
         input.assigned_admin_id,
@@ -5989,8 +6003,8 @@ async function createClientWithProject(
     `INSERT INTO projects
        (public_id, client_id, lead_id, affiliate_id, closer_affiliate_id, parent_affiliate_id,
         grandparent_affiliate_id, commission_plan, assigned_admin_id, adu_plan_id,
-        milestone, milestone_changed_at, property_address, property_city, property_zip, sq_ft)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'two_level', ?, ?, 'lead', NOW(), ?, ?, ?, ?)`,
+        milestone, milestone_changed_at, property_address, property_city, city_id, property_zip, sq_ft)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'two_level', ?, ?, 'lead', NOW(), ?, ?, ?, ?, ?)`,
     [
       publicId,
       clientId,
@@ -6002,7 +6016,8 @@ async function createClientWithProject(
       input.assigned_admin_id,
       input.adu_plan_id,
       input.property_address,
-      input.property_city,
+      city.text,
+      city.city_id,
       input.property_zip,
       sqFt,
     ],
@@ -11881,6 +11896,7 @@ function registerFeatureRoutes(
           [email, first, last, phone, lang, address, city, zip],
         );
         const clientId = Number(ins.insertId);
+        await tagCityFromText("clients", clientId);
         await creditQrScan(req, "clients", clientId);
         await safeSend(
           email,
@@ -12396,6 +12412,7 @@ function registerFeatureRoutes(
           lang,
           property_address: address,
           property_city: city,
+          city_id: b.city_id ?? null,
           property_zip: zip,
           affiliate_id: affiliateRef?.id ?? null,
           lead_id: leadId,
@@ -12798,6 +12815,7 @@ function registerFeatureRoutes(
           lang,
           property_address: address,
           property_city: city,
+          city_id: b.city_id ?? null,
           property_zip: zip,
           affiliate_id: user.id,
           lead_id: null,
@@ -14562,6 +14580,7 @@ async function runAdminLeadConvertInner(opts: {
         lang,
         property_address: lead.property_address,
         property_city: null,
+        city_id: lead.city_id == null ? null : Number(lead.city_id),
         property_zip: null,
         affiliate_id: lead.affiliate_id ?? null,
         lead_id: Number(lead.id),
@@ -15331,6 +15350,11 @@ function registerAdminRoutes(app: Express) {
     cta_es: fStr(120),
     rsvp_flow_id: fInt(1, 2_000_000_000, true),
   });
+  /** Event city is picked: `city_id` fills `city`; a typed city alone is tagged on an exact match. */
+  const applyEventCity = async (body: Record<string, unknown>, updates: Record<string, unknown>) => {
+    await applyCityPatch(body, updates, "city");
+    if (updates.city === null && Object.prototype.hasOwnProperty.call(updates, "city")) delete updates.city; // city text is required
+  };
   /** The event's automation must be an Event RSVP one (any state: staff may pick it before switching it on). */
   const checkRsvpFlow = async (updates: Record<string, unknown>) => {
     if (updates.rsvp_flow_id == null) return;
@@ -15402,6 +15426,7 @@ function registerAdminRoutes(app: Express) {
       const user = portalUser(res);
       const { updates } = parsePatch(req.body, eventFieldSpec());
       await checkRsvpFlow(updates);
+      await applyEventCity(req.body || {}, updates);
       const slugParser = fStr(80, { min: 1 })(
         req.body?.slug ?? req.body?.title_en,
       );
@@ -15469,6 +15494,7 @@ function registerAdminRoutes(app: Express) {
       if (!existing) throw new HttpError(404, "errors.eventNotFound");
       const { updates } = parsePatch(req.body, eventFieldSpec());
       await checkRsvpFlow(updates);
+      await applyEventCity(req.body || {}, updates);
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "slug")) {
         const slug = slugifyEvent(String(req.body.slug || ""));
         if (!slug) throw new HttpError(400, "validation.invalidField");
@@ -16672,11 +16698,12 @@ function registerAdminRoutes(app: Express) {
         actor: "staff",
         sharedPhoneReason: b.shared_phone_reason,
       });
+      const city = await resolveCity(b.city_id, b.city);
       const [r] = await pool.execute<ResultSetHeader>(
         `INSERT INTO clients
            (email, first_name, last_name, phone, preferred_language, status,
-            address_line1, city, zip, affiliate_id, assigned_admin_id)
-         VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?, ?, ?, ?)`,
+            address_line1, city, city_id, zip, affiliate_id, assigned_admin_id)
+         VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?, ?, ?, ?, ?)`,
         [
           email,
           first,
@@ -16684,7 +16711,8 @@ function registerAdminRoutes(app: Express) {
           b.phone ? String(b.phone).trim().slice(0, 40) : null,
           asLang(b.preferred_language),
           b.address_line1 ? String(b.address_line1).trim().slice(0, 255) : null,
-          b.city ? String(b.city).trim().slice(0, 100) : null,
+          city.text,
+          city.city_id,
           b.zip ? String(b.zip).trim().slice(0, 20) : null,
           affiliateId,
           user.id,
@@ -16766,6 +16794,7 @@ function registerAdminRoutes(app: Express) {
         admin_notes: fStr(5000),
         preferred_language: fLang,
       });
+      await applyCityPatch(req.body || {}, updates, "city");
       const [rows] = await pool.execute<RowDataPacket[]>(
         `SELECT * FROM clients WHERE id = ? LIMIT 1`,
         [id],
@@ -17140,6 +17169,7 @@ function registerAdminRoutes(app: Express) {
           property_city: b.property_city
             ? String(b.property_city).trim().slice(0, 100)
             : c.city,
+          city_id: b.city_id ?? null,
           property_zip: b.property_zip
             ? String(b.property_zip).trim().slice(0, 20)
             : c.zip,
@@ -17195,6 +17225,7 @@ function registerAdminRoutes(app: Express) {
         anchor_external_id: fStr(120),
         notes: fStr(5000),
       });
+      await applyCityPatch(req.body || {}, updates, "property_city");
       // Lenders directory: picking one keeps loan_lender_name in sync (null clears the link).
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "lender_id")) {
         const raw = req.body.lender_id;
@@ -20584,6 +20615,7 @@ function mapCrmContactRow(r: RowDataPacket) {
     address_line1: r.address_line1 != null ? String(r.address_line1) : null,
     address_line2: r.address_line2 != null ? String(r.address_line2) : null,
     city: r.city != null ? String(r.city) : null,
+    city_id: r.city_id != null ? Number(r.city_id) : null,
     state: r.state != null ? String(r.state) : null,
     zip: r.zip != null ? String(r.zip) : null,
     preferred_language: r.preferred_language === "es" ? "es" : "en",
@@ -20739,6 +20771,7 @@ async function convertCrmContactToClient(opts: {
       ],
     );
     const clientId = Number(ins.insertId);
+    await tagCityFromText("clients", clientId);
     if (phoneOverride) {
       await recordSharedPhoneOverride({
         entity: "client",
@@ -24583,12 +24616,13 @@ function registerConversationsRoutes(app: Express) {
         phone = toSmsE164(phone).slice(0, 20);
       }
       const lang = req.body?.preferred_language === "es" ? "es" : "en";
+      const contactCity = await resolveCity(req.body?.city_id, req.body?.city);
       const [ins] = await pool.query<ResultSetHeader>(
         `INSERT INTO contacts
            (first_name, last_name, email, phone, address_line1, address_line2,
-            city, state, zip, preferred_language, admin_notes,
+            city, city_id, state, zip, preferred_language, admin_notes,
             assigned_admin_id, created_by_admin_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           first,
           last,
@@ -24596,7 +24630,8 @@ function registerConversationsRoutes(app: Express) {
           phone,
           String(req.body?.address_line1 || "").trim() || null,
           String(req.body?.address_line2 || "").trim() || null,
-          String(req.body?.city || "").trim() || null,
+          contactCity.text,
+          contactCity.city_id,
           String(req.body?.state || "").trim() || null,
           String(req.body?.zip || "").trim() || null,
           lang,
@@ -24664,10 +24699,13 @@ function registerConversationsRoutes(app: Express) {
             : existing[0].preferred_language === "es"
               ? "es"
               : "en";
+      const cityPatch: Record<string, unknown> = {};
+      await applyCityPatch(req.body || {}, cityPatch, "city");
+      const cityChanged = Object.prototype.hasOwnProperty.call(cityPatch, "city_id");
       await pool.query(
         `UPDATE contacts SET
            first_name = ?, last_name = ?, email = ?, phone = ?,
-           address_line1 = ?, address_line2 = ?, city = ?, state = ?, zip = ?,
+           address_line1 = ?, address_line2 = ?, city = ?, city_id = ?, state = ?, zip = ?,
            preferred_language = ?, admin_notes = ?
          WHERE id = ?`,
         [
@@ -24681,9 +24719,8 @@ function registerConversationsRoutes(app: Express) {
           req.body?.address_line2 !== undefined
             ? String(req.body.address_line2 || "").trim() || null
             : existing[0].address_line2,
-          req.body?.city !== undefined
-            ? String(req.body.city || "").trim() || null
-            : existing[0].city,
+          cityChanged ? cityPatch.city : existing[0].city,
+          cityChanged ? cityPatch.city_id : existing[0].city_id,
           req.body?.state !== undefined
             ? String(req.body.state || "").trim() || null
             : existing[0].state,
@@ -27108,6 +27145,58 @@ export function suggestCity(text: unknown, cities: { id: number; name: string }[
   return null;
 }
 
+/**
+ * City fields from a form or an API write. A picked `city_id` wins and its name fills the old text column
+ * (emails, addresses and exports keep working). Without one, the text is tagged only on an exact name match
+ * ("fontana" → Fontana); anything fuzzier waits for staff in Settings → Cities. Bad ids → 400.
+ */
+export async function resolveCity(cityId: unknown, text: unknown): Promise<{ city_id: number | null; text: string | null }> {
+  const typed = text == null ? "" : String(text).trim().slice(0, 100);
+  if (cityId !== undefined && cityId !== null && cityId !== "") {
+    const id = Number(cityId);
+    if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "validation.invalidField");
+    const [[c]] = (await pool.query<RowDataPacket[]>(`SELECT id, name FROM service_cities WHERE id = ? AND archived_at IS NULL`, [id])) as unknown as [RowDataPacket[]];
+    if (!c) throw new HttpError(400, "validation.invalidField");
+    return { city_id: Number(c.id), text: String(c.name) };
+  }
+  if (!typed) return { city_id: null, text: null };
+  const [[m]] = (await pool.query<RowDataPacket[]>(`SELECT id, name FROM service_cities WHERE LOWER(TRIM(name)) = LOWER(?) AND archived_at IS NULL LIMIT 1`, [typed])) as unknown as [RowDataPacket[]];
+  return m ? { city_id: Number(m.id), text: String(m.name) } : { city_id: null, text: typed };
+}
+
+/**
+ * PATCH bodies: `city_id` (picked) or the text column alone (exact match tags it). Writes both into `updates`.
+ * `null` city_id clears the city.
+ */
+async function applyCityPatch(body: Record<string, unknown>, updates: Record<string, unknown>, textCol: string): Promise<void> {
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(body || {}, k);
+  if (has("city_id")) {
+    if (body.city_id === null || body.city_id === "") {
+      updates.city_id = null;
+      if (!has(textCol)) updates[textCol] = null;
+      return;
+    }
+    const r = await resolveCity(body.city_id, null);
+    updates.city_id = r.city_id;
+    updates[textCol] = r.text;
+  } else if (has(textCol)) {
+    const r = await resolveCity(null, body[textCol]);
+    updates[textCol] = r.text;
+    updates.city_id = r.city_id;
+  }
+}
+
+/** Writes without a picker (enroll, MCP, imports): tag the row's city text on an exact name match. Never throws. */
+async function tagCityFromText(table: "clients" | "contacts" | "projects", id: number): Promise<void> {
+  const col = table === "projects" ? "property_city" : "city";
+  await pool
+    .execute(
+      `UPDATE ${table} t JOIN service_cities s ON LOWER(TRIM(s.name)) = LOWER(TRIM(t.${col})) AND s.archived_at IS NULL
+          SET t.city_id = s.id, t.${col} = s.name WHERE t.id = ? AND t.city_id IS NULL`,
+      [id],
+    )
+    .catch((e) => console.warn(`[city] tag ${table}#${id}:`, e?.message ?? e));
+}
 
 // ── City Partners: own rules for city intelligence (no outside AI) ─────────
 export const CITY_STAGES = ["target", "official_contacted", "meeting_scheduled", "official_support", "referred_to_staff", "staff_meeting", "plans_submitted", "in_review", "comments_received", "resubmitted", "preapproved", "on_hold"] as const;
@@ -40635,6 +40724,28 @@ function buildApp(): Express {
       res.json({ ok: true, subject: tpl.subject, html: tpl.html });
     }),
   );
+  app.post(
+    "/api/admin/city-partners/:id/view-as",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const admin = portalUser(res);
+      if (admin.role !== "super_admin") throw new HttpError(403, "errors.forbidden");
+      const id = parseId(req.params.id);
+      const [[p]] = (await pool.query<RowDataPacket[]>(`SELECT id, status FROM city_partners WHERE id = ?`, [id])) as unknown as [RowDataPacket[]];
+      if (!p) throw new HttpError(404, "errors.notFound");
+      if (String(p.status) !== "active") throw new HttpError(409, "errors.cityPartnerInactive");
+      // 30-minute read-only session in the partner portal, in this browser only; logged on the partner.
+      const token = crypto.randomBytes(32).toString("hex");
+      const expires = new Date(Date.now() + 30 * 60 * 1000);
+      await pool.execute(
+        `INSERT INTO city_partner_sessions (city_partner_id, token_hash, ip_address, user_agent, expires_at, viewer_admin_id) VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, sha256(token), clientIp(req), String(req.headers["user-agent"] || "").slice(0, 500) || null, expires, admin.id],
+      );
+      await cpLog(id, "viewed_as", null, `${admin.first_name} ${admin.last_name}`.trim(), admin.id);
+      setPortalCookie(res, "city", token, expires);
+      res.json({ ok: true, url: "/city", expires_at: expires.toISOString() });
+    }),
+  );
   app.get(
     "/api/admin/city-partners/:id/invite-preview",
     requireAdmin("approvals"),
@@ -42323,6 +42434,10 @@ function buildApp(): Express {
           html: confirm.html,
         });
 
+        // RSVP leads take the event's city when the form didn't pick one (feeds City Partners and filters).
+        if (data.mode === "event" && eventRow?.city_id) {
+          await pool.execute(`UPDATE leads SET city_id = ? WHERE id = ? AND city_id IS NULL`, [Number(eventRow.city_id), leadId]);
+        }
         // Event RSVP: only the automation staff picked on this event (none = no automatic messages).
         if (data.mode === "event") {
           if (eventRow?.rsvp_flow_id) await startEventRsvpFlow(Number(eventRow.rsvp_flow_id), leadId);
@@ -46142,6 +46257,7 @@ function buildApp(): Express {
               admin.id,
             ],
           );
+          await tagCityFromText("contacts", Number(ins.insertId));
           const [rows] = await pool.query<RowDataPacket[]>(
             `SELECT * FROM contacts WHERE id = ? LIMIT 1`,
             [ins.insertId],

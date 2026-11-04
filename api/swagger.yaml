@@ -711,6 +711,18 @@ paths:
       description: "approvals. Body: first_name, company, city_ids, fee_cents_per_sqft, preferred_language."
       responses:
         "200": { description: "{ ok, subject, html }" }
+  /api/admin/city-partners/{id}/view-as:
+    post:
+      summary: "View as partner: open a read-only session in the partner portal (super admin)"
+      tags: [portal-admin]
+      description: "Super admin only. Sets the gw_city_sid cookie for a 30-minute session flagged with viewer_admin_id: GET routes work as the partner sees them, every other method returns 403 errors.viewOnly. /api/city/auth/me returns view_as_admin { id, name }. Logged in city_partner_changes as viewed_as."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK { url: '/city', expires_at }" }
+        "403": { description: "Not a super admin" }
+        "404": { description: errors.notFound }
+        "409": { description: "errors.cityPartnerInactive" }
   /api/admin/city-partners/{id}/invite-preview:
     get:
       summary: "Preview the invite email for a saved partner (never sends)"
@@ -1397,6 +1409,7 @@ paths:
                 phone: { type: string }
                 address_line1: { type: string, nullable: true }
                 city: { type: string, nullable: true }
+                city_id: { type: integer, nullable: true, description: "Picked city (service_cities). Wins over the typed city and fills it with the city name; a typed city alone is tagged only on an exact name match. Unknown or archived id → 400 validation.invalidField." }
                 zip: { type: string, nullable: true }
                 preferred_language: { type: string, enum: [en, es] }
       responses:
@@ -1480,6 +1493,7 @@ paths:
                 phone: { type: string }
                 property_address: { type: string }
                 property_city: { type: string, nullable: true }
+                city_id: { type: integer, nullable: true, description: "Picked city (service_cities). Wins over the typed city and fills it with the city name; a typed city alone is tagged only on an exact name match. Unknown or archived id → 400 validation.invalidField." }
                 property_zip: { type: string, nullable: true }
                 adu_plan_id: { type: integer, nullable: true }
                 preferred_language: { type: string, enum: [en, es] }
@@ -2130,6 +2144,7 @@ paths:
                 capacity: { type: integer, nullable: true, description: "null = unlimited" }
                 waitlist_enabled: { type: boolean }
                 city: { type: string }
+                city_id: { type: integer, nullable: true, description: "Picked city (service_cities). Wins over the typed city and fills it with the city name; a typed city alone is tagged only on an exact name match. Unknown or archived id → 400 validation.invalidField." }
                 venue_name: { type: string, nullable: true }
                 venue_address: { type: string, nullable: true }
                 zoom_url: { type: string, nullable: true }
@@ -2196,6 +2211,7 @@ paths:
                 capacity: { type: integer, nullable: true, description: "null = unlimited" }
                 waitlist_enabled: { type: boolean }
                 city: { type: string }
+                city_id: { type: integer, nullable: true, description: "Picked city (service_cities). Wins over the typed city and fills it with the city name; a typed city alone is tagged only on an exact name match. Unknown or archived id → 400 validation.invalidField." }
                 venue_name: { type: string, nullable: true }
                 venue_address: { type: string, nullable: true }
                 zoom_url: { type: string, nullable: true }
@@ -2769,6 +2785,7 @@ paths:
                 status: { type: string, enum: [pending, prospect, active, inactive, suspended] }
                 address_line1: { type: string }
                 city: { type: string }
+                city_id: { type: integer, nullable: true, description: "Picked city (service_cities). Wins over the typed city and fills it with the city name; a typed city alone is tagged only on an exact name match. Unknown or archived id → 400 validation.invalidField." }
                 zip: { type: string }
                 affiliate_id: { type: integer, nullable: true }
                 assigned_admin_id: { type: integer, nullable: true }
@@ -5827,6 +5844,7 @@ components:
         id: { type: integer }
         slug: { type: string }
         city: { type: string }
+        city_id: { type: integer, nullable: true, description: "Picked city (service_cities). Wins over the typed city and fills it with the city name; a typed city alone is tagged only on an exact name match. Unknown or archived id → 400 validation.invalidField." }
         starts_at: { type: string, format: date-time }
         ends_at: { type: string, format: date-time, nullable: true }
         capacity: { type: integer, nullable: true }

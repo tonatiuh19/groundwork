@@ -48,6 +48,7 @@ import AppointmentsPanel from "@/components/admin/AppointmentsPanel";
 import { DetailList, SideDrawer } from "@/components/portal/SideDrawer";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import { isDemotingAccountStatus } from "@/lib/accountStatus";
+import CityField from "@/components/CityField";
 
 const STATUSES = ["prospect", "active", "inactive", "suspended"] as const;
 const idOrNull = (v: string) => (v ? Number(v) : null);
@@ -60,6 +61,7 @@ type ClientForm = {
   status: string;
   address_line1: string;
   city: string;
+  city_id: number | "";
   zip: string;
   affiliate_id: string;
   assigned_admin_id: string;
@@ -144,6 +146,7 @@ export default function AdminClientDetail() {
           ...(isPending && !approved ? {} : { status: v.status }),
           address_line1: v.address_line1.trim() || null,
           city: v.city.trim() || null,
+          city_id: v.city_id ? Number(v.city_id) : null,
           zip: v.zip.trim() || null,
           affiliate_id: idOrNull(v.affiliate_id),
           assigned_admin_id: idOrNull(v.assigned_admin_id),
@@ -391,6 +394,7 @@ export default function AdminClientDetail() {
                 status: (approved ? "prospect" : c.status) as string,
                 address_line1: c.address_line1 || "",
                 city: c.city || "",
+                city_id: (c.city_id ?? "") as number | "",
                 zip: c.zip || "",
                 affiliate_id: c.affiliate_id ? String(c.affiliate_id) : "",
                 assigned_admin_id: c.assigned_admin_id ? String(c.assigned_admin_id) : "",
@@ -449,7 +453,7 @@ export default function AdminClientDetail() {
                   <h3 className="gw-drawer-section__title">{t("editPanel.property")}</h3>
                   <TextField name="address_line1" labelKey="form.address" disabled={!canWrite} />
                   <div className="pf-form-grid">
-                    <TextField name="city" labelKey="pf.city" disabled={!canWrite} />
+                    <CityField textName="city" admin disabled={!canWrite} />
                     <TextField name="zip" labelKey="pf.zip" disabled={!canWrite} />
                   </div>
                 </section>

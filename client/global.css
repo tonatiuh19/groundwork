@@ -20068,3 +20068,52 @@ button.sc-metric:hover {
 .email-preview__subject { margin: 0; font-weight: 700; color: var(--gw-ink, #0e2a4a); overflow-wrap: anywhere; }
 .email-preview__subject span { display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #5c6470; }
 .email-preview__frame { width: 100%; max-width: 100%; height: min(62vh, 640px); border: 1px solid rgba(14, 42, 74, 0.12); border-radius: 12px; background: #f8f5ef; }
+
+/* Staff "View as partner" banner (partner kit): pinned on top, wraps on phones. */
+.pk-viewas {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.55rem 1rem;
+  background: #d9a441;
+  color: #0e2a4a;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.pk-viewas__text {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.pk-viewas__exit {
+  border: 1.5px solid #0e2a4a;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0.25rem 0.8rem;
+  cursor: pointer;
+}
+.pk-viewas__exit:hover {
+  background: #0e2a4a;
+  color: #fff;
+}
+
+/* CityField: one picked city per record; "not listed" link under the picker. */
+.gw-city-field {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.gw-city-field__toggle {
+  justify-self: start;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}

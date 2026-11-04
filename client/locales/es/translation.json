@@ -433,7 +433,8 @@
     "cityInUse": "Esta ciudad todavía está en uso. Archívala o combínala.",
     "cityArchivedTarget": "No puedes combinar con una ciudad archivada. Restáurala primero.",
     "cityRateLocked": "La tarifa está bloqueada porque el socio ya firmó.",
-    "cityCompanyLocked": "El nombre de la LLC está bloqueado porque el socio ya firmó."
+    "cityCompanyLocked": "El nombre de la LLC está bloqueado porque el socio ya firmó.",
+    "viewOnly": "Estás viendo como este socio, solo lectura. Aquí no se puede cambiar nada."
   },
   "getCreditReport": {
     "metaTitle": "Reporte de crédito gratis · Sin afectar su puntaje",
@@ -4750,7 +4751,13 @@
       "people": "Socios, afiliados o contratistas que la cubren: {{count}}",
       "activities": "Actividades del pipeline: {{count}}"
     },
-    "createNew": "Crear una ciudad nueva"
+    "createNew": "Crear una ciudad nueva",
+    "notListed": "Mi ciudad no está en la lista",
+    "pickFromList": "Elegir de la lista",
+    "unlistedLabel": "Tu ciudad",
+    "unlistedPlaceholder": "Escribe tu ciudad",
+    "unlistedHint": "La agregaremos a la lista y etiquetaremos tu registro.",
+    "typedBefore": "Escrita antes: \"{{name}}\". Elígela de la lista o agrégala como ciudad nueva."
   },
   "cityPartner": {
     "navPipeline": "Pipeline de ciudades",
@@ -5107,7 +5114,8 @@
       "last_name": "Apellido cambiado",
       "phone": "Teléfono cambiado",
       "preferred_language": "Idioma cambiado",
-      "cities": "Ciudades cambiadas"
+      "cities": "Ciudades cambiadas",
+      "viewed_as": "Vista como socio"
     },
     "hello": {
       "morning": "Buenos días, {{name}}",
@@ -5161,7 +5169,10 @@
     "heroOverdue_one": "Tienes {{count}} seguimiento vencido. Empieza por ahí.",
     "heroOverdue_other": "Tienes {{count}} seguimientos vencidos. Empieza por ahí.",
     "previewInvite": "Ver correo",
-    "allInPipeline": "Todas las ciudades ya están en el pipeline."
+    "allInPipeline": "Todas las ciudades ya están en el pipeline.",
+    "viewAs": "Ver como {{name}}",
+    "viewingAs": "Viendo como {{name}} · solo lectura (abierto por {{admin}})",
+    "exitView": "Salir de la vista"
   },
   "danger": {
     "typeToConfirm": "Escribe \"{{text}}\" para confirmar",

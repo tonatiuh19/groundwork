@@ -27,10 +27,11 @@ import {
 import { EVENT_STATUSES, slugifyEvent, suggestEventSlug } from "@/lib/eventOptions";
 import { fromDateTimeLocalValue, useFormatters } from "@/lib/format";
 import { useAdminCan } from "@/hooks/useAdminCan";
+import CityField from "@/components/CityField";
 
 const PAGE_SIZE = 50;
 
-type NewEventValues = { title_en: string; title_es: string; slug: string; city: string; starts_at: string };
+type NewEventValues = { title_en: string; title_es: string; slug: string; city: string; city_id: number | ""; starts_at: string };
 
 /**
  * Auto slug: follows city + start date (`fontana-oct-2026`) until the admin edits
@@ -128,7 +129,7 @@ export default function AdminEvents() {
   const schema = Yup.object({
     title_en: Yup.string().trim().required(t("validation.eventTitleEn")),
     title_es: Yup.string().trim().required(t("validation.eventTitleEs")),
-    city: Yup.string().trim().required(t("validation.eventCity")),
+    city_id: Yup.mixed().test("picked", t("validation.eventCity"), (v) => Boolean(v)),
     starts_at: Yup.string().required(t("validation.eventStartsAt")),
     slug: Yup.string()
       .trim()
@@ -237,6 +238,7 @@ export default function AdminEvents() {
             title_es: "",
             slug: "",
             city: "",
+            city_id: "",
             starts_at: "",
           }}
           validationSchema={schema}
@@ -247,6 +249,7 @@ export default function AdminEvents() {
                 title_es: v.title_es.trim(),
                 slug: slugifyEvent(v.slug) || undefined,
                 city: v.city.trim(),
+                city_id: v.city_id ? Number(v.city_id) : null,
                 starts_at: fromDateTimeLocalValue(v.starts_at),
                 status: "draft",
               }),
@@ -268,7 +271,7 @@ export default function AdminEvents() {
             <div className="pf-form-grid">
               <TextField name="title_en" labelKey="admin.titleEn" />
               <TextField name="title_es" labelKey="admin.titleEs" />
-              <TextField name="city" labelKey="pf.city" />
+              <CityField textName="city" admin required />
               <TextField name="starts_at" labelKey="admin.startsAt" type="datetime-local" />
             </div>
             <SlugField />

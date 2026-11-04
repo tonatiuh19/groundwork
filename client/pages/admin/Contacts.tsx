@@ -32,6 +32,7 @@ import {
   fetchAdminContacts,
   updateAdminContact,
 } from "@/store/slices/contactsSlice";
+import CityField from "@/components/CityField";
 
 const PAGE_SIZE = 50;
 
@@ -42,6 +43,7 @@ type FormValues = {
   phone: string;
   address_line1: string;
   city: string;
+  city_id: number | "";
   state: string;
   zip: string;
   preferred_language: "en" | "es";
@@ -55,6 +57,7 @@ const emptyForm = (): FormValues => ({
   phone: "",
   address_line1: "",
   city: "",
+  city_id: "",
   state: "",
   zip: "",
   preferred_language: "en",
@@ -69,6 +72,7 @@ function toForm(c: CrmContact): FormValues {
     phone: c.phone || "",
     address_line1: c.address_line1 || "",
     city: c.city || "",
+    city_id: (c.city_id ?? "") as number | "",
     state: c.state || "",
     zip: c.zip || "",
     preferred_language: c.preferred_language || "en",
@@ -324,6 +328,7 @@ export default function AdminContacts() {
               phone: values.phone.trim() || null,
               address_line1: values.address_line1.trim() || null,
               city: values.city.trim() || null,
+              city_id: values.city_id ? Number(values.city_id) : null,
               state: values.state.trim() || null,
               zip: values.zip.trim() || null,
               preferred_language: values.preferred_language,
@@ -352,7 +357,7 @@ export default function AdminContacts() {
             <TextField name="phone" labelKey="form.phone" />
             <TextField name="address_line1" labelKey="pf.address" />
             <div className="pf-form-grid">
-              <TextField name="city" labelKey="pf.city" />
+              <CityField textName="city" admin />
               <TextField name="state" labelKey="pf.state" />
               <TextField name="zip" labelKey="pf.zip" />
             </div>

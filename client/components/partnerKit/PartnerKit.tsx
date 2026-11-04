@@ -3,7 +3,7 @@
  * partner roles next). Brand-styled, phone-first, no chart or animation libraries.
  */
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, type LucideIcon } from "lucide-react";
+import { Check, Eye, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /** Welcome band: greeting, one line of context, a few headline numbers, and the main action. */
@@ -254,6 +254,19 @@ export function KitSkeleton({ rows = 3, layout = "page", label }: { rows?: numbe
           {Array.from({ length: rows }, (_, i) => row(i))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Staff "View as" banner: pinned above a partner portal while a super admin looks read-only. */
+export function ViewAsBanner({ text, exitLabel, onExit }: { text: string; exitLabel: string; onExit: () => void }) {
+  return (
+    <div className="pk-viewas" role="status">
+      <Eye size={16} aria-hidden />
+      <span className="pk-viewas__text">{text}</span>
+      <button type="button" className="pk-viewas__exit" onClick={onExit}>
+        {exitLabel}
+      </button>
     </div>
   );
 }

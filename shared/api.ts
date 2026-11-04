@@ -198,6 +198,7 @@ export interface CrmContact {
   email: string | null;
   phone: string | null;
   address_line1: string | null;
+  city_id?: number | null;
   address_line2: string | null;
   city: string | null;
   state: string | null;
@@ -339,6 +340,8 @@ export interface CrmContactWritePayload {
   address_line1?: string | null;
   address_line2?: string | null;
   city?: string | null;
+  /** Picked city (service_cities); wins over `city`. */
+  city_id?: number | null;
   state?: string | null;
   zip?: string | null;
   preferred_language?: "en" | "es";
@@ -551,6 +554,8 @@ export interface MarketingEvent {
   qr_rsvp_count?: number;
   /** Automation (trigger event_rsvp) started on RSVP; null = no automatic messages. */
   rsvp_flow_id?: number | null;
+  /** Picked city (service_cities); RSVP leads inherit it. */
+  city_id?: number | null;
 }
 
 /** `POST /api/public/events/:slug/qr-scan` — where a scanned flyer should land. */
@@ -662,6 +667,8 @@ export interface PortalAuthUser {
   assigned_phone_numbers?: AdminPhoneNumber[];
   voice_available?: boolean;
   call_forwarding_enabled?: boolean;
+  /** City portal only: a super admin's read-only "View as partner" session. */
+  view_as_admin?: { id: number; name: string } | null;
   call_forwarding_phone?: string | null;
 }
 
@@ -1104,6 +1111,8 @@ export interface AdminProject {
   milestone_changed_at: string | null;
   property_address: string | null;
   property_city: string | null;
+  /** Picked city (service_cities). */
+  city_id?: number | null;
   property_state: string | null;
   property_zip: string | null;
   sq_ft: number | null;
@@ -1287,6 +1296,8 @@ export interface EnrollRequest {
   phone: string;
   property_address: string;
   property_city?: string | null;
+  /** Picked city (service_cities); wins over property_city. */
+  city_id?: number | null;
   property_zip?: string | null;
   adu_plan_id?: number | null;
   preferred_language: "en" | "es";
@@ -1354,6 +1365,8 @@ export interface AdminClient {
   preferred_language: "en" | "es";
   address_line1: string | null;
   city: string | null;
+  /** Picked city (service_cities). */
+  city_id?: number | null;
   zip: string | null;
   affiliate_id: number | null;
   affiliate_name: string | null;
@@ -1518,6 +1531,8 @@ export interface RegisterClientRequest {
   phone: string;
   property_address: string;
   property_city?: string | null;
+  /** Picked city (service_cities); wins over property_city. */
+  city_id?: number | null;
   property_zip?: string | null;
   adu_plan_id?: number | null;
   preferred_language?: "en" | "es";

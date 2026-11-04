@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS `marketing_events` (
   `capacity` INT UNSIGNED DEFAULT NULL,
   `waitlist_enabled` TINYINT(1) NOT NULL DEFAULT 1,
   `city` VARCHAR(100) NOT NULL,
+  `city_id` INT UNSIGNED DEFAULT NULL COMMENT 'service_cities; RSVP leads inherit it',
   `venue_name` VARCHAR(200) DEFAULT NULL,
   `venue_address` VARCHAR(500) DEFAULT NULL,
   `zoom_url` VARCHAR(500) DEFAULT NULL,
@@ -104,6 +105,7 @@ CREATE TABLE IF NOT EXISTS `marketing_events` (
   UNIQUE KEY `uq_marketing_events_slug` (`slug`),
   KEY `idx_marketing_events_status_featured` (`status`, `is_featured`),
   KEY `idx_marketing_events_starts` (`starts_at`),
+  KEY `idx_marketing_events_city` (`city_id`),
   CONSTRAINT `fk_marketing_events_admin`
     FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
   -- fk_marketing_events_rsvp_flow → reminder_flows(id) ON DELETE SET NULL (added in 20261103_170000_event_rsvp_flow.sql)
@@ -1243,6 +1245,7 @@ CREATE TABLE IF NOT EXISTS `contacts` (
   `address_line1` VARCHAR(255) DEFAULT NULL,
   `address_line2` VARCHAR(255) DEFAULT NULL,
   `city` VARCHAR(100) DEFAULT NULL,
+  `city_id` INT UNSIGNED DEFAULT NULL COMMENT 'service_cities',
   `state` VARCHAR(50) DEFAULT NULL,
   `zip` VARCHAR(20) DEFAULT NULL,
   `preferred_language` ENUM('en','es') NOT NULL DEFAULT 'en',
@@ -1256,6 +1259,7 @@ CREATE TABLE IF NOT EXISTS `contacts` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_contacts_email` (`email`),
+  KEY `idx_contacts_city` (`city_id`),
   KEY `idx_contacts_phone` (`phone`),
   KEY `idx_contacts_deleted` (`deleted_at`),
   KEY `idx_contacts_converted` (`converted_client_id`),
@@ -2346,6 +2350,7 @@ CREATE TABLE IF NOT EXISTS `city_partner_sessions` (
   `ip_address` VARCHAR(45) DEFAULT NULL,
   `user_agent` VARCHAR(500) DEFAULT NULL,
   `expires_at` DATETIME NOT NULL,
+  `viewer_admin_id` INT UNSIGNED DEFAULT NULL COMMENT 'Set = read-only View as partner session opened by this super admin',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_cp_sessions_token` (`token_hash`),

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { BadgeCheck, Eye, FileSignature, FileText, MapPin, Send } from "lucide-react";
+import { BadgeCheck, Eye, FileSignature, FileText, MapPin, MonitorSmartphone, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { clearInvitePreview, countersignCityAgreement, fetchCityPartner, previewCityInvite, resendCityPartnerInvite, reviewCityW9, updateCityFee, updateCityPartner } from "@/store/slices/cityPartnerSlice";
+import { clearInvitePreview, countersignCityAgreement, fetchCityPartner, previewCityInvite, resendCityPartnerInvite, reviewCityW9, updateCityFee, updateCityPartner, viewAsCityPartner } from "@/store/slices/cityPartnerSlice";
 import { fetchAdminCities } from "@/store/slices/citiesSlice";
 import { BackLink, BusyButton, ErrorNote, PageHeader } from "@/components/portal/kit";
 import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
@@ -169,6 +169,23 @@ export default function CityPartnerDetail() {
         <div className="pf-actions">
           <BusyButton icon={Eye} label={t("cityPartner.previewInvite")} busy={previewing} onClick={() => void dispatch(previewCityInvite(id))} />
           {resendButton}
+          {isSuper ? (
+            <BusyButton
+              icon={MonitorSmartphone}
+              label={t("cityPartner.viewAs", { name: p.first_name })}
+              busy={saving}
+              disabled={p.status !== "active"}
+              onClick={async () => {
+                // Open the tab right away (popup blockers allow it), then point it at the portal.
+                const tab = window.open("about:blank", "_blank");
+                const r = await dispatch(viewAsCityPartner(id));
+                if (viewAsCityPartner.fulfilled.match(r)) {
+                  if (tab) tab.location.href = r.payload.url;
+                  reload();
+                } else tab?.close();
+              }}
+            />
+          ) : null}
           <BusyButton
             label={t(p.status === "active" ? "cityPartner.deactivate" : "cityPartner.activate")}
             busy={saving}
