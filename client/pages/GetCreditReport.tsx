@@ -1,3 +1,4 @@
+import CityPickerField from "@/components/CityPickerField";
 import { Formik, Form, Field } from "formik";
 import * as Yup from "yup";
 import { Link, useLocation } from "react-router-dom";
@@ -223,6 +224,7 @@ export default function GetCreditReport() {
                     | "en"
                     | "es",
                   notes: "",
+                  city_ids: [] as number[],
                   soft_pull_consent: true,
                 }}
                 validationSchema={gcrSchema}
@@ -236,6 +238,7 @@ export default function GetCreditReport() {
                       preferred_language: values.preferred_language,
                       soft_pull_consent: values.soft_pull_consent,
                       notes: values.notes.trim() || null,
+                      city_ids: values.city_ids,
                     }),
                   );
                 }}
@@ -293,6 +296,7 @@ export default function GetCreditReport() {
                       </Field>
                     </label>
 
+                    <CityPickerField single labelKey="cities.propertyCity" />
                     <label>
                       {t("getCreditReport.notes")}
                       <Field as="textarea" name="notes" rows={3} />

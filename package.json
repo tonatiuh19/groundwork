@@ -9,10 +9,12 @@
     "typecheck": "tsc",
     "check:api-inline": "npx tsx scripts/check-api-inline.ts",
     "deploy:prod": "npx tsx scripts/deploy-prod.ts",
+    "deploy:stamp-version": "npx tsx scripts/deploy-prod.ts --stamp-only",
     "db:migrate": "bash scripts/apply-migrations.sh",
     "format.fix": "prettier --write .",
     "e2e:stripe": "tsx scripts/stripe-e2e.mts",
-    "audit:mobile": "tsx scripts/mobile-audit.mts"
+    "audit:mobile": "tsx scripts/mobile-audit.mts",
+    "test:cleanup-fixtures": "tsx scripts/cleanup-test-fixtures.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
@@ -20,10 +22,14 @@
     "@reduxjs/toolkit": "^2.3.0",
     "@stripe/react-stripe-js": "^7.0.0",
     "@stripe/stripe-js": "^10.1.0",
+    "@tonatiuh19/gomez-ui": "file:../gomez-framework/packages/ui",
     "@twilio/voice-sdk": "^2.18.5",
     "@vercel/blob": "^2.8.0",
     "@vercel/node": "^3.0.21",
+    "@xyflow/react": "^12.10.1",
     "ably": "^2.29.0",
+    "ag-grid-community": "^36.2.0",
+    "ag-grid-react": "^36.2.0",
     "axios": "^1.7.0",
     "cors": "^2.8.5",
     "date-fns": "^4.4.0",

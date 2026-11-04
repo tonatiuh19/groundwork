@@ -108,7 +108,7 @@ describe("parseLeadBody", () => {
     expect(parsed.ok).toBe(false);
   });
 
-  it("rejects missing consent with i18n key", () => {
+  it("accepts an inquiry without credit-pull consent (home page inquiry form)", () => {
     const parsed = __test.parseLeadBody({
       full_name: "Alex Rivera",
       email: "alex@example.com",
@@ -116,7 +116,7 @@ describe("parseLeadBody", () => {
       property_address: "123 Oak St",
       soft_pull_consent: false,
     });
-    expect(parsed.ok).toBe(false);
-    expect(parsed).toMatchObject({ error: "validation.consent" });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.data.soft_pull_consent).toBe(false);
   });
 });

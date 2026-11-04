@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import PartnerTypeFields, { PARTNER_TYPE_DEFAULTS, partnerTypePayload, partnerTypeSchema, type PartnerTypeValues } from "@/components/portal/PartnerTypeFields";
 import { Navigate } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
@@ -70,7 +71,7 @@ export default function AffiliateTeam() {
       .email(t("validation.emailInvalid"))
       .required(t("validation.emailRequired")),
     phone: Yup.string().trim(),
-    company: Yup.string().trim(),
+    ...partnerTypeSchema(t, false),
     preferred_language: Yup.string()
       .oneOf(["en", "es"])
       .required(t("validation.invalidField")),
@@ -191,7 +192,7 @@ export default function AffiliateTeam() {
             last_name: "",
             email: "",
             phone: "",
-            company: "",
+            ...PARTNER_TYPE_DEFAULTS,
             preferred_language: (i18n.language?.startsWith("es")
               ? "es"
               : "en") as "en" | "es",
@@ -204,7 +205,7 @@ export default function AffiliateTeam() {
                 last_name: v.last_name.trim(),
                 email: v.email.trim(),
                 phone: v.phone.trim() || undefined,
-                company: v.company.trim() || undefined,
+                ...partnerTypePayload(v as PartnerTypeValues),
                 preferred_language: v.preferred_language,
               }),
             );
@@ -223,7 +224,7 @@ export default function AffiliateTeam() {
               <TextField name="last_name" labelKey="form.lastName" />
               <TextField name="email" labelKey="form.email" type="email" />
               <TextField name="phone" labelKey="form.phone" type="tel" />
-              <TextField name="company" labelKey="pf.company" />
+              <PartnerTypeFields />
               <SelectField
                 name="preferred_language"
                 labelKey="form.language"

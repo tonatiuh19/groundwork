@@ -36,6 +36,7 @@ paths:
         Includes Conversations fields when a brand Twilio line is assigned:
         conversations_enabled, assigned_phone_numbers, voice_available,
         call_forwarding_enabled, call_forwarding_phone.
+        scorecard_enabled: true when SCORECARD_ENABLED is on and the role is super_admin or admin.
       responses:
         "200": { description: Admin user (+ conversations_* when numbered) }
         "401": { description: Unauthorized }
@@ -166,6 +167,7 @@ paths:
           description: pong
   /api/public/leads:
     post:
+      description: "Standard (inquiry) leads no longer require soft_pull_consent. Event RSVPs get the A/B/C welcome text + email (see /api/public/lead-role)."
       summary: Submit a marketing / event lead (home form)
       description: |
         `mode=standard` (default): `soft_pull_consent` must be true (400 validation.consent). `event_id` is ignored.
@@ -389,6 +391,855 @@ paths:
       responses:
         "302":
           description: Redirect to MFSN
+  /go/{slug}:
+    get:
+      summary: Dynamic QR code (Admin -> QR codes)
+      description: "Forwards to the code's current destination (site path or http(s) URL) and counts the scan (link-preview bots, crawlers, HEAD and prefetch requests are redirected but not counted). Unknown or switched-off codes go to /. Cache-Control no-store."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "302": { description: Redirect to the destination }
+  /api/public/go/{slug}:
+    get:
+      summary: Same dynamic QR redirect under /api prefix
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "302": { description: Redirect to the destination }
+  /api/admin/qr-links:
+    get:
+      summary: "List QR codes and event codes"
+      tags: [portal-admin]
+      description: "Requires `events`. Returns { ok, items: QrLink[], event_codes: QrEventCode[] }. QrLink includes destination, fallback, active, archived, scan_count, lead_count, application_count, short_url."
+      responses:
+        "200": { description: "{ ok, items, event_codes }" }
+        "403": { description: "errors.forbidden" }
+    post:
+      summary: "Create a QR code"
+      tags: [portal-admin]
+      description: "Requires `events`. Body { slug, label, destination: { type: page|event|next_event|affiliate|external, key?, id? }, fallback? }. slug is permanent; 'free-score' is reserved. Destinations must be existing records; free-typed URLs are not accepted."
+      responses:
+        "201": { description: "{ ok, item }" }
+        "400": { description: "validation.qrSlug | validation.qrLabel | validation.qrDestination" }
+        "409": { description: "errors.qrSlugTaken" }
+  /api/admin/qr-links/{id}:
+    patch:
+      summary: "Update a QR code"
+      tags: [portal-admin]
+      description: "Requires `events`. Body { label?, destination?, fallback? (null = home page), active?, archived? }. The slug never changes (ignored). Every change is logged."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, item }" }
+        "400": { description: "validation.qrLabel | validation.qrDestination" }
+        "404": { description: "errors.notFound" }
+  /api/admin/qr-links/{id}/insights:
+    get:
+      summary: "Scans over 90 days, scans per destination, change history"
+      tags: [portal-admin]
+      description: "Requires `events`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, days, destinations, changes }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/qr-destinations:
+    get:
+      summary: "Search what a QR code can point at"
+      tags: [portal-admin]
+      description: "Requires `events`. Query type=page|event|next_event|affiliate|external, q. Only published events, active affiliates and active approved links."
+      parameters:
+        - { name: type, in: query, required: true, schema: { type: string } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, options: [{ value, label, sub }] }" }
+        "400": { description: "validation.qrDestination" }
+  /api/admin/qr-external-links:
+    get:
+      summary: "List approved external links"
+      tags: [portal-admin]
+      description: "Requires `events`."
+      responses:
+        "200": { description: "{ ok, items }" }
+    post:
+      summary: "Add an approved external link"
+      tags: [portal-admin]
+      description: "Requires `approvals` (super_admin, admin). Body { label, url }. https only, no embedded login."
+      responses:
+        "201": { description: "{ ok, item }" }
+        "400": { description: "validation.qrLabel | validation.qrExternalUrl" }
+  /api/admin/qr-external-links/{id}:
+    patch:
+      summary: "Update an approved external link"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { label?, url?, active? }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, item }" }
+        "400": { description: "validation.qrLabel | validation.qrExternalUrl" }
+        "404": { description: "errors.notFound" }
+  /api/admin/mail/folders:
+    get:
+      summary: "List a mailbox's Outlook folders"
+      tags: [portal-admin]
+      parameters:
+        - { name: mailbox_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, folders: [{ id, name, thread_count, unread }] }" }
+    post:
+      summary: "Create a folder in Outlook"
+      tags: [portal-admin]
+      description: "Needs send access to the mailbox. Body { mailbox_id, name }."
+      responses:
+        "201": { description: "{ ok, folders }" }
+        "400": { description: "validation.mailFolderName" }
+        "409": { description: "errors.mailFolderExists" }
+  /api/admin/mail/folders/{id}:
+    patch:
+      summary: "Rename a folder in Outlook"
+      tags: [portal-admin]
+      description: "Body { mailbox_id, name }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, folders }" }
+    delete:
+      summary: "Delete an empty folder"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: mailbox_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, folders }" }
+        "409": { description: "errors.mailFolderNotEmpty" }
+  /api/admin/mail/threads/{id}/move:
+    post:
+      summary: "File a thread in a folder (folder_id null = back to Inbox)"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, thread }" }
+        "502": { description: "errors.mailMoveFailed" }
+  /api/admin/mail/rules:
+    get:
+      summary: "List CRM and Outlook rules for a mailbox"
+      tags: [portal-admin]
+      parameters:
+        - { name: mailbox_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, rules, outlook_error }" }
+    post:
+      summary: "Create a rule"
+      tags: [portal-admin]
+      description: "Body { mailbox_id, engine: outlook|crm, name, from?, subject?, person_kind? (crm), folder_id, mark_read? }. At least one condition. Outlook rules need MailboxSettings.ReadWrite."
+      responses:
+        "201": { description: "{ ok }" }
+        "400": { description: "validation.mailRule" }
+        "409": { description: "errors.mailRulesPermission" }
+  /api/admin/mail/rules/{engine}/{id}:
+    patch:
+      summary: "Turn a rule on or off"
+      tags: [portal-admin]
+      description: "Body { mailbox_id, active }."
+      parameters:
+        - { name: engine, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok }" }
+    delete:
+      summary: "Delete a rule"
+      tags: [portal-admin]
+      parameters:
+        - { name: engine, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: mailbox_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+  /api/public/cities:
+    get:
+      summary: "Cities for public sign-up pickers"
+      tags: [public]
+      responses:
+        "200": { description: "{ ok, cities: [{ id, name }] }" }
+  /api/admin/cities:
+    get:
+      summary: "Cities with counts and who covers each"
+      tags: [portal-admin]
+      description: "Any staff. Visibility only; never affects commissions."
+      responses:
+        "200": { description: "{ ok, cities }" }
+    post:
+      summary: "Add a city"
+      tags: [portal-admin]
+      description: "Requires `settings`. Body { name }."
+      responses:
+        "201": { description: "{ ok, cities }" }
+        "400": { description: "validation.cityName" }
+        "409": { description: "errors.cityExists" }
+  /api/admin/cities/{id}/usage:
+    get:
+      summary: "What uses a city (before archive, merge or delete)"
+      tags: [portal-admin]
+      description: "settings. { usage: { leads, clients, projects, fees, people, activities, total } }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, usage }" }
+  /api/admin/cities/similar:
+    get:
+      summary: "Near-duplicate names before a quick add"
+      tags: [portal-admin]
+      parameters:
+        - { name: name, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, matches: [{ id, name, archived }] }" }
+  /api/admin/cities/{id}/archive:
+    post:
+      summary: "Archive or restore a city"
+      tags: [portal-admin]
+      description: "settings. Body { archived?: boolean (default true) }. Archived cities disappear from pickers, filters and the pipeline; history stays."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+  /api/admin/cities/{id}/merge:
+    post:
+      summary: "Merge a duplicate city into another, then delete it"
+      tags: [portal-admin]
+      description: "settings. Body { into_id } (not an archived city: 409 errors.cityArchivedTarget). Moves leads, clients, projects, activities, contacts, fees and coverage."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+  /api/admin/cities/{id}:
+    delete:
+      summary: "Delete an unused city"
+      tags: [portal-admin]
+      description: "settings. 409 errors.cityInUse when anything uses it (archive or merge instead)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "409": { description: "errors.cityInUse" }
+    patch:
+      summary: "Rename, show or hide a city"
+      tags: [portal-admin]
+      description: "Requires `settings`. Body { name?, active? }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, cities }" }
+        "409": { description: "errors.cityExists" }
+  /api/admin/cities/suggestions:
+    get:
+      summary: "Older records with no city, with a best guess"
+      tags: [portal-admin]
+      description: "Requires `settings`. Changes nothing."
+      responses:
+        "200": { description: "{ ok, records: [{ kind, id, name, address, suggested_city_id }] }" }
+  /api/admin/cities/assign:
+    post:
+      summary: "Staff confirm a record's city"
+      tags: [portal-admin]
+      description: "Requires `settings`. Body { kind: lead|client|project, id, city_id }."
+      responses:
+        "200": { description: "{ ok }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/cities/people/{kind}/{id}:
+    get:
+      summary: "Cities an affiliate or contractor covers or asked for"
+      tags: [portal-admin]
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, cities, assigned, requested }" }
+    put:
+      summary: "Set the cities staff assign to a person"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { assigned: number[] }."
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, cities, assigned, requested }" }
+  /api/admin/city-partners:
+    get:
+      summary: "List City Partners"
+      tags: [portal-admin]
+      description: "approvals or finance.read. Query q, status, agreement (none|signed|countersigned), w9 (missing|submitted|accepted|rejected), city_id, limit, offset. Returns { items, total }. Includes cities, agreement and W-9 state."
+      responses:
+        "200": { description: "{ ok, ... }" }
+    post:
+      summary: "Invite a City Partner"
+      tags: [portal-admin]
+      description: "approvals. Body { email, first_name, company (LLC legal name, required: it is the Contractor in the agreement), last_name?, phone?, preferred_language?, fee_cents_per_sqft? (default 200), city_ids?, send_invite? }. Invite-only: partners can't sign up."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partners/{id}:
+    get:
+      summary: "City Partner detail"
+      tags: [portal-admin]
+      description: "approvals or finance.read. Agreement text and SHA-256, W-9, cities, fees (finance only)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+    delete:
+      summary: "Delete a City Partner forever"
+      tags: [portal-admin]
+      description: "super_admin only. Body { confirm_name } must equal the LLC name. Removes the partner, agreement, W-9 (and PDF) and all fees."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "400": { description: "validation.confirmNameMismatch" }
+    patch:
+      summary: "Update a City Partner"
+      tags: [portal-admin]
+      description: "approvals. Body { first_name?, last_name?, phone?, company?, notes?, preferred_language?, status? (active|inactive, inactive signs them out), fee_cents_per_sqft? (integer cents 0-10000), city_ids? }. Rate and company are locked once the partner signed (409 errors.cityRateLocked / errors.cityCompanyLocked). Every change is logged (changes in the detail)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partners/invite-preview:
+    post:
+      summary: "Preview the invite email for draft fields (never sends)"
+      tags: [portal-admin]
+      description: "approvals. Body: first_name, company, city_ids, fee_cents_per_sqft, preferred_language."
+      responses:
+        "200": { description: "{ ok, subject, html }" }
+  /api/admin/city-partners/{id}/invite-preview:
+    get:
+      summary: "Preview the invite email for a saved partner (never sends)"
+      tags: [portal-admin]
+      description: "approvals."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, subject, html }" }
+  /api/admin/city-partners/{id}/invite:
+    post:
+      summary: "Resend the invite email"
+      tags: [portal-admin]
+      description: "approvals."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partners/{id}/agreements/{aid}/countersign:
+    post:
+      summary: "Countersign for Groundwork"
+      tags: [portal-admin]
+      description: "super_admin only. Body { name }. Fees only start after this."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partners/{id}/w9s/{wid}/review:
+    post:
+      summary: "Accept or reject a W-9"
+      tags: [portal-admin]
+      description: "finance.write. Body { status: accepted|rejected, note? }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: wid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partners/{id}/w9s/{wid}/pdf:
+    get:
+      summary: "W-9 PDF (private, redirect)"
+      tags: [portal-admin]
+      description: "finance.read."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: wid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partner-fees:
+    get:
+      summary: "All City Partner fees"
+      tags: [portal-admin]
+      description: "finance.read. Query status (or open), partner_id, city_id, due_from, due_to, limit, offset. Returns { items, total, totals }."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-partner-fees/{id}:
+    patch:
+      summary: "Move a fee"
+      tags: [portal-admin]
+      description: "finance.write. Body { status, note? }. pending→approved|void, approved→paid|void|pending, paid→refund_due, refund_due→refunded, void→pending."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/projects/{publicId}/funds-received:
+    patch:
+      summary: "Set the project's funds received date"
+      tags: [portal-admin]
+      description: "finance.write. Body { date: YYYY-MM-DD | null }. Creates Opened City fees (due +5 days) for countersigned City Partners of the city; null voids unpaid ones."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline:
+    get:
+      summary: "City pipeline (all cities)"
+      tags: [portal-admin]
+      description: "approvals. Query q, stage, priority, follow_up, opened (yes|no), partner_id, sort (name|next_action|stage|last_activity), limit, offset; KPIs cover the whole pipeline. { cities, kpis } with follow-up state and a suggested next step from Groundwork's own rules."
+      responses:
+        "200": { description: "{ ok, ... }" }
+    post:
+      summary: "Add a city to the pipeline"
+      tags: [portal-admin]
+      description: "approvals. Body { city_id } (picked from Settings cities) or { name, county?, priority? }."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/export.csv:
+    get:
+      summary: "Pipeline as CSV"
+      tags: [portal-admin]
+      description: "approvals."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}:
+    get:
+      summary: "One city: pipeline, activity, city sheet, score"
+      tags: [portal-admin]
+      description: "approvals."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+    patch:
+      summary: "Update pipeline fields"
+      tags: [portal-admin]
+      description: "approvals. Setting stage preapproved sets opened_on (Opened City)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/activities:
+    post:
+      summary: "Log an activity"
+      tags: [portal-admin]
+      description: "approvals. Body { occurred_on?, activity_type, contact_name?, summary, next_step?, follow_up_on?, link_url? (https) }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/activities/{aid}:
+    delete:
+      summary: "Delete an activity"
+      tags: [portal-admin]
+      description: "approvals."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/intel:
+    patch:
+      summary: "Edit the city sheet"
+      tags: [portal-admin]
+      description: "approvals. Any edit clears the check, so partners stop seeing it until verified again."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/intel/verify:
+    post:
+      summary: "Mark the city sheet checked"
+      tags: [portal-admin]
+      description: "approvals."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/contacts:
+    post:
+      summary: "Add a city contact"
+      tags: [portal-admin]
+      description: "approvals. Body { kind, name, title?, email?, phone?, notes? }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/contacts/{cid}:
+    delete:
+      summary: "Delete a city contact"
+      tags: [portal-admin]
+      description: "approvals."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: cid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/auth/otp/request:
+    post:
+      summary: Request City Partner OTP
+      tags: [portal-auth]
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      responses:
+        "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
+        "400": { description: validation.emailInvalid }
+        "403": { description: "errors.authPending / errors.authInvited" }
+        "429": { description: errors.tooMany }
+        "502": { description: errors.otpSendFailed }
+  /api/city/auth/otp/verify:
+    post:
+      summary: Verify City Partner OTP (sets gw_City Partner_sid)
+      tags: [portal-auth]
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      responses:
+        "200": { description: Authenticated }
+        "400": { description: validation.otpInvalid }
+        "401": { description: "errors.authInvalid / errors.authLocked" }
+  /api/city/auth/me:
+    get:
+      summary: Current City Partner
+      tags: [portal-auth]
+      responses:
+        "200": { description: City Partner user }
+  /api/city/auth/logout:
+    post:
+      summary: End City Partner session
+      tags: [portal-auth]
+      responses:
+        "200": { description: Logged out }
+  /api/admin/city-partners/{id}/agreement/pdf:
+    get:
+      summary: "Signed agreement PDF (built from the frozen text)"
+      tags: [portal-admin]
+      description: "approvals or finance.read. Watermarked until Groundwork countersigns."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "application/pdf" }
+        "404": { description: "errors.notFound" }
+  /api/city/agreement/pdf:
+    get:
+      summary: "My signed agreement PDF"
+      tags: [city-partner]
+      description: "City Partner session."
+      responses:
+        "200": { description: "application/pdf" }
+  /api/city/feed:
+    get:
+      summary: "Activity feed for my cities"
+      tags: [city-partner]
+      description: "City Partner session. Activities, stage changes, Opened City moments, homeowner milestones (first name + last initial), fees earned and paid, agreement events. Query limit (5-100)."
+      responses:
+        "200": { description: "{ ok, items }" }
+  /api/city/profile:
+    patch:
+      summary: "Update my contact details"
+      tags: [city-partner]
+      description: "City Partner session. Body { first_name?, last_name?, phone?, preferred_language? }. LLC name and rate are staff-only."
+      responses:
+        "200": { description: "{ ok, partner }" }
+  /api/city/cities:
+    get:
+      summary: "My cities (City Partner)"
+      tags: [city-partner]
+      description: "City Partner session. Only assigned cities."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/cities/export.csv:
+    get:
+      summary: "My cities as CSV"
+      tags: [city-partner]
+      description: "City Partner session."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/cities/{id}:
+    get:
+      summary: "One of my cities"
+      tags: [city-partner]
+      description: "City Partner session. City sheet only when verified."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+    patch:
+      summary: "Update my city's pipeline"
+      tags: [city-partner]
+      description: "City Partner session. Can't set preapproved or opened_on."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/cities/{id}/activities:
+    post:
+      summary: "Log an activity"
+      tags: [city-partner]
+      description: "City Partner session."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/cities/{id}/activities/{aid}:
+    delete:
+      summary: "Delete my activity"
+      tags: [city-partner]
+      description: "City Partner session. Only their own."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/overview:
+    get:
+      summary: "Dashboard"
+      tags: [city-partner]
+      description: "City Partner session. Cities, KPIs, onboarding, fee totals and next due date, 12 months of earnings (paid vs coming), and the latest feed."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/onboarding:
+    get:
+      summary: "Agreement and W-9 state"
+      tags: [city-partner]
+      description: "City Partner session. Rendered approved template."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/onboarding/agreement:
+    post:
+      summary: "E-sign the agreement"
+      tags: [city-partner]
+      description: "City Partner session. Body { signer_name, signer_title?, consent: true, text_sha256 } where text_sha256 is template.sha256 from /api/city/onboarding. 409 errors.agreementChanged when staff changed the rate or LLC name meanwhile. Freezes text (SHA-256) and rate."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/onboarding/w9:
+    post:
+      summary: "Submit the online W-9"
+      tags: [city-partner]
+      description: "City Partner session. Same fields as the affiliate W-9; full TIN only in the private PDF."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/onboarding/w9/pdf:
+    get:
+      summary: "My W-9 PDF"
+      tags: [city-partner]
+      description: "City Partner session."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/agreement:
+    get:
+      summary: "My signed agreement text"
+      tags: [city-partner]
+      description: "City Partner session."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/clients:
+    get:
+      summary: "Homeowners in my Opened Cities"
+      tags: [city-partner]
+      description: "City Partner session. First name + last initial, street name only, milestone, sq ft, my fee."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/city/fees:
+    get:
+      summary: "My fees"
+      tags: [city-partner]
+      description: "City Partner session."
+      responses:
+        "200": { description: "{ ok, ... }" }
+  /api/admin/scorecards:
+    get:
+      summary: "Scorecards board (this or a past week)"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Query week=YYYY-MM-DD (Monday, Pacific; defaults to this week; only weeks since launch). Brings open weeks up to date (2-minute throttle), freezes weeks 3 days after they end and escalates them. Returns { ok, week_start, weeks, items: ScorecardBoardRow[] (subject, scorecard lead_rep|coordinator|affiliate, score, grade A-F, color green|yellow|orange|red|none, termination_review, final, metrics, trend), open_actions }."
+      parameters:
+        - { name: week, in: query, required: false, schema: { type: string, format: date } }
+      responses:
+        "200": { description: "{ ok, week_start, weeks, items, open_actions }" }
+        "403": { description: "errors.forbidden" }
+        "404": { description: "errors.notFound (flag off)" }
+  /api/admin/scorecards/{type}/{id}:
+    get:
+      summary: "One person's scorecards"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). type = affiliate | contractor. Returns { ok, subject (roles for contractors), weeks, cards: [{ scorecard, weeks: [ScorecardWeekPoint + metrics with items] }], actions, time_off, activities, leads (assigned), projects (as builder) }."
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [affiliate, contractor] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ScorecardDetail" }
+        "400": { description: "validation.scSubject" }
+        "404": { description: "errors.notFound" }
+  /api/admin/scorecards/contractor/{id}/roles:
+    patch:
+      summary: "Which scorecards apply to a contractor"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { roles: (lead_rep | coordinator)[] }; an empty list stops scoring them."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, roles }" }
+  /api/admin/scorecards/{type}/{id}/time-off:
+    post:
+      summary: "Add days off (skipped by every clock)"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { starts_on, ends_on?, label? } (Pacific dates, inclusive, up to 120 days)."
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [affiliate, contractor] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok }" }
+        "400": { description: "validation.scDates" }
+  /api/admin/scorecards/time-off/{id}:
+    delete:
+      summary: "Remove days off"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/scorecards/{type}/{id}/activities:
+    post:
+      summary: "Log work that feeds the score"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { kind, outcome?, lead_id?, project_public_id?, note?, occurred_at? }. Contractors: call_attempt (outcome answered | no_answer | voicemail), contacted, next_step (note required) on a lead assigned to them; status_review, homeowner_update on a project they build. Affiliates: event_held. occurred_at up to 10 days back, never before the lead was assigned, never into a frozen week. Contact moves a new lead to contacted."
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [affiliate, contractor] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok, id }" }
+        "400": { description: "validation.scKind | validation.scOutcome | validation.scNote | validation.scLead | validation.scProject | validation.scWhen" }
+        "409": { description: "errors.scWeekFrozen" }
+  /api/admin/scorecards/activities/{id}:
+    delete:
+      summary: "Remove a logged activity (open weeks only)"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "409": { description: "errors.scWeekFrozen" }
+  /api/admin/scorecards/leads/{leadId}/contractor:
+    put:
+      summary: "Assign a lead to a contractor (Lead rep) or take it back"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { contractor_id | null }. The 15-minute clock starts at assignment (leads.contractor_assigned_at)."
+      parameters:
+        - { name: leadId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/scorecards/lead-search:
+    get:
+      summary: "Find leads to assign"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Query q (2+ chars: name, email or phone). Excludes spam and closed leads. Returns { ok, items: ScorecardLeadHit[] }."
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, items }" }
+  /api/admin/scorecards/{type}/{id}/actions:
+    post:
+      summary: "Add a note to someone's scorecard record"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { body, scorecard?, week_start? }."
+      parameters:
+        - { name: type, in: path, required: true, schema: { type: string, enum: [affiliate, contractor] } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok, item: ScorecardAction }" }
+        "400": { description: "validation.scNote" }
+  /api/admin/scorecards/actions/{id}:
+    patch:
+      summary: "Update or close a follow-up"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { status?: open | done, resolution? }. Meetings, written warnings and termination reviews need the written record (resolution) to close."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, item }" }
+        "400": { description: "validation.scResolution" }
+        "404": { description: "errors.notFound" }
+  /api/admin/scorecards/projects/{publicId}/tracking:
+    get:
+      summary: "Coordinator tracking for a project"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Returns ProjectTracking { contractor_id, plans, corrections, targets, last_status_review_at, last_homeowner_update_at }. Every write below returns the same shape."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "ProjectTracking" }
+        "404": { description: "errors.notFound" }
+  /api/admin/scorecards/projects/{publicId}/plans:
+    post:
+      summary: "Track a plan the builder owes"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { title, due_on }."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "ProjectTracking" }
+        "400": { description: "validation.scTitle | validation.scDates" }
+  /api/admin/scorecards/projects/{publicId}/plans/{id}:
+    patch:
+      summary: "Mark a plan delivered (now) or undo"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { delivered: boolean }."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectTracking" }
+    delete:
+      summary: "Remove a tracked plan"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin)."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectTracking" }
+  /api/admin/scorecards/projects/{publicId}/corrections:
+    post:
+      summary: "Log a city correction"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { received_on, note? } (not in the future). Goal: resolved within 5 working days."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "ProjectTracking" }
+        "400": { description: "validation.scDates" }
+  /api/admin/scorecards/projects/{publicId}/corrections/{id}:
+    patch:
+      summary: "Resolve a city correction (or reopen with null)"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { resolved_on: YYYY-MM-DD | null } (not before received_on, not in the future)."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectTracking" }
+    delete:
+      summary: "Remove a city correction"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin)."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectTracking" }
+  /api/admin/scorecards/projects/{publicId}/targets:
+    put:
+      summary: "Set or clear a stage target date"
+      tags: [portal-admin]
+      description: "Gated by SCORECARD_ENABLED (404 when off) and `approvals` (super_admin, admin). Body { milestone: financing | contracted | in_build | closed, due_on: YYYY-MM-DD | null }. Reached = first stage change into it."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "ProjectTracking" }
+        "400": { description: "validation.scKind | validation.scDates" }
   /api/public/contact:
     post:
       summary: Public contact form (SMS consent fields)
@@ -458,6 +1309,7 @@ paths:
           description: Rate limited
   /api/public/partner-referral:
     post:
+      description: "Also partner_type / license_number (Realtor DRE #, Lender NMLS #), same rules as affiliate signup."
       summary: Partner / referral program signup (creates pending affiliate, not a lead)
       requestBody:
         required: true
@@ -505,6 +1357,7 @@ paths:
         "200": { description: "Plans (id, code, name, bedrooms, bathrooms, stories, sq_ft, images)" }
   /api/public/affiliate/signup:
     post:
+      description: "partner_type realtor | lender | other; realtor needs company + license_number (DRE #), lender needs company + license_number (NMLS #). Approved lenders join the Lenders directory (lenders.affiliate_id, nmls_number). Body { first_name, last_name, email, phone, company?, preferred_language?, sponsor_code? }. sponsor_code = the referral code of the affiliate whose link they came from (\"I\x27m a realtor / partner\" on /r/:code): they join that affiliate\x27s team as Sponsor, and the sponsor gets an email. Unknown / inactive sponsor_code → 400 errors.referralInactive."
       summary: "Affiliate self-signup (account starts pending admin approval)"
       tags: [portal-public]
       requestBody:
@@ -787,7 +1640,7 @@ paths:
         "200": { description: "{ ok, profile }" }
         "401": { description: "Not signed in" }
     patch:
-      summary: "Update affiliate profile fields (name, phone, company, language, bio, slug)"
+      summary: "Update affiliate profile fields (name, phone, company, language, bio)"
       tags: [portal-affiliate]
       requestBody:
         required: true
@@ -805,11 +1658,11 @@ paths:
                 slug:
                   type: string
                   nullable: true
-                  description: "Vanity /r/{slug}. Slugified server-side; null/empty clears (falls back to referral_code). Reserved words → validation.slugReserved; taken → errors.slugTaken."
+                  description: "Read-only for affiliates (staff-only). Sending the current value is ignored; a different value returns 403 errors.slugStaffOnly."
       responses:
         "200": { description: "{ ok, user, profile }" }
-        "400": { description: "validation.invalidField / validation.phoneMin / validation.slugFormat / validation.slugReserved" }
-        "409": { description: "errors.slugTaken" }
+        "400": { description: "validation.invalidField / validation.phoneMin" }
+        "403": { description: "errors.slugStaffOnly (slug differs from the current one)" }
   /api/affiliate/me/avatar:
     post:
       summary: "Upload cropped affiliate avatar (raw JPEG/PNG/WebP ≤4MB) to Vercel Blob"
@@ -1291,12 +2144,22 @@ paths:
                 location_label_es: { type: string, nullable: true }
                 cta_en: { type: string, nullable: true }
                 cta_es: { type: string, nullable: true }
+                rsvp_flow_id: { type: integer, nullable: true, description: "Automation (trigger event_rsvp) started for each RSVP while it is on; null = no automatic messages. Other triggers → 400 validation.invalidField." }
       responses:
         "201": { description: "Created { ok, id, event }" }
         "400": { description: validation.invalidField }
         "409": { description: errors.duplicate (slug taken) }
         "401": { description: "Not signed in" }
         "403": { description: "Wrong portal, missing permission, or foreign Origin on a mutation (CSRF guard)" }
+  /api/admin/events/rsvp-flows:
+    get:
+      summary: "Automations an event can start on RSVP"
+      tags: [portal-admin]
+      description: "Requires permission `events` or `leads`. Lists automations with trigger event_rsvp (on first, then by name); seeds the 'Event RSVP welcome (A / B / C)' automation switched off if missing."
+      responses:
+        "200": { description: "OK { flows: [{ id, name, is_active }] }" }
+        "401": { description: "Not signed in" }
+        "403": { description: "Wrong portal or missing permission" }
   /api/admin/events/{id}:
     get:
       summary: "Get one marketing event with RSVP counts"
@@ -1347,6 +2210,7 @@ paths:
                 location_label_es: { type: string, nullable: true }
                 cta_en: { type: string, nullable: true }
                 cta_es: { type: string, nullable: true }
+                rsvp_flow_id: { type: integer, nullable: true, description: "Automation (trigger event_rsvp) started for each RSVP while it is on; null = no automatic messages. Other triggers → 400 validation.invalidField." }
       responses:
         "200": { description: "OK { event }" }
         "400": { description: validation.invalidField }
@@ -1851,7 +2715,7 @@ paths:
     post:
       summary: "Create a client and project"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `people.write`."
+      description: "POST also sends the portal invite by email + text unless body send_invite=false (response invite_sent). Requires gw_admin_sid and permission `people.write`."
       requestBody:
         required: true
         content:
@@ -1887,7 +2751,7 @@ paths:
     patch:
       summary: "Update client"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `people.write`. Setting status from pending → prospect also requires `approvals` and issues a portal invite email. An email change (sign-in identity) notifies the old and new address and is audited (people_dedupe_log action=email_change)."
+      description: "PATCH lender_id (Lenders directory, null clears): projects that had no lender or the old one follow it (loan_lender_type anchor when the lender is Anchor, else external). GET returns lender_id / lender_company / lender_contact / lender_phone / lender_email. Requires gw_admin_sid and permission `people.write`. Setting status from pending → prospect also requires `approvals` and issues a portal invite email. An email change (sign-in identity) notifies the old and new address and is audited (people_dedupe_log action=email_change)."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -2346,6 +3210,17 @@ paths:
       responses:
         "200": { description: "OK" }
         "409": { description: "errors.applicationLocked (already draft)" }
+  /api/admin/clients/{id}/move-to-affiliate:
+    post:
+      summary: "Move a client to affiliate (signed up as a homeowner but is a realtor / partner)"
+      tags: [portal-admin]
+      description: "Perm approvals. Body { dry_run: true } → { plan, inviter }; { confirm: true, confirm_phone_link? } → undoes the client (same blockers as Move back to Leads) and converts that lead to a pending affiliate under the same inviter (Sponsor), with the affiliate welcome. If the conversion step fails, the person is already back in Leads (lead_id returned)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "Dry run: { ok, dry_run, plan, inviter }" }
+        "201": { description: "{ ok, lead_id, affiliate_id, inviter }" }
+        "409": { description: "errors.clientRevertBlocked (plan) | phone link confirm needed" }
   /api/admin/duplicates:
     get:
       summary: "Duplicate review queue (one role per person; email OR phone)"
@@ -2498,9 +3373,9 @@ paths:
         "401": { description: "errors.unauthorized" }
   /api/cron/billing-card-expiry:
     get:
-      summary: "Daily card-expiry reminders (Vercel Cron)"
+      summary: "Daily card-expiry + free-period-ending reminders (Vercel Cron)"
       tags: [cron]
-      description: "Bearer CRON_SECRET. Email + SMS to members (affiliates, contractors) whose card on file expires within 30 days and again within 7 days of the end of its expiry month; once per card per threshold (billing_expiry_notice). Staff see a 'Card expiring' badge."
+      description: "Bearer CRON_SECRET. Email + SMS to members (affiliates, contractors) whose card on file expires within 30 days and again within 7 days of the end of its expiry month; once per card per threshold (billing_expiry_notice). Staff see a 'Card expiring' badge. Also sends the free-period-ending notice (California auto-renewal) once per member about 7 days before the first charge (billing_trial_reminder_sent_at); response adds trial_reminders."
       responses:
         "200": { description: "{ ok, sent }" }
         "401": { description: "errors.unauthorized" }
@@ -2511,6 +3386,42 @@ paths:
       responses:
         "200": { description: "{ ok, sent }" }
         "401": { description: "errors.unauthorized" }
+  /api/admin/affiliates/{id}/send-link:
+    post:
+      summary: "Send an approved affiliate their referral link again (email + text)"
+      tags: [portal-admin]
+      description: "Perm approvals. Same message as on approval: congratulations + EN and ES links (/r/{slug} and ?lang=es), in their language. Records affiliates.link_sent_at. The approval paths (admin PATCH pending→active, lead convert to active, MCP approve_affiliate) send it automatically."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, email, sms }" }
+        "404": { description: "errors.notFound" }
+        "409": { description: "errors.affiliateNotApproved" }
+  /api/admin/affiliate-links/unsent:
+    get:
+      summary: "How many approved affiliates never received their referral link"
+      tags: [portal-admin]
+      description: "Perm approvals. Active affiliates with link_sent_at IS NULL."
+      responses:
+        "200": { description: "{ ok, count }" }
+  /api/admin/affiliate-links/send-all:
+    post:
+      summary: "Send the referral-link message to every approved affiliate who never got it"
+      tags: [portal-admin]
+      description: "Perm approvals. Body { confirm: true }. Staff-triggered only."
+      responses:
+        "200": { description: "{ ok, sent, failed }" }
+        "400": { description: "validation.confirmRequired" }
+  /api/admin/people/{kind}/{id}/automatic-messages:
+    get:
+      summary: "Automatic emails / texts the system sent this person (record pages)"
+      tags: [portal-admin]
+      description: "Perm people.read. kind = client | lead | affiliate | contractor | contact. Every system email / text to a CRM person is logged here (and in their Conversations thread with metadata automatic=true). Staff-typed and campaign sends are not (sendEmail / sendSms manual: true)."
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, messages[{ id, channel, to, subject, preview, test_mode, sent_at }] }" }
   /api/admin/last-touch:
     get:
       summary: "Latest text and call with one phone number (record pages)"
@@ -2520,6 +3431,657 @@ paths:
         - { name: phone, in: query, required: true, schema: { type: string } }
       responses:
         "200": { description: "{ ok, last_sms, last_call }" }
+  /api/public/lead-role/{token}/{role}:
+    get:
+      summary: "Welcome-email button: record who the lead is (A homeowner / B partner / C contractor) and open the matching application"
+      tags: [public]
+      description: "Event RSVPs and /get-credit-report signups get a welcome text + email asking A / B / C. Text replies are handled by the Twilio inbound webhook (leadRoleFromReply). First answer wins; staff get a lead_submitted alert. Redirects to /start, /affiliate/signup or /contractor/signup with ?t=token."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: role, in: path, required: true, schema: { type: string, enum: [homeowner, partner, contractor] } }
+      responses:
+        "302": { description: "Redirect to the application form" }
+  /api/public/lead-prefill/{token}:
+    get:
+      summary: "Known details for application forms opened from the A/B/C links"
+      tags: [public]
+      description: "Token from the welcome message (valid 60 days)."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, prefill: { first_name, last_name, email, phone, preferred_language, property_address } }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/notify-routing:
+    get:
+      summary: "Who gets each notification area (Settings, super_admin)"
+      tags: [portal-admin]
+      description: "Perm staff. Areas: leads (leads, credit report, contact, RSVP, conversions), clients, contractors, affiliates, projects (milestones, draws, commissions, contracts), system. Not configured = super admins only. include_owner: the record's assigned staff member also gets it. Inbound SMS / email go to the line or mailbox owner and are not routed. Each person's prefs still pick email / bell / SMS."
+      responses:
+        "200": { description: "{ ok, areas[{ area, events[], configured, admin_ids[], include_owner }], staff[] }" }
+    put:
+      summary: "Set who gets each area"
+      tags: [portal-admin]
+      description: "Perm staff. Body { areas: [{ area, admin_ids[], include_owner } | { area, reset: true }] }. reset = back to super admins only."
+      responses:
+        "200": { description: "Same as GET" }
+        "400": { description: "validation.notifyRoutingEmpty" }
+  /api/admin/mail/status:
+    get:
+      summary: "Mail section bootstrap: mailboxes I can open, unread counts, setup state"
+      tags: [portal-admin]
+      description: "Any staff. Own personal mailbox + shared mailboxes granted via mailbox_access; super_admin/admin see all. configured=false until OFFICE365_TENANT_ID / CLIENT_ID / CLIENT_SECRET are set."
+      responses:
+        "200": { description: "{ ok, configured, can_manage, allowed_domains, mailboxes[] }" }
+  /api/admin/mail/mailboxes:
+    get:
+      summary: "Connected Microsoft 365 mailboxes with access lists (admin)"
+      tags: [portal-admin]
+      description: "Perm mail.manage (super_admin, admin)."
+      responses:
+        "200": { description: "{ ok, mailboxes[] }" }
+    post:
+      summary: "Connect a Microsoft 365 mailbox"
+      tags: [portal-admin]
+      description: "Perm mail.manage. Body { email, kind personal|shared, owner_admin_id (personal), display_name?, mail_sync_enabled?, calendar_sync_enabled?, signature_html?, access?: [{admin_id, can_send}] }. Only MAIL_ALLOWED_DOMAINS (default groundworkcapitalgroup.com; "*" = any mailbox in the tenant). Probes Graph (inbox + calendar) before saving, then runs the first sync."
+      responses:
+        "201": { description: "{ ok, id, sync, mailboxes[] }" }
+        "400": { description: "validation.mailboxDomain | validation.mailboxOwner | errors.mailboxNotFound | errors.mailboxAccessDenied" }
+        "409": { description: "errors.mailboxExists" }
+        "503": { description: "errors.mailNotConfigured" }
+  /api/admin/mail/mailboxes/{id}:
+    patch:
+      summary: "Edit a mailbox (owner, type, sync toggles, signature, access, pause/resume)"
+      tags: [portal-admin]
+      description: "Perm mail.manage. Any subset of the POST body plus status active|paused. access replaces the list when sent."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, mailboxes[] }" }
+    delete:
+      summary: "Disconnect a mailbox"
+      tags: [portal-admin]
+      description: "Perm mail.manage, or the owner of a mailbox they connected with Microsoft sign-in. Body { confirm: true }. Removes CRM copies (threads, messages, calendar links) and Outlook-only appointments; nothing is deleted in Outlook."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, mailboxes[] }" }
+  /api/admin/mail/mailboxes/{id}/sync:
+    post:
+      summary: "Sync one mailbox now (mail + calendar)"
+      tags: [portal-admin]
+      description: "Staff with access to the mailbox. Serialized per mailbox (DB lock). Partial delta items (only changed fields) are re-fetched in full, and up to 25 messages stored blank by older syncs are repaired per run (`repaired`)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, result: { inbox, sent, repaired, calendar, errors[] } }" }
+  /api/admin/mail/threads:
+    get:
+      summary: "Email threads across my mailboxes"
+      tags: [portal-admin]
+      parameters:
+        - { name: mailbox_id, in: query, schema: { type: integer } }
+        - { name: folder, in: query, schema: { type: string, enum: [inbox, sent, all, archived] } }
+        - { name: unread, in: query, schema: { type: string, enum: ["1"] } }
+        - { name: linked, in: query, description: "Only threads matched to a CRM person", schema: { type: string, enum: ["1"] } }
+        - { name: q, in: query, description: "Subject, text, sender, participants, matched name", schema: { type: string } }
+        - { name: match_kind, in: query, schema: { type: string, enum: [client, lead, affiliate, contractor, contact] } }
+        - { name: match_id, in: query, schema: { type: integer } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, threads[], next_cursor }" }
+  /api/admin/mail/threads/{id}:
+    get:
+      summary: "Thread with messages (sanitized HTML); marks it read here and in Outlook"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: peek, in: query, description: "1 = don't mark read", schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, can_send, thread, messages[] }" }
+    delete:
+      summary: "Delete a conversation (moves every message to Outlook Deleted Items, then removes the CRM copy)"
+      tags: [portal-admin]
+      description: "Needs can_send on the mailbox. Body { confirm: true }. If Outlook refuses any message, nothing is removed here (502 errors.mailDeleteFailed)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+    patch:
+      summary: "Archive / unarchive (moves to Outlook's Archive folder / back to Inbox) or mark unread (also in Outlook)"
+      tags: [portal-admin]
+      description: "Body { archived?: boolean, unread?: boolean }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, thread }" }
+  /api/admin/mail/send:
+    post:
+      summary: "Send or reply from a connected mailbox (Graph sendMail / reply / replyAll)"
+      tags: [portal-admin]
+      description: "Staff with can_send on the mailbox. Body { mailbox_id, to[], cc[], subject, html, reply_to_message_id?, reply_all?, forward_message_id? (needs to; original + attachments included), draft_id? (removed after sending), attachments?: [{name, content_type, base64}] } (3 MB total). Replies and forwards keep the earlier conversation quoted (Graph comment). Mailbox signature appended. NOTIFY_SANDBOX / Vitest: never sent, stored in the thread with a sandbox id (dry_run true)."
+      responses:
+        "201": { description: "{ ok, dry_run, thread_id }" }
+        "413": { description: "validation.mailAttachmentsTooLarge" }
+  /api/admin/mail/drafts:
+    get:
+      summary: "My drafts (mailboxes I can open)"
+      tags: [portal-admin]
+      responses:
+        "200": { description: "{ ok, drafts[{ id, mailbox_id, mode new|reply|replyAll|forward, source_message_id, source_thread_id, to, cc, subject, html, attachments, updated_at }] }" }
+    put:
+      summary: "Save a draft (autosave); mirrored to the mailbox's Outlook Drafts"
+      tags: [portal-admin]
+      description: "Needs can_send on the mailbox. Body { id?, mailbox_id, mode, source_message_id? (reply/forward), to[], cc[], subject, html, attachments[] (3 MB) }. Replies/forwards are re-created in Outlook (createReply / createReplyAll / createForward) so the quoted conversation stays; attachments stay in the CRM draft. Sandbox: CRM only. Drafts untouched for 60 days are removed by the mail-sync cron."
+      responses:
+        "200": { description: "{ ok, draft }" }
+        "413": { description: "validation.mailAttachmentsTooLarge" }
+  /api/admin/mail/drafts/{id}:
+    delete:
+      summary: "Discard my draft (and its Outlook copy)"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+  /api/admin/mail/messages/{id}/attachments:
+    get:
+      summary: "Attachment list for one message (non-inline)"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, attachments[{ id, name, content_type, size }] }" }
+  /api/admin/mail/messages/{id}/attachments/{attId}:
+    get:
+      summary: "Download one attachment"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: attId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "File bytes (Content-Disposition attachment)" }
+  /api/admin/mail/messages/{id}/inline/{cid}:
+    get:
+      summary: "Inline image (cid:) used inside an email body"
+      tags: [portal-admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: cid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "Image bytes" }
+  /api/admin/mail/oauth/start:
+    get:
+      summary: "Connect with Microsoft: start sign-in for the current staff member's own mailbox"
+      tags: [portal-admin]
+      description: "Any staff. Redirects to login.microsoftonline.com/common (work or personal Microsoft accounts) with delegated scopes Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, offline_access. State is HMAC-signed, 15 min, bound to the staff session. ?json=1 returns { url } instead. 503 errors.mailNotConfigured | errors.mailTokenKeyMissing."
+      responses:
+        "302": { description: "Redirect to Microsoft" }
+  /api/mail/oauth/callback:
+    get:
+      summary: "Microsoft sign-in callback: saves the mailbox (personal, auth_mode delegated) and runs the first sync"
+      tags: [portal-admin]
+      description: "Must be the same staff session that started. Tokens are stored AES-256-GCM sealed (MAIL_TOKEN_KEY) and refreshed automatically; when Microsoft revokes them the mailbox shows Reconnect. No domain restriction (MAIL_ALLOWED_DOMAINS applies only to admin-connected mailboxes)."
+      responses:
+        "302": { description: "/admin/mail?connected={id} or ?connect_error=errors.mailConnectExpired | mailConnectDenied | mailConnectFailed | mailboxIsShared | mailboxTakenByOther" }
+  /api/admin/mail/last-email:
+    get:
+      summary: "Latest email with one address (record pages \"Last email\")"
+      tags: [portal-admin]
+      description: "Perm people.read."
+      parameters:
+        - { name: email, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, last_email: { at, direction, preview, thread_id } | null }" }
+  /api/cron/mail-sync:
+    get:
+      summary: "Vercel Cron, hourly at :05: sync every active mailbox (mail delta + calendar both ways)"
+      tags: [cron]
+      description: "Bearer CRON_SECRET. Skips @example.com / @example.test test mailboxes. Mail: Inbox + Sent Items via Graph delta (first run 90 days; immutable ids). Email moved out of the Inbox in Outlook stays as Archived (trash = removed). New email from CRM people alerts the owner (shared: people with access) by bell + text per their inbound_email prefs, once, never for the first backfill. Calendar: 30 days back to 90 ahead; Outlook events become appointments (source outlook), CRM appointments are written onto the owner's and tagged staff's calendars."
+      responses:
+        "200": { description: "{ ok, mailboxes, errors }" }
+        "401": { description: "errors.unauthorized" }
+    post:
+      summary: "Same as GET (manual trigger)"
+      tags: [cron]
+      description: "Bearer CRON_SECRET."
+      responses:
+        "200": { description: "{ ok, mailboxes, errors }" }
+        "401": { description: "errors.unauthorized" }
+  /api/cron/reminder-flows:
+    get:
+      summary: "Vercel Cron, hourly at :15: run due reminder-flow steps (exits after one tiny query when no automation is on) and end runs whose goal is met"
+      tags: [cron]
+      description: "Bearer CRON_SECRET. Texts only in each flow's quiet-hours window (Pacific), only with SMS consent and never to opted-out numbers."
+      responses:
+        "200": { description: "{ ok, processed, goals }" }
+        "401": { description: "errors.unauthorized" }
+    post:
+      summary: "Same as GET (manual trigger)"
+      tags: [cron]
+      description: "Bearer CRON_SECRET."
+      responses:
+        "200": { description: "{ ok, processed, goals }" }
+        "401": { description: "errors.unauthorized" }
+  /api/admin/flows:
+    get:
+      summary: "List automations (reminder flows) with funnel stats"
+      tags: [flows]
+      description: "Perm people.read. Seeds Daniel's three follow-up sequences (affiliate, contractor, homeowner) once, inactive. Returns triggers, goals, checks, can_edit (flows.write) and default_rep_name."
+      responses:
+        "200": { description: "ReminderFlowsListResponse" }
+    post:
+      summary: "Create an automation (inactive)"
+      tags: [flows]
+      description: "Perm flows.write (super_admin, admin). Body ReminderFlowSaveBody; steps/edges optional (defaults to a lone trigger)."
+      responses:
+        "201": { description: "ReminderFlowDetail" }
+        "400": { description: "validation.flowTrigger / validation.invalidField" }
+  /api/admin/flows-settings:
+    put:
+      summary: "Default sender name for flow messages when nobody is assigned"
+      tags: [flows]
+      description: "Perm flows.write. Body { default_rep_name } (blank = the Groundwork team)."
+      responses:
+        "200": { description: "{ ok, default_rep_name }" }
+  /api/admin/flows/{id}:
+    get:
+      summary: "Automation with steps, edges and per-step stats"
+      tags: [flows]
+      description: "Perm people.read."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ReminderFlowDetail" }
+        "404": { description: "errors.notFound" }
+    put:
+      summary: "Save settings and (optionally) the whole graph"
+      tags: [flows]
+      description: "Perm flows.write. Replaces steps + edges when steps is sent; live runs on a removed step finish."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ReminderFlowDetail" }
+        "400": { description: "validation.flowStepKey / flowTrigger / flowEdge" }
+    delete:
+      summary: "Delete a custom automation"
+      tags: [flows]
+      description: "Perm flows.write. Body { confirm: true }. Built-in (seeded) flows can only be turned off."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "409": { description: "errors.flowSystem" }
+  /api/admin/flows/{id}/active:
+    patch:
+      summary: "Turn an automation on or off"
+      tags: [flows]
+      description: "Perm flows.write. Body { active }. Needs at least one step after the trigger."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ReminderFlowDetail" }
+        "400": { description: "validation.flowEmpty" }
+  /api/admin/flows/{id}/preview:
+    post:
+      summary: "Render a step as the real message (sample person or a real one)"
+      tags: [flows]
+      description: "Perm people.read. Body { step_key, lang?, subject_kind?, subject_id? }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "FlowPreviewResponse" }
+  /api/admin/flows/{id}/test:
+    post:
+      summary: "Send a step to yourself as a test"
+      tags: [flows]
+      description: "Perm flows.write. Email to your login, text to your profile phone. Prefixed [TEST]; not logged as automatic. Honors NOTIFY_SANDBOX."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, sent_to }" }
+        "400": { description: "validation.flowTestPhone" }
+  /api/admin/flows/{id}/runs:
+    get:
+      summary: "People in an automation"
+      tags: [flows]
+      description: "Perm people.read. Query status = live (default) | all | goal_met | closed | stopped | completed | paused | failed. Max 200."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, runs: FlowRun[] }" }
+  /api/admin/flows/{id}/enroll:
+    post:
+      summary: "Add a person to an automation manually"
+      tags: [flows]
+      description: "Perm flows.write. Body { subject_kind, subject_id }. The flow must be on and accept that kind."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok, run_id }" }
+        "409": { description: "errors.flowInactive / errors.flowAlreadyIn" }
+  /api/admin/flows-for/{kind}/{id}:
+    get:
+      summary: "A person's automations with the event timeline"
+      tags: [flows]
+      description: "Perm people.read. kind = lead | client | affiliate | contractor | project | appointment. Also returns active flows they can be added to."
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "PersonFlowsResponse" }
+  /api/admin/flow-runs/{id}/{action}:
+    post:
+      summary: "Pause, resume, skip the current step, or remove someone"
+      tags: [flows]
+      description: "Perm flows.write. action = pause | resume | skip | remove."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: action, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok }" }
+        "409": { description: "errors.flowRunState" }
+  /api/public/fl/{token}:
+    get:
+      summary: "Tracked link in a flow message: records the click, then redirects"
+      tags: [flows]
+      description: "Public. Only redirects to this site."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "302": { description: "Redirect" }
+  /api/admin/construction-agreement/template:
+    get:
+      summary: "List construction agreement template versions"
+      tags: [agreements]
+      description: "Perm projects.read. Seeds v1 (draft, Daniel v2 text) on first use. Returns versions (approved flag, agreements using each) and the field list."
+      responses:
+        "200": { description: "ConstructionAgreementTemplatesResponse" }
+    post:
+      summary: "New template version (draft)"
+      tags: [agreements]
+      description: "Perm approvals (super_admin, admin). Body { body_en, notes }. Drafts print with a DRAFT watermark and can't be sent for signature."
+      responses:
+        "201": { description: "{ ok, template }" }
+        "400": { description: "validation.agreementBody" }
+  /api/admin/construction-agreement/template/{version}:
+    put:
+      summary: "Edit a draft template version"
+      tags: [agreements]
+      description: "Perm approvals. Approved versions are locked (409 errors.agreementTemplateApproved)."
+      parameters:
+        - { name: version, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, template }" }
+        "409": { description: "errors.agreementTemplateApproved" }
+  /api/admin/construction-agreement/template/{version}/approve:
+    post:
+      summary: "Mark a version attorney-approved (locks it)"
+      tags: [agreements]
+      description: "Perm staff (super_admin only). Body { confirm_phrase: 'APPROVED' }."
+      parameters:
+        - { name: version, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, template }" }
+        "400": { description: "validation.confirmPhrase" }
+  /api/admin/construction-agreement/template/{version}/pdf:
+    get:
+      summary: "Sample PDF of a template version"
+      tags: [agreements]
+      description: "Perm projects.read. Blank fields; DRAFT watermark unless approved (SAMPLE)."
+      parameters:
+        - { name: version, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "application/pdf" }
+  /api/admin/projects/{publicId}/construction-agreement:
+    get:
+      summary: "The project's construction agreement (fields, missing, signers, history)"
+      tags: [agreements]
+      description: "Perm projects.read."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+    post:
+      summary: "Create the agreement prefilled from the CRM"
+      tags: [agreements]
+      description: "Perm projects.write. Prefill: project (address, sq ft, price), client, contractor + their application (CSLB, classification, qualifier, insurance), plan, lender. Optional template_version (default: latest attorney-approved, else latest draft)."
+      parameters:
+        - { name: publicId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "ProjectConstructionAgreementResponse" }
+        "409": { description: "errors.agreementExists" }
+  /api/admin/construction-agreements/{id}:
+    put:
+      summary: "Save fields (draft only)"
+      tags: [agreements]
+      description: "Perm projects.write. Body { fields, use_latest_template? }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+        "409": { description: "errors.agreementLocked" }
+  /api/admin/construction-agreements/{id}/prefill:
+    post:
+      summary: "Refill blank fields from the CRM (edits kept)"
+      tags: [agreements]
+      description: "Perm projects.write. Draft only."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+  /api/admin/construction-agreements/{id}/pdf:
+    get:
+      summary: "Agreement PDF"
+      tags: [agreements]
+      description: "Perm projects.read. Signed: 302 to the stored signed PDF. Otherwise rendered now with watermark DRAFT (template not approved), PREVIEW (draft) or VOID."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "application/pdf" }
+        "302": { description: "Signed PDF" }
+  /api/admin/construction-agreements/{id}/send:
+    post:
+      summary: "Send for signature"
+      tags: [agreements]
+      description: "Perm projects.write. Needs an attorney-approved template, every required field and a contractor. Freezes the text (SHA-256), emails + texts the client and contractor their personal links, starts contract_sent automations."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+        "400": { description: "validation.agreementMissing (with missing[]) / validation.agreementEmails / errors.contractorRequired" }
+        "409": { description: "errors.agreementTemplateDraft / errors.agreementLocked" }
+  /api/admin/construction-agreements/{id}/resend:
+    post:
+      summary: "Resend a signing link (new link, old one stops working)"
+      tags: [agreements]
+      description: "Perm projects.write. Body { party: client | contractor }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+  /api/admin/construction-agreements/{id}/sign:
+    post:
+      summary: "Groundwork countersigns"
+      tags: [agreements]
+      description: "Perm approvals (super_admin, admin). Body { signed_name, title, signature_image }. Groundwork signs last (409 errors.agreementWaitingParties until the client and contractor have signed). Then: signed PDF stored, parties emailed, staff notified."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+        "409": { description: "errors.agreementLocked" }
+  /api/admin/construction-agreements/{id}/void:
+    post:
+      summary: "Void an agreement"
+      tags: [agreements]
+      description: "Perm projects.write (signed agreements: super_admin). Body { reason }. Pending signing links stop working."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "ProjectConstructionAgreementResponse" }
+        "403": { description: "errors.forbidden" }
+  /api/public/agreement-sign/{token}:
+    get:
+      summary: "Signer view (client / contractor link)"
+      tags: [public]
+      description: "Public. Frozen agreement text + SHA, who has signed. Marks the link viewed."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "PublicAgreementSignView" }
+        "404": { description: "errors.agreementLink" }
+    post:
+      summary: "Sign"
+      tags: [public]
+      description: "Public. Body { signed_name, title? (contractor), signature_image (PNG data URL), body_sha256, consent: true }. Records IP, browser and time."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "PublicAgreementSignView" }
+        "400": { description: "validation.agreementConsent / validation.agreementSigner / validation.signatureRequired" }
+        "409": { description: "errors.agreementAlreadySigned / errors.agreementChanged" }
+  /api/public/agreement-sign/{token}/pdf:
+    get:
+      summary: "Download the signed PDF"
+      tags: [public]
+      description: "Public. 302 to a 5-minute presigned link once all three parties signed."
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "302": { description: "Signed PDF" }
+        "409": { description: "errors.agreementNotComplete" }
+  /api/public/legal/{slug}:
+    get:
+      summary: "Published legal page (Markdown, live fields filled)"
+      tags: [legal]
+      description: "Public. slug = terms | privacy | refunds (also refund-policy). Query lang = en | es. Prices and free days come from Settings; effective date formatted per language."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - { name: lang, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: "PublicLegalPage" }
+        "404": { description: "errors.legalNotPublished" }
+  /api/public/legal-status:
+    get:
+      summary: "Which legal pages are live"
+      tags: [legal]
+      description: "Public. Signup forms show the required 'I agree' checkbox only when terms or refunds are published."
+      responses:
+        "200": { description: "{ ok, versions: { terms, privacy, refunds } }" }
+  /api/affiliate/legal/pending:
+    get:
+      summary: "Policies this affiliate still has to accept"
+      tags: [legal]
+      description: "Portal session. Terms + Refunds: latest published if never accepted, or the newest version published as 'members must accept again'. Allowed while the portal is paused for billing."
+      responses:
+        "200": { description: "LegalPendingResponse" }
+  /api/affiliate/legal/accept:
+    post:
+      summary: "Affiliate accepts the current policies"
+      tags: [legal]
+      description: "Portal session. Body { accept: true }. Records terms, privacy and refunds versions with IP and browser (context reaccept)."
+      responses:
+        "200": { description: "{ ok, pending: [] }" }
+        "400": { description: "validation.acceptTerms" }
+  /api/contractor/legal/pending:
+    get:
+      summary: "Policies this contractor still has to accept"
+      tags: [legal]
+      description: "Portal session. Terms + Refunds: latest published if never accepted, or the newest version published as 'members must accept again'. Allowed while the portal is paused for billing."
+      responses:
+        "200": { description: "LegalPendingResponse" }
+  /api/contractor/legal/accept:
+    post:
+      summary: "Contractor accepts the current policies"
+      tags: [legal]
+      description: "Portal session. Body { accept: true }. Records terms, privacy and refunds versions with IP and browser (context reaccept)."
+      responses:
+        "200": { description: "{ ok, pending: [] }" }
+        "400": { description: "validation.acceptTerms" }
+  /api/admin/legal:
+    get:
+      summary: "Legal pages: versions, draft, live version, acceptance counts"
+      tags: [legal]
+      description: "Perm people.read. Seeds v1 drafts (real site) on first use. Returns live_fields (en/es) for the editor preview, can_edit (approvals) and can_publish (staff = super_admin)."
+      responses:
+        "200": { description: "AdminLegalResponse" }
+  /api/admin/legal/{slug}/{version}:
+    get:
+      summary: "One version's full text (history)"
+      tags: [legal]
+      description: "Perm people.read."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - { name: version, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, version }" }
+        "404": { description: "errors.notFound" }
+  /api/admin/legal/{slug}/draft:
+    post:
+      summary: "Start a draft from the latest version"
+      tags: [legal]
+      description: "Perm approvals (super_admin, admin). One draft per page; returns 201 if one already exists."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: "{ ok }" }
+    put:
+      summary: "Save the draft"
+      tags: [legal]
+      description: "Perm approvals. Body { title_en, title_es, body_en, body_es, notes }. Markdown with {{live fields}}."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok }" }
+        "400": { description: "validation.legalBody" }
+        "409": { description: "errors.legalNoDraft" }
+  /api/admin/legal/{slug}/publish:
+    post:
+      summary: "Publish the draft as the live version"
+      tags: [legal]
+      description: "Perm staff (super_admin only). Body { effective_date: YYYY-MM-DD, requires_reacceptance, notify_members }. Effective today or earlier: live now, older versions archived. Future date: scheduled, the current version stays live until then (one scheduled version per page). notify_members queues the weekly change-notice email."
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok }" }
+        "400": { description: "validation.legalEffectiveDate" }
+        "409": { description: "errors.legalNoDraft" }
+  /api/voice/recording-notice:
+    post:
+      summary: "TwiML: call recording notice (EN + ES)"
+      tags: [voice]
+      description: "Played to the person who answers an outbound call before it connects; inbound calls hear the same notice before ringing staff (California all-party consent)."
+      responses:
+        "200": { description: "text/xml" }
+    get:
+      summary: "Same as POST"
+      tags: [voice]
+      description: ""
+      responses:
+        "200": { description: "text/xml" }
+  /api/cron/legal-notices:
+    get:
+      summary: "Vercel Cron, weekly (Mondays 9am Pacific): policy change notices"
+      tags: [cron]
+      description: "Bearer CRON_SECRET. Emails every active/pending affiliate and contractor once per published or scheduled legal version marked notify_members (legal_notices). Stops near the time limit; the rest go next run."
+      responses:
+        "200": { description: "{ ok, legal_notices }" }
+        "401": { description: "errors.unauthorized" }
+    post:
+      summary: "Same as GET (manual trigger)"
+      tags: [cron]
+      description: "Bearer CRON_SECRET."
+      responses:
+        "200": { description: "{ ok, legal_notices }" }
+        "401": { description: "errors.unauthorized" }
+  /api/admin/mail/sync-visible:
+    post:
+      summary: "Sync my mailboxes now (opening or refreshing Mail)"
+      tags: [mail]
+      description: "Any staff. Syncs up to 5 mailboxes the user can see that weren't synced in the last 2 minutes (the background cron is hourly)."
+      responses:
+        "200": { description: "{ ok, synced }" }
   /api/admin/affiliate-agreement/outdated:
     get:
       summary: "How many affiliates signed an older agreement version"
@@ -2548,7 +4110,7 @@ paths:
     get:
       summary: "What deleting this person removes (confirm modal)"
       tags: [portal-admin]
-      description: "Perm approvals (super admin, admin). entity: client | affiliate | contractor. Returns counts to delete, records kept-but-unlinked, subscription / card flags and stored-file count."
+      description: "entity also accepts lead (erases the lead, its appointments and CRM email copies; a client / affiliate / contractor it became is kept). Perm approvals (super admin, admin). entity: client | affiliate | contractor. Returns counts to delete, records kept-but-unlinked, subscription / card flags and stored-file count."
       parameters:
         - { name: entity, in: path, required: true, schema: { type: string, enum: [client, affiliate, contractor] } }
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -2579,6 +4141,23 @@ paths:
       responses:
         "200": { description: "{ ok, role, generated_at, inbox[], appointments[], money|null, activity[], trends|null }" }
         "401": { description: "errors.unauthorized" }
+  /api/admin/billing/card-links/eligible:
+    get:
+      summary: "Count approved members who should get an add-card link"
+      tags: [portal-admin]
+      description: "Requires `finance.write`. Active affiliates / contractors whose billing_status is not trialing or active, with a price above $0, and no unused card link sent in the last 3 days. Returns { ok, count, affiliates, contractors }."
+      responses:
+        "200": { description: "{ ok, count, affiliates, contractors }" }
+        "403": { description: "errors.forbidden" }
+  /api/admin/billing/card-links/send-all:
+    post:
+      summary: "Email + text every eligible member their secure add-card link"
+      tags: [portal-admin]
+      description: "Requires `finance.write`. Body { confirm: true }. Same eligibility as /eligible; each member gets the standard card-link email + SMS (their price and free period) and a card_link entry in the billing action log."
+      responses:
+        "200": { description: "{ ok, sent, failed }" }
+        "400": { description: "validation.confirmRequired" }
+        "403": { description: "errors.forbidden" }
   /api/admin/billing/overview:
     get:
       summary: "Admin → Billing: totals + every contractor / affiliate membership"
@@ -2817,7 +4396,7 @@ paths:
     post:
       summary: "Schedule an appointment"
       tags: [portal-admin]
-      description: "Requires `projects.write`. Body { kind, date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block)."
+      description: "Requires `projects.write`. Body { kind, date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
       responses:
         "201": { description: "{ ok, appointment, conflicts[] }" }
         "400": { description: "validation.appointmentTime | validation.attendeeContact | validation.invalidReference" }
@@ -2966,7 +4545,7 @@ paths:
     get:
       summary: "Vercel Cron: appointment reminders"
       tags: [cron]
-      description: "Bearer CRON_SECRET. Every 15 min: 24h and 1h reminders (skipped when booked inside the window)."
+      description: "Bearer CRON_SECRET. Hourly (at :30): 24h reminders, and a 'coming up today' reminder 1 to 2 hours before (skipped when booked inside the window)."
       responses:
         "200": { description: "{ ok, reminded_24h, reminded_1h }" }
         "401": { description: "errors.unauthorized" }
@@ -2984,14 +4563,11 @@ paths:
       responses:
         "200": { description: "AffiliateLinkInfo" }
     patch:
-      summary: "Change my link name (/r/<slug>)"
+      summary: "Change my link name (disabled: staff-only)"
       tags: [portal-affiliate]
-      description: "Body { slug }. Same rules as admins (format, reserved, unique, not another affiliate's code or a name retired < 30 days). Once per 30 days; the previous name keeps resolving for 30 days."
+      description: "Link names are staff-only so printed QRs and shared links never break. Always 403; admins rename via PATCH /api/admin/affiliates/{id} (the old name keeps resolving)."
       responses:
-        "200": { description: "AffiliateLinkInfo" }
-        "400": { description: "validation.slugFormat | validation.slugReserved" }
-        "409": { description: "errors.slugTaken" }
-        "429": { description: "errors.slugChangeTooSoon" }
+        "403": { description: "errors.slugStaffOnly" }
   /api/affiliate/link/flyer:
     get:
       summary: "Printable homeowner flyer (PDF) with my QR + link"
@@ -3878,7 +5454,7 @@ paths:
     post:
       summary: Disconnect a line (clears our webhooks only if they still point here; history kept)
       tags: [conversations]
-      description: "super_admin / admin. Body { confirm: <exact e164> }. The main (primary) line can't be disconnected."
+      description: "Also removes the line from the CRM lists (removed_at). The number stays in Twilio until released there; Sync Twilio never re-adds a removed line; connecting it again restores it. super_admin / admin. Body { confirm: <exact e164> }. The main (primary) line can't be disconnected."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
@@ -3916,7 +5492,7 @@ paths:
           description: Include inactive templates when all=1
       responses:
         "200":
-          description: "{ templates[] }"
+          description: "?channel=sms (default) | email | all. Templates have channel sms|email; email templates need subject_en (subject_es optional). { templates[] }"
         "401": { description: Unauthorized }
     post:
       summary: Create conversation template (admin/super_admin + people.write)

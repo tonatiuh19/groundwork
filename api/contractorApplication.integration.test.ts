@@ -142,6 +142,7 @@ describe("contractor prequalification application", () => {
     expect(Number((rows as any[])[0].n)).toBe(0);
   });
 
+  // Full end-to-end flow (~36s alone on the shared DB); the default 45s is too tight when the whole suite runs.
   it("signup → wizard → documents → e-sign → review → approve → login", async () => {
     const email = em("applicant");
     __testClearEmailDryRuns();
@@ -345,7 +346,7 @@ describe("contractor prequalification application", () => {
 
     const events = (await as(adminCookie).get(adminBase)).body.events.map((e: any) => e.kind);
     expect(events).toEqual(expect.arrayContaining(["created", "submitted", "info_requested", "resubmitted", "approved"]));
-  });
+  }, 120_000);
 
   it("existing active contractors get a soft deadline; overdue only flags staff", async () => {
     const email = em("existing");

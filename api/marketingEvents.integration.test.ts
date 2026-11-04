@@ -79,9 +79,9 @@ describe("marketing events (pure)", () => {
     expect(missing.ok).toBe(false);
   });
 
-  it("standard mode still requires consent and ignores event_id", () => {
+  it("standard mode is a plain inquiry (no credit-pull consent needed) and ignores event_id", () => {
     const noConsent = __test.parseLeadBody({ ...lead, mode: "standard", event_id: 7 });
-    expect(noConsent).toEqual({ ok: false, error: "validation.consent" });
+    expect(noConsent.ok).toBe(true);
     const ok = __test.parseLeadBody({
       ...lead,
       mode: "standard",
@@ -367,6 +367,7 @@ describe.runIf(hasDb)("marketing events API (integration)", () => {
         mode: "event",
       })
       .expect(400);
+    // A standard inquiry without credit-pull consent is accepted (home page inquiry form).
     const std = await request(app)
       .post("/api/public/leads")
       .send({
@@ -376,8 +377,8 @@ describe.runIf(hasDb)("marketing events API (integration)", () => {
         property_address: "1 Test Way, Fontana, CA",
         mode: "standard",
       })
-      .expect(400);
-    expect(std.body.error).toBe("validation.consent");
+      .expect(201);
+    expect(std.body.lead_id).toBeGreaterThan(0);
 
     // unknown event
     const nf = await rsvp(2_000_000_000, "ghost").expect(404);

@@ -1,4 +1,6 @@
+import { useCityFilterOptions } from "@/hooks/useCityFilter";
 import { useEffect, useState } from "react";
+import UnsentLinksBanner from "@/components/admin/UnsentLinksBanner";
 import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import { Link, useNavigate } from "react-router-dom";
 import { Check, MessageSquare, Phone } from "lucide-react";
@@ -50,6 +52,8 @@ export default function AdminAffiliates() {
   const canApprove = useAdminCan("approvals");
   const [q, setQ] = useState("");
   const [status, setStatus] = useStatusQueryParam(STATUSES);
+  const [cityId, setCityId] = useState("");
+  const cityOptions = useCityFilterOptions();
   const [offset, setOffset] = useState(0);
   const rowBusy = useRowBusy();
   const [pendingDemote, setPendingDemote] = useState<PendingStatusChange | null>(
@@ -63,6 +67,7 @@ export default function AdminAffiliates() {
   const load = () =>
     void dispatch(
       fetchAdminAffiliates({
+        city_id: cityId || undefined,
         q: q || undefined,
         status: status || undefined,
         limit: PAGE_SIZE,
@@ -72,7 +77,7 @@ export default function AdminAffiliates() {
   useEffect(() => {
     dispatch(clearAdminSaveError());
     load();
-  }, [q, status, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, status, cityId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setStatusFor = async (id: number, next: string) => {
     const flash = next === "active";
@@ -103,9 +108,17 @@ export default function AdminAffiliates() {
   return (
     <div className="portal-page">
       <PageHeader titleKey="portalNav.affiliates" leadKey="admin.affiliatesLead" />
+      <UnsentLinksBanner />
       <DuplicatesPanel entity="affiliate" />
       <div className="pf-filters">
         <SearchBox onSearch={setQ} />
+        <FilterSelect
+          value={cityId}
+          onChange={setCityId}
+          ariaLabel={t("cities.filter")}
+          allLabel={t("cities.filterAll")}
+          options={cityOptions}
+        />
         <FilterSelect
           value={status}
           onChange={setStatus}

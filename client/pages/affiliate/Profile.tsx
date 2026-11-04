@@ -19,9 +19,8 @@ import {
   TextField,
 } from "@/components/portal/kit";
 import AvatarCropModal from "@/components/portal/AvatarCropModal";
-import { slugifyAffiliate } from "@/lib/affiliateSlug";
 import { buildAffiliateTrackingUrl } from "@/lib/referral";
-import { yupAffiliateSlug, yupPhoneOptional } from "@/lib/validation";
+import { yupPhoneOptional } from "@/lib/validation";
 
 export default function AffiliateProfile() {
   const { t, i18n } = useTranslation();
@@ -149,19 +148,12 @@ export default function AffiliateProfile() {
             phone: yupPhoneOptional(t("validation.phoneMin")),
             company: Yup.string().trim().max(200),
             bio: Yup.string().trim().max(500),
-            slug: yupAffiliateSlug(
-              t("validation.slugFormat"),
-              t("validation.slugReserved"),
-            ),
             preferred_language: Yup.string().oneOf(["en", "es"]).required(),
           })}
           onSubmit={async (values) => {
             setSaving(true);
             setSaved(false);
             setError(null);
-            const nextSlug = values.slug.trim()
-              ? slugifyAffiliate(values.slug.trim())
-              : null;
             const result = await dispatch(
               updateAffiliateProfile({
                 first_name: values.first_name.trim(),
@@ -169,7 +161,6 @@ export default function AffiliateProfile() {
                 phone: values.phone.trim() || null,
                 company: values.company.trim() || null,
                 bio: values.bio.trim() || null,
-                slug: nextSlug,
                 preferred_language: values.preferred_language as "en" | "es",
               }),
             );
@@ -198,9 +189,7 @@ export default function AffiliateProfile() {
             const previewUrl = referralCode
               ? buildAffiliateTrackingUrl({
                   referral_code: referralCode,
-                  slug: values.slug.trim()
-                    ? slugifyAffiliate(values.slug.trim())
-                    : null,
+                  slug,
                 })
               : "";
             return (
@@ -212,12 +201,8 @@ export default function AffiliateProfile() {
                 </div>
                 <TextField name="phone" labelKey="form.phone" />
                 <TextField name="company" labelKey="affSignup.company" />
-                <TextField
-                  name="slug"
-                  labelKey="aff.profileSlug"
-                  placeholder={t("admin.slugPlaceholder")}
-                />
-                <p className="pf-muted">{t("aff.profileSlugHelp")}</p>
+                <TextField name="slug" labelKey="aff.profileSlug" disabled />
+                <p className="pf-muted">{t("affLink.nameStaffOnly")}</p>
                 {previewUrl ? (
                   <p className="pf-muted pf-slug-preview">
                     {t("aff.profileSlugPreview")}:{" "}

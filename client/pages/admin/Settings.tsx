@@ -11,18 +11,22 @@ import {
 } from "@/store/slices/adminPortalSlice";
 import {
   ErrorNote,
-  Loading,
   PageHeader,
   SubmitButton,
   TextField,
 } from "@/components/portal/kit";
 import { TeamNotificationsPanel } from "@/components/admin/TeamNotificationsPanel";
+import { NotifyRoutingPanel } from "@/components/admin/NotifyRoutingPanel";
 import { AdminPhoneNumbersPanel } from "@/components/admin/AdminPhoneNumbersPanel";
 import AgreementTemplatePanel from "@/components/admin/AgreementTemplatePanel";
+import ConstructionTemplatePanel from "@/components/admin/ConstructionTemplatePanel";
+import LegalPagesPanel from "@/components/admin/LegalPagesPanel";
+import CitiesPanel from "@/components/admin/CitiesPanel";
 import DealStatusesPanel from "@/components/admin/DealStatusesPanel";
 import AffiliateFaqPanel from "@/components/admin/AffiliateFaqPanel";
 import LendersPanel from "@/components/admin/LendersPanel";
 import { centsToDollars, dollarsToCents } from "@/lib/format";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 export default function AdminSettings() {
   const { t } = useTranslation();
@@ -54,7 +58,7 @@ export default function AdminSettings() {
     <div className="portal-page">
       <PageHeader titleKey="portalNav.settings" leadKey="admin.settingsLead" />
       <ErrorNote error={error} />
-      {loading && !data ? <Loading /> : null}
+      {loading && !data ? <KitSkeleton layout="list" rows={3} /> : null}
       {settings ? (
         <section className="pf-card pf-card--narrow">
           <Formik
@@ -110,6 +114,7 @@ export default function AdminSettings() {
         </section>
       ) : null}
 
+      {adminCan(me?.role, "staff") ? <NotifyRoutingPanel className="pf-section" /> : null}
       {showTeamNotify ? (
         <TeamNotificationsPanel className="pf-section" />
       ) : null}
@@ -121,6 +126,9 @@ export default function AdminSettings() {
       {showTeamNotify ? <DealStatusesPanel className="pf-section" /> : null}
 
       {showTeamNotify ? <AgreementTemplatePanel className="pf-section" /> : null}
+      {showTeamNotify ? <ConstructionTemplatePanel className="pf-section" /> : null}
+      {showTeamNotify ? <CitiesPanel className="pf-section" /> : null}
+      {showTeamNotify ? <LegalPagesPanel className="pf-section" /> : null}
       {showTeamNotify ? <AffiliateFaqPanel className="pf-section" /> : null}
       {showTeamNotify ? <LendersPanel className="pf-section" /> : null}
     </div>

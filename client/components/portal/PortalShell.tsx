@@ -1,4 +1,5 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import LegalAcceptGate from "@/components/portal/LegalAcceptGate";
 import {
   Link,
   NavLink,
@@ -15,6 +16,7 @@ import {
   logoutPortal,
 } from "@/store/slices/portalAuthSlice";
 import PortalShellSkeleton from "@/components/portal/PortalShellSkeleton";
+import PageMeta from "@/components/PageMeta";
 import AdminNotificationBell from "@/components/admin/AdminNotificationBell";
 import AdminRealtimeBridge from "@/components/admin/AdminRealtimeBridge";
 
@@ -33,6 +35,10 @@ export type PortalNavItem = {
    * render a disabled lock row (no navigation) with tooltip.
    */
   requiresConversations?: boolean;
+  /** Unread count shown next to the item (e.g. Mail). */
+  badge?: number;
+  /** i18n key of the group heading this item sits under (a heading shows where the group starts). */
+  section?: string;
 };
 
 type Props = {
@@ -64,6 +70,13 @@ export default function PortalShell({
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const location = useLocation();
+  // Desktop portals scroll inside <main>, not the window: opening a record (affiliate, contractor,
+  // client, scorecard...) from a scrolled list must start at the top, like ScrollToTop does for phones.
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (location.hash) return;
+    mainRef.current?.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
+  }, [location.pathname, location.hash]);
   const navId = useId();
   const [navOpen, setNavOpen] = useState(false);
   const { user, bootstrapped, loadingMe } = useAppSelector(
@@ -123,7 +136,9 @@ export default function PortalShell({
         ? "/affiliate"
         : actor === "contractor"
           ? "/contractor"
-          : "/client";
+          : actor === "city"
+            ? "/city"
+            : "/client";
 
   const closeNav = () => setNavOpen(false);
   const isLocked = (item: PortalNavItem) =>
@@ -135,11 +150,77 @@ export default function PortalShell({
     ...usable.filter((i) => !(tabs ?? []).includes(i.to)),
   ].slice(0, 4);
 
+  const renderNavItem = (item: PortalNavItem) => {
+    const numberGated =
+      !!item.requiresConversations &&
+      actor === "admin" &&
+      !user.conversations_enabled;
+
+    if (numberGated) {
+      const tip = t("adminNav.conversationsNumberRequired");
+      return (
+        <div
+          key={item.to}
+          className="portal-nav-link portal-nav-link--locked"
+          title={tip}
+          aria-disabled="true"
+        >
+          <item.icon size={17} strokeWidth={1.7} />
+          <span>{t(item.labelKey)}</span>
+          <Lock
+            size={13}
+            className="portal-nav-lock-icon"
+            aria-hidden
+          />
+          <span className="portal-nav-lock-tooltip" role="tooltip">
+            {tip}
+          </span>
+        </div>
+      );
+    }
+
+    return (
+      <NavLink
+        key={item.to}
+        to={item.to}
+        end={item.end}
+        onClick={closeNav}
+        className={({ isActive }) =>
+          isActive ? "portal-nav-link is-active" : "portal-nav-link"
+        }
+      >
+        <item.icon size={17} strokeWidth={1.7} />
+        <span>{t(item.labelKey)}</span>
+        {item.requiresConversations && navBadgeUnread > 0 ? (
+          <span
+            className="portal-nav-badge"
+            aria-label={String(navBadgeUnread)}
+          >
+            {navBadgeUnread > 99 ? "99+" : navBadgeUnread}
+          </span>
+        ) : null}
+        {item.badge ? (
+          <span className="portal-nav-badge" aria-label={String(item.badge)}>
+            {item.badge > 99 ? "99+" : item.badge}
+          </span>
+        ) : null}
+      </NavLink>
+    );
+  };
+
+  // Tab title fallback: the menu item for this URL (longest match). Pages that set their own
+  // title (PageHeader / PageMeta, e.g. a client's name or an email subject) render deeper and win.
+  const activeNav = nav
+    .filter((item) => (item.end ? location.pathname === item.to : location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)))
+    .sort((a, b) => b.to.length - a.to.length)[0];
+
   return (
     <div
       className={`portal-shell portal-shell--${actor}${navOpen ? " is-nav-open" : ""}`}
     >
+      <PageMeta title={t(activeNav?.labelKey ?? titleKey)} description={t(titleKey)} noIndex />
       {actor === "admin" ? <AdminRealtimeBridge /> : null}
+      {actor === "affiliate" || actor === "contractor" ? <LegalAcceptGate actor={actor} /> : null}
 
       <header className="portal-mobile-bar">
         <Link to={homePath} className="portal-mobile-brand" onClick={closeNav}>
@@ -175,66 +256,25 @@ export default function PortalShell({
         </Link>
         <p className="portal-sidebar-kicker">{t(titleKey)}</p>
         {headerAction ? <div className="portal-sidebar-action">{headerAction}</div> : null}
-        <nav className="portal-sidebar-nav" aria-label={t(titleKey)}>
-          {visibleNav.map((item) => {
-            const numberGated =
-              !!item.requiresConversations &&
-              actor === "admin" &&
-              !user.conversations_enabled;
-
-            if (numberGated) {
-              const tip = t("adminNav.conversationsNumberRequired");
-              return (
-                <div
-                  key={item.to}
-                  className="portal-nav-link portal-nav-link--locked"
-                  title={tip}
-                  aria-disabled="true"
-                >
-                  <item.icon size={17} strokeWidth={1.7} />
-                  <span>{t(item.labelKey)}</span>
-                  <Lock
-                    size={13}
-                    className="portal-nav-lock-icon"
-                    aria-hidden
-                  />
-                  <span className="portal-nav-lock-tooltip" role="tooltip">
-                    {tip}
-                  </span>
-                </div>
-              );
-            }
-
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                onClick={closeNav}
-                className={({ isActive }) =>
-                  isActive ? "portal-nav-link is-active" : "portal-nav-link"
-                }
-              >
-                <item.icon size={17} strokeWidth={1.7} />
-                <span>{t(item.labelKey)}</span>
-                {item.requiresConversations && navBadgeUnread > 0 ? (
-                  <span
-                    className="portal-nav-badge"
-                    aria-label={String(navBadgeUnread)}
-                  >
-                    {navBadgeUnread > 99 ? "99+" : navBadgeUnread}
-                  </span>
-                ) : null}
-              </NavLink>
-            );
+        <nav className={`portal-sidebar-nav${visibleNav.some((i) => i.section) ? " has-sections" : ""}`} aria-label={t(titleKey)}>
+          {visibleNav.map((item, idx) => {
+            // Group heading where a section starts (sections the role can't see vanish with their items).
+            const heading =
+              item.section && item.section !== visibleNav[idx - 1]?.section ? (
+                <p key={`s-${item.section}`} className="portal-nav-section">
+                  <span>{t(item.section)}</span>
+                </p>
+              ) : null;
+            const row = renderNavItem(item);
+            return heading ? [heading, row] : row;
           })}
         </nav>
         <div className="portal-sidebar-foot">
-          {actor === "admin" || actor === "affiliate" ? (
+          {actor === "admin" || actor === "affiliate" || actor === "city" ? (
             <div className="portal-account-strip">
               <Link
                 to={
-                  actor === "admin" ? "/admin/profile" : "/affiliate/profile"
+                  actor === "admin" ? "/admin/profile" : actor === "city" ? "/city/profile" : "/affiliate/profile"
                 }
                 className="portal-account-profile"
                 onClick={closeNav}
@@ -296,7 +336,7 @@ export default function PortalShell({
           </button>
         </div>
       </aside>
-      <main className="portal-main">
+      <main className="portal-main" ref={mainRef}>
         {gate ? null : notice}
         {gate ?? <Outlet />}
       </main>

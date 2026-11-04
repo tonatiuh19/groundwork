@@ -98,6 +98,7 @@ export default function AppointmentDrawer({
   const [locType, setLocType] = useState<AppointmentLocationType>("onsite");
   const [location, setLocation] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
+  const [teams, setTeams] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [notes, setNotes] = useState("");
@@ -141,6 +142,7 @@ export default function AppointmentDrawer({
       setLocType(appointment.location_type);
       setLocation(appointment.location || "");
       setVideoUrl(appointment.video_url || "");
+      setTeams(Boolean(appointment.teams_meeting));
       setTitle(appointment.title);
       setDescription(appointment.description || "");
       setNotes(appointment.notes || "");
@@ -157,6 +159,7 @@ export default function AppointmentDrawer({
       setLocType("onsite");
       setLocation("");
       setVideoUrl("");
+      setTeams(false);
       setTitle("");
       setDescription("");
       setNotes("");
@@ -193,7 +196,8 @@ export default function AppointmentDrawer({
       timezone: tz,
       location_type: locType,
       location: locType === "onsite" || locType === "office" ? location.trim() || null : null,
-      video_url: locType === "video" ? videoUrl.trim() || null : null,
+      video_url: locType === "video" && !(teams && !editing) ? videoUrl.trim() || null : null,
+      teams_meeting: locType === "video" && teams,
       title: title.trim() || undefined,
       description: description.trim() || null,
       notes: notes.trim() || null,
@@ -241,6 +245,7 @@ export default function AppointmentDrawer({
   };
 
   const cancelled = appointment?.status === "cancelled";
+  const outlook = appointment?.source === "outlook";
   const recordLabel = context?.label || appointment?.client_name || appointment?.lead_name || null;
 
   return (
@@ -304,6 +309,11 @@ export default function AppointmentDrawer({
               </ul>
             </div>
           </div>
+        ) : null}
+        {outlook ? (
+          <p className="gw-outlook-note">
+            <span className="gw-outlook-tag">{t("appt.outlookTag")}</span> {t("appt.outlookNote")}
+          </p>
         ) : null}
         {cancelled ? <p className="gw-onboard-note">{t("appt.isCancelled", { reason: appointment?.cancelled_reason || "—" })}</p> : null}
 
@@ -384,10 +394,19 @@ export default function AppointmentDrawer({
               />
             </label>
           ) : null}
-          {locType === "video" ? (
+          {locType === "video" && !editing ? (
+            <label className="gw-check gw-appt-teams">
+              <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} disabled={cancelled} />
+              <span>
+                <strong>{t("appt.teams")}</strong>
+                <small>{t("appt.teamsHint")}</small>
+              </span>
+            </label>
+          ) : null}
+          {locType === "video" && (editing || !teams) ? (
             <label className="pf-field">
               <span>{t("appt.videoUrl")}</span>
-              <input type="url" value={videoUrl} maxLength={500} placeholder="https://" onChange={(e) => setVideoUrl(e.target.value)} disabled={cancelled} />
+              <input type="url" value={videoUrl} maxLength={500} placeholder="https://" onChange={(e) => setVideoUrl(e.target.value)} disabled={cancelled || outlook} />
             </label>
           ) : null}
         </section>

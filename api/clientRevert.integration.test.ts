@@ -153,7 +153,7 @@ describe.runIf(hasDb)("client → lead revert (integration)", () => {
 
     // Re-converting later works normally.
     await as(superCookie).post(`/api/admin/leads/${leadId}/convert`).send({ target: "client" }).expect(201);
-  });
+  }, 120_000);
 
   it("Conversations origin: unknown contact reopened with the thread and an internal note", async () => {
     await inboundSms(ph(2), "Hello, I saw your ad");
@@ -182,7 +182,7 @@ describe.runIf(hasDb)("client → lead revert (integration)", () => {
     );
     expect(note.body).toContain("Spoke once, not interested yet");
     expect(await count(`SELECT COUNT(*) n FROM clients WHERE id = ?`, [clientId])).toBe(0);
-  });
+  }, 120_000);
 
   it("CRM contact origin: contact un-converted and threads moved back to it", async () => {
     const contactId = await insertId(

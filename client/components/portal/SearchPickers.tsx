@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, FolderKanban, Inbox, Loader2, Search, User, X, type LucideIcon } from "lucide-react";
+import { Check, FolderKanban, Inbox, Loader2, Plus, Search, User, X, type LucideIcon } from "lucide-react";
 import type { RecordRef } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { clearRecordSearch, searchRecords } from "@/store/slices/recordsSlice";
@@ -46,6 +46,10 @@ export function MultiSearchPicker({
   empty,
   placeholder,
   disabled,
+  onCreate,
+  createLabel,
+  manageHref,
+  manageLabel,
 }: {
   icon: LucideIcon;
   label: string;
@@ -55,6 +59,12 @@ export function MultiSearchPicker({
   empty?: string;
   placeholder?: string;
   disabled?: boolean;
+  /** "Not found? Add it": called with what was typed (admins only). */
+  onCreate?: (query: string) => void;
+  createLabel?: (query: string) => string;
+  /** Where the full list is managed, shown under the results. */
+  manageHref?: string;
+  manageLabel?: string;
 }) {
   const { t } = useTranslation();
   const listId = useId();
@@ -145,9 +155,33 @@ export function MultiSearchPicker({
               ) : (
                 <li className="gw-sp__none">{t("picker.noMatches")}</li>
               )}
+              {onCreate && q.trim() && !items.some((i) => i.label.toLowerCase() === q.trim().toLowerCase()) ? (
+                <li
+                  role="option"
+                  aria-selected={false}
+                  className="gw-sp__opt gw-sp__create"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onCreate(q.trim());
+                    setQ("");
+                  }}
+                >
+                  <Plus size={14} aria-hidden /> {createLabel ? createLabel(q.trim()) : q.trim()}
+                </li>
+              ) : null}
+              {manageHref ? (
+                <li className="gw-sp__manage">
+                  <a href={manageHref}>{manageLabel}</a>
+                </li>
+              ) : null}
             </ul>
           ) : null}
         </div>
+      ) : null}
+      {!items.length && onCreate && !disabled ? (
+        <button type="button" className="pf-btn pf-btn--sm" onClick={() => onCreate("")}>
+          <Plus size={14} aria-hidden /> {createLabel ? createLabel("") : ""}
+        </button>
       ) : null}
     </div>
   );

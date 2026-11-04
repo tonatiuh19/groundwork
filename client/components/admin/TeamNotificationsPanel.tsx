@@ -41,6 +41,7 @@ import {
   EventTypeToggles,
   NOTIFY_CHANNELS,
 } from "@/components/admin/AdminNotifyPrefsControls";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 type Props = { className?: string };
 
@@ -137,7 +138,7 @@ export function TeamNotificationsPanel({ className }: Props) {
           </div>
         </div>
         {loading && staff.length === 0 ? (
-          <p className="pf-muted">{t("pf.loading")}</p>
+          <KitSkeleton layout="list" rows={3} />
         ) : staff.length === 0 ? (
           <p className="pf-muted">{t("admin.notifyStaffEmpty")}</p>
         ) : (
@@ -264,7 +265,7 @@ export function TeamNotificationsPanel({ className }: Props) {
         </Formik>
 
         {loading && extras.length === 0 ? (
-          <p className="pf-muted">{t("pf.loading")}</p>
+          <KitSkeleton layout="list" rows={3} />
         ) : extras.length === 0 ? (
           <p className="pf-muted">{t("admin.noNotifyExtras")}</p>
         ) : (

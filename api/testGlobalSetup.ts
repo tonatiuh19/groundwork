@@ -2,8 +2,8 @@
  * Vitest global setup for suites that write to the shared TiDB.
  *
  * - Before the run: sweep fixtures left by interrupted / crashed runs
- *   (Ctrl+C, hook timeouts) — their afterAll never ran. Only stamps older than
- *   STALE_MS, so a run in another terminal is never touched.
+ *   (Ctrl+C, hook timeouts) — their afterAll never ran. Every set stamped before
+ *   this run started: we hold the run lock, so any other run is already dead.
  * - After the run: report any suite that leaked (its own afterAll missed
  *   rows), sweep this run's leftovers, and fail if anything still remains.
  * - One run at a time: a DB-wide lock (GET_LOCK) is held for the whole run, so
@@ -13,13 +13,15 @@
  */
 import "dotenv/config";
 import {
+  TEST_RUN_LOCK,
   createIntegrationTestPool,
   findTestFixturePrefixes,
+  purgeTestLeftovers,
+  scanTestLeftovers,
   sweepTestFixtures,
 } from "./testDbCleanup";
 
-const STALE_MS = 2 * 60 * 60 * 1000;
-const RUN_LOCK = "gw_vitest_shared_db";
+const RUN_LOCK = TEST_RUN_LOCK;
 const RUN_LOCK_WAIT_S = 30 * 60;
 
 export default async function setup() {
@@ -46,7 +48,10 @@ export default async function setup() {
 
   const pool = createIntegrationTestPool();
   try {
-    const swept = await sweepTestFixtures(pool, (stamp) => stamp < runStart - STALE_MS);
+    // We hold the run lock, so no other test run is alive: every fixture set stamped before we
+    // started belongs to a dead (killed / crashed) run, however recent. Waiting 2h let a run stopped
+    // minutes ago break the next one (slugs like "pat-pending" still taken).
+    const swept = await sweepTestFixtures(pool, (stamp) => stamp < runStart);
     if (swept.length) {
       console.warn(`[test-db] swept ${swept.length} stale fixture set(s) from interrupted runs: ${swept.join(", ")}`);
     }
@@ -68,6 +73,14 @@ export default async function setup() {
         if (still.length) {
           throw new Error(`[test-db] fixtures could not be removed from the shared DB: ${still.join(", ")}`);
         }
+      }
+      // Then everything that looks like a test fixture (any run, any age, incl. rows outside the
+      // prefix convention: @example.com people, +1555 lines / threads). Staff must never see test data.
+      await purgeTestLeftovers(pool, { lockHeld: true });
+      const left = await scanTestLeftovers(pool);
+      const total = left.prefixSets.length + left.emails.length + left.testLines + left.testThreads;
+      if (total) {
+        throw new Error(`[test-db] test data is still visible in the shared DB after the run: ${JSON.stringify(left)}`);
       }
     } finally {
       await pool.end();

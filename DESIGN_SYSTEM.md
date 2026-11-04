@@ -30,6 +30,8 @@ Canonical visual + product design contract. **Update this file whenever UI, bran
 
 CSS variables live on `.groundwork-page` in `client/global.css`. Tailwind semantic tokens map ink → `primary`, gold → `accent`.
 
+**Site footer** (`SiteFooter`): (1) contact band on top, a rounded card with a faint gold border: "Start a conversation" label, "Ready to talk about your ADU?", gold phone, email and one-line address, and a gold pill **Contact us** button on the right (stacked with a full-width button on phones); (2) brand column (white logo file, its built-in left space pulled back so the mark lines up with the text, gold tagline, intro, Instagram) beside three equal link columns **Explore · Legal · Portals** sharing one label baseline (single column under 900px; the link groups go 2-up on phones); (3) bottom bar on a hairline: copyright left, disclaimer centered, "Back to top" right (stacked left-aligned on phones).
+
 **Page shell:** `.groundwork-page` is a column flex with `min-height: 100dvh` and `> main { flex: 1 }` so the site footer sits at the bottom of short pages (no cream gap below it) and still follows content on long pages. Prefer `overflow-x: hidden` (not `overflow: hidden`) so vertical scroll stays on the document.
 
 ## Mobile responsiveness (mandatory)
@@ -100,7 +102,19 @@ Four independent portals — each with its own login page, left-sidebar shell, O
 - OTP step: six discrete digit boxes (`OtpCodeInput`) — paste or autofill of a full 6-digit code auto-submits verify; verifying shows a gold-ring overlay + pulsed boxes (`otp-code--verifying`). Shared across all four portal logins. Code-step hints stay conditional (no false “Sent to…”) and affiliate / client / contractor logins surface signup when a code never arrives.
 - **Admin projects board:** `/admin/projects` defaults to **Board** (List | Board toggle; preference in `localStorage`). Board columns are milestones `lead → financing → contracted → in_build → closed → cancelled` via `GET /api/admin/projects/board` (server filters: `q`, affiliate, contractor, assignee, loan status; per-column load-more). Cards use paper/gold event-card language (`pf-board-*`) on white columns with clearer contrast. Drag moves call existing `PATCH` milestone rules (`MILESTONE_TRANSITIONS`); jumps/back/cancel/restore confirm first; illegal drops (incl. `in_build` without contractor) are blocked in UI and enforced server-side.
 - **Portal shell scroll:** Desktop shell is viewport-locked (`100dvh`): left sidebar stays fixed while `.portal-main` scrolls; board columns scroll horizontally and each column body scrolls vertically.
-- **Portal boot skeleton:** While `/auth/me` resolves, the shell shows a branded layout skeleton (`PortalShellSkeleton`) — real logo, shimmering nav/user bars on the actor-colored sidebar, and paper/gold shimmer blocks for header + stats in main — instead of a plain “Loading portal…” line.
+- **Mail folders and rules:** with one mailbox selected, the bar shows a "My folders" select and a "Folders and rules" button (`MailOrganizeModal`, tabs Folders / Rules; lists wrap on phones). The reader has a "Move to" select. Each rule shows where it runs (Outlook or CRM); a missing Microsoft permission shows a warning note, not an error page.
+- **Danger confirm (`DangerConfirmModal`):** red callout listing exactly what will be lost, optional "type the name to confirm", Cancel + red action. Used for city archive / merge / delete and City Partner delete.
+- **Server-side grids:** `SearchBox` + `FilterSelect` row + `DataTable` (cards on phones) + `ListPager`, with row actions in `.pf-table-actions`. City Partners (Partners and Fees tabs, fee totals chips), Settings → Cities, and the city pipeline (cards).
+- **Partner portal kit (`client/components/partnerKit/PartnerKit.tsx`, `pk-` classes):** reusable for every partner portal. `PartnerHero` (navy gradient band, gold glow, greeting, glass stat tiles, main action), `ActivityFeed` (day-grouped timeline with colored icon dots and a rail), `JourneyTracker` (stepped progress with dates; vertical on phones; compact dots on cards; current step pulses), `EarningsChart` (own SVG, paid green stacked under coming gold), `SetupStepper` (numbered guided steps with progress bar, open step expands), `KitEmpty` (icon + sentence + action), `Celebrate` (one-time confetti, remembered per viewer), `KitSkeleton`. All static under prefers-reduced-motion.
+- **Skeleton loading (partner screens):** shimmer shaped like the page, never a bare spinner. `KitSkeleton` layouts: `page` (navy hero + feed rows), `list` (rows with avatar, two text lines, a pill), `cards` (city cards grid), `detail` (hero, journey dots, panels), `form` (labels + fields). Grids pass `skeleton` to `DataTable` for `TableSkeleton` (header + rows, stacked on phones). Announced as a status, static under reduced motion. Used on the City Partner portal and the admin City Partners, partner detail, city pipeline, city sheet and Settings → Cities.
+- **City Partner emails (`tplPartnerEmail` in `api/index.ts`):** one set for invite, agreement countersigned and fee paid. Navy hero band with a gold kicker (optional big gold figure for money), fact rows (`detailRow`), gold numbered steps, gold CTA, and a "Questions? Call (866) 864-7506" line, inside the usual `emailLayout` chrome. EN and ES. Admins see the exact invite before sending with `EmailPreviewModal` (sandboxed iframe, subject on top, "nothing has been sent" note, the real send button as footer).
+- **City Partner portal (`/city`):** dashboard leads with the activity feed (cities, homeowners, fees, agreement), follow-ups and earnings on the side, and a "Log activity" quick action in the hero.
+- **City Partner portal (`/city`) colors:** navy-slate sidebar (`.portal-shell--city`, #23314f). City cards (`.gw-city-card`) show a gold-to-green stage bar, follow-up badges (overdue red, due today amber, Opened City green), KPI tiles and the suggested next step. City sheet shows a completeness ring (`.gw-city-score__ring`). Printable forms open in `.gw-print-overlay` and print only the sheet. Admin uses the same components (`CityPipelineBoard`, `CityDetailView`).
+- **Shared client updates:** ticking "share with affiliate" shows a warm note (`.gw-deal-textnote`) with the text preview: it goes by text and email as written, so leave out private details.
+- **Cities:** public forms use `CityPickerField` (optional search picker, hidden while no cities exist). Admin lists have an "All cities" filter. Settings has `CitiesPanel` (list, counts, cleanup with staff confirmation); affiliate and contractor records have `PersonCitiesPanel`.
+- **QR codes (admin):** tabs Codes, Event codes (read-only), Approved links, Archived. Destinations use `QrDestinationPicker` (kind select plus search, with a chosen-value chip), never a typed URL; each code has a fallback. A warning note shows when a destination is unavailable. Results modal: 90-day scan bars, scans per destination, change history. Rows wrap and bars stay inside the modal on phones.
+- **Session check loader:** While a portal sign-in page checks for an existing session, `SessionCheck` (`.gw-beat`) shows the logo in a white disc beating lub-dub (1.4s) inside two rippling gold rings, a gold heartbeat line tracing across, and "Checking your session" with three bouncing gold dots. Static under `prefers-reduced-motion`; reusable for any full-page auth wait.
+- **Portal boot skeleton:** While `/auth/me` resolves, the shell shows a branded skeleton (`PortalShellSkeleton`): real logo and shimmering nav / user bars on the actor-colored sidebar, and the `SessionCheck` heartbeat centered in main with "Loading your portal" (one live status region).
 - Shell: ink/pine/clay sidebars, sticky nav. Below 900px (admin / affiliate / contractor / client): **mobile top bar** + **off-canvas drawer** (Optimum-style) — Menu/X toggles a fixed sidebar over a dimmed overlay; Escape / overlay / nav click / route change close it; body scroll locks while open. Desktop keeps the permanent left rail. Admin shell hides nav items the role cannot use. Footer **account strip** merges profile (avatar + name + truncated email + muted role → `/admin/profile`) with embedded notification bell; inbox panel is portaled/fixed into the main column. Signed-in portal shells do **not** show the EN/ES switcher — language for staff is set on `/admin/profile` (preferred language); login pages and marketing still use `LanguageSwitcher`.
 - **Admin profile:** `/admin/profile` (self only). Editable name, phone, preferred language; email read-only. Avatar: pick JPEG/PNG/WebP → `react-easy-crop` 1:1 modal → 512px JPEG uploaded to Vercel Blob (`POST /api/admin/me/avatar`); no local `/uploads` fallback — `BLOB_READ_WRITE_TOKEN` required. Profile fields save via `PATCH /api/admin/me`.
 - **Admin CRM detail pages:** `/admin/clients/:id`, `/admin/affiliates/:id`, `/admin/contractors/:id` for full edits. Project assignee uses `GET /api/admin/assignees` (`people.read`). People lists and the projects **list** view use shared `ListPager` (`pf-pager`) with server `limit`/`offset` (page size 50). Project list filters match the board. Only **active** affiliates/contractors may be assigned. Draw approve/reject/pay is temporarily open to any `projects.read` staff (not finance-only).
@@ -218,7 +232,7 @@ The source of truth is `ADMIN_PERMS` (`shared/api.ts`, mirrored inline in `api/i
 - **Kind colors** (dots, calendar event rails): inspection = clay, site visit = pine, lender meeting = gold, consultation = navy, call = slate, other = gray.
 - **Appointments panel** on client and project pages: upcoming rows (kind dot, title, Pacific time range, address, tagged team / contractor / lender) + collapsed "N past appointments"; gold **Schedule appointment**. Project page also picks the **Lender (directory)** (free-text name kept for lenders not in the list).
 - **Calendar** (`/admin/calendar`, nav for `projects.read`): month grid (white, contained horizontal scroll on phones, navy dot for today, kind-colored event pills with time) or agenda (day headers in clay caps); Everyone / Mine; click a future day to schedule, an event to edit; `?appointment=` deep link from emails. View choice remembered per device.
-- **Notifications:** every tagged person (staff, contractor, lender, guests) + the homeowner get a branded email with details tiles and a calendar invite (.ics; updates bump the sequence, cancellations send METHOD:CANCEL) plus a text; reminders 24 h and 1 h before (cron every 15 min). Homeowner emails carry a manage link.
+- **Notifications:** every tagged person (staff, contractor, lender, guests) + the homeowner get a branded email with details tiles and a calendar invite (.ics; updates bump the sequence, cancellations send METHOD:CANCEL) plus a text; reminders 24 h before and a "Today: … · time" reminder 1 to 2 hours before (hourly cron). Homeowner emails carry a manage link.
 - **Booking link** (Profile → My booking link): on/off switch, dashed paper link box with Copy / Preview, length / buffer / notice / horizon selects, EN/ES titles, meeting types, weekly hours editor (per-day checkbox + time ranges, add/remove), days off list.
 - **Public `/book/:slug`** and **`/appointment/:token`**: same chrome as the affiliate welcome page (paper gradient, sticky top bar, pine "Secure booking" pill, EN/ES). Host card (navy avatar disc, clay host name, serif title, duration). Step 1: horizontal date strip (navy selected day) + time grid (gold selected) with timezone note; Step 2: details with the step chip, meeting type segmented control, property address for onsite visits; confirmation card in pine. Manage page: serif title, when / where / with lines, Reschedule (same slot picker) and Cancel (inline reason).
 - **Portals:** contractor **Appointments** page (rows with maps link for the address, homeowner, shared message); affiliate dashboard **Upcoming appointments with your clients** (type + client initial + time only).
@@ -295,12 +309,12 @@ Affiliate lookup (`GET /api/public/affiliates/by-code/:code`) is rate limited pe
 
 - **Card:** a navy-gradient "business card" with a gold left rail. It has a gold eyebrow ("Your referral link"), an EN/ES radio toggle (`?lang=es` link), the affiliate's name in the display serif, and the short URL as one big copy button (gold "Copy" → "Copied").
   - Below the URL is a hint about which language page the link opens.
-  - QR on a white tile, with PNG / SVG downloads and a gold "Flyer (PDF)" button.
+  - QR on a white tile, with PNG / SVG downloads and a gold "Flyer (PDF)" button. One link for everyone (no audience tabs): the landing asks visitors whether they're a homeowner or a partner; old `?for=` links still work.
 - **Variants:**
   - `hero` (dashboard + `/affiliate/link`) adds four stat tiles: 7-day clicks, all-time clicks, leads, clients.
   - `compact` is used in the header modal and adds "Open my link page".
 - **Header button:** a gold "My link" pill (`.gw-mylink-btn`) in every affiliate page header (sidebar under the kicker, mobile top bar icon-only). It opens the compact card in a `Modal`. It goes through `PortalShell`'s `headerAction` prop.
-- **Custom link name** (`.gw-slug-editor`): a prefix plus an input with a live slugified preview. The name can change once every 30 days; the old link keeps working for 30 days and no one else can claim it during that time.
+- **Link name** (`.gw-slug-editor`): read-only for affiliates (lock icon, short URL, "contact our team" note), also read-only on their Profile. Only staff rename it (affiliate page); the old link keeps working for 30 days and no one else can claim it during that time.
 - **Flyer PDF:** a Letter page in cream with a navy QR card. It shows the logo, the headline "Add an ADU to your property" (ES variant), three bullets, "Referred by" with name and company, and a footer with the phone number. Text auto-shrinks to fit, and the flyer makes no outcome promises.
 - **Mobile:** at ≤640px the card stacks and the stats become a 2×2 grid. Long URLs wrap with `overflow-wrap: anywhere`. No horizontal scroll at 320px.
 
@@ -349,6 +363,19 @@ Affiliate lookup (`GET /api/public/affiliates/by-code/:code`) is rate limited pe
 - **Layout:** one column on phones. From 900px it uses two columns: inbox and trends on the left, the activity feed spanning the right. Charts are SVG with no chart library.
 - **Roles:** the server returns only the sections a role can open. Agents get leads, texts, appointments and trends; finance gets money, billing, draws and commissions; content gets events and campaigns; admins and super admins get everything.
 
+### In-call keypad (`CallKeypad`, voice panel)
+
+- Grid button (Keypad) next to mute / speaker in `VoiceCallPanel`; gold when open. Opens a navy card under the panel: dialed digits display (with clear), 3×4 round keys (digit + letters, gold flash on press), and "Send several digits" (extension like `123#`; commas = pauses).
+- Keys are disabled with "Keys work once the call connects" until the call is answered; the physical keyboard (0-9, *, #) also dials while it's open.
+
+### Sidebar sections (admin)
+
+- Admin nav items carry a `section` (i18n key): Dashboard on top, then **Grow** (Leads, Events, Campaigns, Automations), **Inbox** (Conversations, Mail, Templates, Calendar), **People** (Contacts, Clients, Affiliates, Contractors), **Projects & money** (Projects, Draw requests, Commissions, Billing), **Setup** (ADU plans, Staff, Settings).
+- `PortalShell` draws `.portal-nav-section` where a section starts: 0.64rem uppercase gold label (82% opacity, 0.16em tracking) with a gold-to-transparent hairline filling the row. Sections a role can't see disappear with their items. Rows tighten slightly (`.has-sections`) so the sidebar doesn't grow.
+- Phones: in the "More" bottom sheet the headings span the 2-column tile grid (1 column under 360px), so the sheet reads as labeled groups.
+- Other portals (affiliate / contractor / client) have short menus and no sections.
+- Wide admin tables: key columns get `pf-col-person` (13rem) / `pf-col-md` (9rem) / `pf-col-sm` (6.5rem) minimum widths so the table scrolls inside `.pf-table-wrap` instead of wrapping words letter by letter.
+
 ### Portal shell on phones (≤900px)
 
 - **Bottom tab bar** (frosted cream with a safe-area inset): four primary tabs set per portal (`tabs` prop) plus **More**. The active tab gets a gold pill. Conversations shows an unread badge. There is no burger.
@@ -369,6 +396,15 @@ Affiliate lookup (`GET /api/public/affiliates/by-code/:code`) is rate limited pe
   - a **4-segment progress bar**: "Step X of 4" and "Next: …"; done segments are gold, the current one navy.
 - Phones held sideways also get slimmer header chrome, and the card and progress sit side by side, so the form starts above the fold.
 - The contractor prequalification (`.cpq-layout`) keeps its own rail.
+
+### Affiliate approved: referral link message
+
+- **On approval** (admin, lead convert, MCP), the affiliate gets an email and a text in their language:
+  - "{First}, congratulations 🎉 and welcome to Groundwork Capital Group as an affiliate";
+  - their link as a gold inline link, plus the Spanish page (`?lang=es`);
+  - the free-period line if it started, a note about the QR code and flyer, and an **Open my link page** button.
+- **Affiliate record:** a "Referral link message" card shows when it was last sent, with **Send link again**.
+- **Affiliates list:** an amber banner counts approved affiliates who never received it, with a confirmed bulk send.
 
 ### Search pickers & delete person
 
@@ -400,6 +436,13 @@ Editorial landing (`/`): hero (copy + cinematic ADU commercial) + benefit grid +
 - Order: **474 → 830 → 445**. Assets `design-viz-1/2/3.jpg` = header + exterior + icon row only (no floor plan), cropped from enhanced marketing sheets.
 - **Focus stage** (`AduDesignsStage`): perspective deck — center hero, angled peeks. Center **View larger** opens `ImageLightbox` with the same exterior card. Keyboard ←/→. Mobile: no document horizontal scroll.
 
+### ADU design sheets (`#designs`, `AduDesignSheet`)
+
+- The design exteriors are clean photos (`public/adu/design-photo-{1,2,3}.jpg`, cropped from the old `design-viz-*` sheets). Nothing is baked into the image anymore: AI text in the old sheets was misspelled and blurry.
+- Sheet = gold gradient sq ft block (big number + SQ FT) beside a deep-green band (`2 Bed · 1 Bath` + uppercase type), the photo in a 16:10 cover frame, then a feature row with gold Lucide icons (bed, bath, ruler + highlights like rental income, two-story, balcony, open living), translated EN/ES.
+- In the stage card features sit 2×2 and "View larger" floats over the photo's bottom-right; the lightbox shows the same sheet large (`ImageLightbox` now accepts custom children).
+- Facts per design live in `ADU_DESIGNS` (sq ft, beds, baths, highlights): change them there, never in an image.
+
 ### ADU floor-plan options (`#adu-options`)
 
 - Same order **474 → 830 → 445** = **The Veranda** (2 bed · 1 bath) → **The Summit** (2 story · 2 bed · 2 bath) → **The Haven** (1 bed · 1 bath); card titles use the model names + taglines ("More Room. More Possibilities.", "Elevated Two-Story Living", "Compact Living, Thoughtfully Designed"); `adu_plans` rows #1 Haven · #2 Veranda · #3 Summit. Card shows 3D plan (`plan-3d-*.jpg`). **View more details** opens `PlanDetailLightbox` with stacked **3D** then **CAD** (`plan-cad-*.png`). Fixed preview height so tabs don’t jump layout. Mobile: detail stage scrolls; no document horizontal scroll.
@@ -419,11 +462,13 @@ Admin **Leads** Convert opens a target picker: **Client / homeowner** (client + 
 
 Header nav: **About**, **Partners**, **Events**, **Contact**, **Homeowner portal** (`/client/login`). On viewports ≤760px the text nav collapses and the homeowner portal link moves into the header actions next to the language switcher.
 
-Footer: Explore links + **Portals** column (**Admin**, **Affiliate**, **Contractor** login paths). Homeowner portal stays in the header, not the footer portal list.
+Footer: Explore links + **Portals** column (**Admin**, **Affiliate**, **Contractor**, **City Partner** login paths; City Partner login only admits staff-invited emails). Homeowner portal stays in the header, not the footer portal list.
 
 Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-heavy layouts, purple gradients, glassmorphism.
 
 ## Email chrome
+- **Sender** is always "Groundwork Capital Group" (the address comes from `SMTP_FROM`).
+- **Every email carries a hidden unique marker**, so Gmail never collapses repeated identical emails into a "···" (blank-looking) thread.
 
 - Paper header (`#f8f5ef`) matching the site header — logo + ink tagline
 - Gold rule under header
@@ -438,7 +483,7 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 - **Past rule** (API + client `isEventPast`): past once the **Pacific calendar day** of `ends_at || starts_at` is over. Past events never appear as "live" (home ribbon, `/get-credit-report`) and never show RSVP.
 - Past detail: `EventHero` with a "This event has ended" note, then `EventMediaGallery` — highlight reel on top (uploaded video or Instagram / YouTube-nocookie / TikTok iframe; vertical reels 9:16 capped at 400px), other videos grid, photo grid (square tiles → `ImageLightbox`). No media → "Highlights coming soon" panel; past list badge says the same.
 - Admin event detail → **Photos & videos** (`EventMediaManager`): admins only (`approvals`) upload photos (≤15 MB) / videos (≤500 MB, direct-to-Blob with progress) or paste reel links; set cover (photo) / highlight reel (video/embed), EN/ES captions, reorder, delete. Others read-only.
-- **Registration QR**: every event gets a flyer QR encoding the tracked short link `/e/<slug>` (navy `#0e2a4a` modules on white, error correction M, 2-module quiet zone). `/e/:slug` counts the scan, lands on `/events/<slug>#register` while registration is open, and after the event forwards to the next open event (else the past event's highlights). RSVPs after a scan save `source = 'qr'`. Admin event page → **Registration QR** panel: QR preview, PNG (1600px) / SVG downloads, copy link, scans / RSVPs from QR / last scan. The home event card shows the live event's real QR (`EventQrCode`).
+- **Registration QR**: every event gets a flyer QR encoding the tracked short link `/e/<slug>` (navy `#0e2a4a` modules on white, error correction H, 2-module quiet zone, Groundwork mark centered on a white rounded plate). `/e/:slug` counts the scan, lands on `/events/<slug>#register` while registration is open, and after the event forwards to the next open event (else the past event's highlights). RSVPs after a scan save `source = 'qr'`. Admin event page → **Registration QR** panel: QR preview, PNG (1600px) / SVG downloads, copy link, scans / RSVPs from QR / last scan. The home event card shows the live event's real QR (`EventQrCode`).
 - **New event slug**: auto-filled from city + start month/year (`fontana-oct-2026`, accents stripped, ≤ 64 chars) and kept in sync until the admin edits it; **Generate** re-applies the suggestion; the public URL `/events/<slug>` previews under the field (wraps on phones).
 - Shared `EventHero` renders the event header block on `/events/:slug` and `/get-credit-report`.
 
@@ -454,6 +499,70 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 
 - Header logo ~52px height; footer ~56px
 - Transparent PNG as provided — no black rounded plate behind the wordmark
+- `public/logos/groundwork-logo.png` is the high-resolution rebuild (1512×424, same 3.566:1 ratio as the original 378×106): exact vector hexagon mark in gold `#C2923B`, "GROUNDWORK" in Saira Regular `#112321`, "CAPITAL GROUP" in Saira Medium gold with wide tracking. Always size it by height in CSS / email (`height:44px`) / PDFs, never by its pixel size.
+- On dark / navy backgrounds use `public/logos/groundwork-logo-white.png` (white wordmark, gold mark): site footer, contract signing top bar. Portal sidebars keep the color file with a full-white CSS filter.
+- Full kit (color + white, mark only, up to 3780px PNG, vector PDF, SVG, README): `brand-kit/groundwork-logo-hires.zip`.
+
+## Settings: "Who gets what" (notification routing)
+
+`NotifyRoutingPanel` above Team notifications (super_admin): a responsive card grid, one card per area with an icon, the alert types it covers as small chips, a staff `MultiSearchPicker`, an "Also the staff member assigned to the client or project" checkbox (not on Leads / System), Save, and "Back to super admins only". Areas not set up show a dashed card and "Not set up yet: super admins only".
+
+## Affiliate link (`/r/:code`): homeowner or realtor / partner
+
+First screen (`EnrollRoleChooser`): the "Invited by" card (`InvitedByCard`, navy gradient, every path and screen size), a serif question "How would you like to work with {name}?", and two large tappable cards: homeowner (gold house icon) and realtor / partner (navy tile with gold handshake). Homeowner → the existing 4-step wizard (with "Realtor or partner? Join the team instead" on step 1); partner → `PartnerSignupForm` (joins the inviter's team as Sponsor). `?for=homeowner|partner` skips the choice; the affiliate link card shows one link for everyone (the toggle was removed; `?for=` still works on old links). Staff fix mistakes with "Move to affiliate" on the client page.
+
+## Partner type, lenders, automatic messages
+
+- **"I am a" (`PartnerTypeFields`)**: three equal tappable pills (Realtor / Lender / Neither); Realtor and Lender reveal Company + DRE # / NMLS # side by side (stacked under 480px). Used on the Partners page, affiliate signup, the affiliate link partner form, team invite and the admin affiliate panel (as a select).
+- **Lender pick (`LenderSelectWithCard`)**: Lenders-directory dropdown with the chosen lender's contact card underneath (navy tile with gold bank icon, name, company, tap-to-call phone, mailto email, NMLS #). On the client edit panel and the project Operations card (no "Lender type"; Anchor ID only when the lender is Anchor).
+- **Sent automatically (`AutomaticMessagesPanel`)**: on client / affiliate / contractor pages, a compact list (3 latest, "Show all") of system emails and texts with a channel icon, subject or "Text message", recipient and time; tap to read. In Conversations the same messages carry an "Automatic" / "Automatic email" pill.
+- **Mail**: composer "Templates" menu (EN / ES per template, opens upward); reader "Delete" (danger ghost) with a confirm modal. Templates page has Text messages / Email tabs; email templates add subject fields.
+- **Home inquiry form**: no credit-pull checkbox; button "Send my inquiry".
+- **A/B/C welcome**: no built-in welcome. Each event picks its own **Automation after RSVP** (event detail → "Automatic messages", default None: staff follow up by hand); the seeded "Event RSVP welcome (A / B / C)" automation (off) holds the old text for staff to edit and switch on. Credit-report signups only get an automation if a Homeowner lead one is on. Any automation text to a lead marks it so a short A, B or C reply (30 days) sends the matching prefilled application link.
+
+## Automations (`/admin/flows`, reminder flows)
+
+- **List** (`pages/admin/Flows.tsx`): `.gw-flows-grid` of `.gw-flow-card` (icon chip, name link, "Starts when · Goal", on/off `.gw-switch`, 4 mini stats: in the flow now, entered, goal met %, closed). Active cards get a gold left rule. Below: "Signed by (when nobody is assigned)" field (`flows_default_rep_name`).
+- **Builder** (`pages/admin/FlowDetail.tsx`): header with Turn on / Save (Save only when dirty, "unsaved changes" hint in gold), `StatCard` row, `SegmentedTabs` Builder · People · Settings.
+  - **Canvas** (`components/admin/flows/FlowCanvas.tsx`, `@xyflow/react`): `.gw-flow-node` cards (type chip + icon tinted per type: text green, email blue, condition / wait for reply purple, start navy, close sand) with per-step "sent / clicked / skipped" pills. Branch handles are colored (yes / replied green, no / no reply clay) with tiny labels. Canvas is contained (`.gw-flow-canvas`, own height, no page scroll); "Tidy layout" = one row per touch (each Wait starts a row).
+  - **List view**: numbered `.gw-flow-list` rows (branch rows indented with a purple chip). Default on phones (<720px).
+  - **Inspector** (`FlowInspector.tsx`): step name, per-type fields, EN / ES tabs, `{{first_name}} {{last_name}} {{company}} {{link}} {{rep_name}} {{missing_items}}` chips, SMS segment counter, Preview (email in a sandboxed iframe, text as a green bubble) and "Send test to me" ([TEST] prefix). "Add a step after this one" palette of pill buttons (branch picker for conditions). Side panel ≥960px, stacks under the canvas below.
+  - **People**: `.gw-flow-run` rows (name link, kind · entered, `.gw-flow-status` pill, next step + time, pause / skip / remove icon buttons).
+- **Record pages** (`PersonFlowsPanel`, under Automatic messages on client / affiliate / contractor / project): expandable runs with a dot timeline (gold sent, green clicked / replied / goal, clay skipped / failed / opted out), controls, and "Add to an automation…".
+- **Signup forms**: `SmsConsentField` (`.consent` checkbox, unchecked by default) on affiliate signup, `/partners`, the `/r/:code` partner form and contractor signup. Texts in flows go only to people who checked it.
+- Copy rules for flow messages: no long dashes, texts always end with the STOP line (added automatically if missing), "as fast as 4 months" tied to city-approved plans.
+
+## ADU construction agreement
+
+- **Project panel** (`ConstructionAgreementPanel`, project page): status pill (Draft sand · Out for signature gold · Signed green · Void clay). Draft = collapsible field groups (Parties, Property and plans, Contractor, Price and payment, Schedule, Terms) with a clay count badge per group and clay-tinted blank required inputs, next to a sticky live preview (`AgreementDocument`). Under 960px the two become Fields / Preview tabs. Actions wrap: Save, Refill from CRM, Preview PDF, Send for signature (gold; disabled until the template is approved and nothing required is blank).
+- **Template lock**: when the template version isn't attorney-approved, a sand warning strip with a lock icon explains it; every PDF carries a big diagonal clay "DRAFT" watermark (PREVIEW before sending, VOID after voiding).
+- **Signers**: one row per party (clock icon gold → check green) with opened / link sent / signed times, "Resend link", and "Countersign" (gold) for Groundwork in a modal with name, title and `SignaturePad`.
+- **Settings → ADU construction agreement** (`ConstructionTemplatePanel`): horizontally scrolling version chips (vN, Draft / Attorney-approved tag, usage count), state strip (green approved / sand draft), edit markup for drafts, "New version from this one", "Mark attorney-approved" (super admin, type APPROVED).
+- **Public signing page** (`/sign/agreement/:token`, `pages/AgreementSign.tsx`): navy top bar with logo + language switcher, hero (eyebrow, title, property address), three party chips (Client / Contractor / Groundwork; yours outlined gold), the agreement in a scroll box (must reach the end), a sign card (full name, title for contractors, drawn signature, e-sign consent checkbox, full-width gold "Sign agreement", lock note). After signing: green check card; once all three signed, "Download signed PDF". Spanish visitors see a note that the agreement is in English. Copy follows the no-long-dash rule.
+- **Signed PDF**: same writer as the affiliate agreement (`createAgreementPdfWriter`): body, signature page with three blocks (name, title, CSLB no. for the contractor, date, signature) and an electronic signature record (time, IP, browser, SHA-256 of the text).
+
+## Legal pages (`/terms`, `/privacy`, `/refund-policy`)
+
+- **Public page** (`pages/LegalPage.tsx`): site header/footer, pill tabs to switch between the three pages (active = navy), then a white rounded card with the Markdown body (max ~70ch, `##` sections divided by a hairline) and a small "Version N" line. Unpublished pages show a friendly "being updated" note with the phone number. Footer gets a **Legal** column linking all three.
+- **Markdown** (`AgreementDocument`): `#`, `##`, `###`, `-` bullets, `|` tables (cells support bold and links), `**bold**`, `[text](/path)` links (own pages, https, mailto only). Live fields `{{affiliate_price}}`, `{{affiliate_free_days}}`, `{{contractor_price}}`, `{{contractor_free_days}}`, `{{effective_date}}` fill from Settings.
+- **Signup checkbox** (`TermsConsentField`): "I agree to the Terms of Service and the Refund & Cancellation Policy, and I have read the Privacy Policy" with inline links (new tab), required once Terms are published; on affiliate signup, `/partners`, the `/r/:code` partner form and contractor signup.
+- **Portal gate** (`LegalAcceptGate`, affiliate + contractor portals): blocking navy-tinted overlay with a white card (gold doc icon, "We updated our policies", list of pages to read, agree checkbox, gold "Accept and continue").
+- **Admin** (Settings → Legal pages, `LegalPagesPanel`): three page tabs with chips (green Live vN, blue Scheduled vN · date, sand Draft vN, grey Not published), EN/ES toggle, editor + live preview side by side (stacked under 960px), Save draft, gold "Publish vN" (super admin) opening a modal with effective date (future date = **Schedule**: current version stays live until then), "Members must accept again" and "Email members about this change" (weekly notice run, Mondays 9am Pacific; warns when the Terms date is under 37 days away); collapsible version history with acceptance counts.
+
+## Mail (`/admin/mail`)
+
+Microsoft 365 mailboxes connected to the CRM. Components in `client/components/mail/`.
+
+- **Layout:** title + sync status and actions (Sync now, Mailboxes for admins, gold Compose); a bar with mailbox select (unread counts), folder pills (Inbox, Sent, All, Archived), search, and Unread / CRM people chips; then a two-pane card: thread list (`gw-mail-thread`, unread = bold + gold time, colored avatar and badge per CRM role) and reader. Phones (<768px) show one pane at a time with a Back button; nothing scrolls sideways.
+- **Reader:** messages are collapsible cards; email HTML renders only in `EmailFrame` (sandboxed iframe, no scripts, auto-height). Matched person shows as a role pill linking to the record (`personRecordPath`, shared with Conversations).
+- **Compose / reply:** `SideDrawer` with `RecipientInput` (chips; type a name to pick a client or lead email), `RichEditor` (bold, italic, underline, lists, links; paste as plain text), attachments (3 MB total) and a signature preview. Toast after sending; sandbox sends say they were saved but not delivered.
+- **Mailboxes admin:** `MailboxesDrawer` cards with status chip (Syncing, Paused, Needs attention), last sync times, error text, and Edit, Sync now, Pause, Disconnect (confirm modal). Setup checklist when Microsoft 365 isn't configured.
+- **Calendar:** Outlook events carry a blue `gw-outlook-tag` (dot in the month grid) and a note in the drawer; video appointments offer a "Microsoft Teams meeting" toggle.
+- **Record pages:** `LastContactStrip` adds Last email and an Email button next to Text and Call.
+- **Nav:** "Mail" with an unread badge (refreshes every 2 minutes).
+- **Drafts:** a Drafts folder pill (with count) lists autosaved drafts (red "Draft" label, paper-gold icon); the composer shows "Saving… / Draft saved" next to Attach and a Discard button. Reply / Reply all / Forward each have their own title icon; forward and reply show a hint that the original stays quoted.
+- **Images:** remote images in emails are hidden behind a soft bar (`gw-mail-images`) with Load images and "Always load from {sender}" (remembered per browser).
+- **Connect with Microsoft:** white button with the four-square Microsoft logo (`gw-ms-connect`), shown to staff without their own mailbox (empty state + top actions). Mailbox cards say "Signed in by the owner" (blue) or "Organization access"; a signed-in mailbox that loses access shows Reconnect in the alert.
 
 ## Remote MCP (super_admin · Claude / Cursor)
 
@@ -464,3 +573,36 @@ Anti-references: generic fintech blue, real-estate flyer clutter, stock-photo-he
 - **Writes:** tools dry-run first; execute only with **both** `confirm=true` **and** `confirm_phrase=CONFIRM` (phrase alone never writes). `create_staff` cannot mint `super_admin` (use Admin → Staff).
 - **Conversations / Contacts MCP (Optimum parity):** `search_contacts` / `get_contact` / `create_contact` / `update_contact` / `convert_contact`; `send_sms` (+ `send_text`) to clients or staff; `send_contact_sms` / `send_contact_email`; `list_sms` (+ `get_texts` / `get_conversation`); `get_call_insights` (call rows + Twilio `transcript_full` when ready — **no AI summaries**); `list_brand_phone_numbers` (+ alias `list_ofg_phone_numbers`). WhatsApp tools exist as stubs (`whatsapp_not_configured`) until a WA channel ships. SMS From defaults to the MCP admin’s assigned brand Twilio line; override with `from_admin_*` or `from_phone_number_id`.
 - **Docs:** `mcp/admin-ask/README.md`. Cursor prod URL in `.cursor/mcp.json` (local override in user config — do not commit localhost).
+
+### Branded QR codes (`client/lib/brandQr.ts`)
+
+- Every QR (affiliate link card, event Registration QR, Admin -> QR codes, affiliate flyer PDF) uses navy `#0e2a4a` modules on white, error correction **H**, and the gold Groundwork mark (`/logos/groundwork-mark.png`) centered at 22% of the width on a white rounded plate. `brandQrSvg` / `brandQrPng` / `downloadBrandQr`; the SVG download embeds the mark so it prints offline.
+- **Admin -> QR codes** (`/admin/qr-codes`, Grow section, `events` permission): printed codes for canopies, banners and flyers. Each is a permanent `/go/{slug}` short link (slug fixed at creation); staff change the destination (site path like `/e/fontana-oct-2026` or any https link) anytime with no reprint, switch it off (scans land on the home page), see scans and last scan (chat-app link previews and crawlers are not counted), and download PNG / SVG. Cards stack to one column under 560px.
+
+### "Check your spam" hint (`SpamFolderHint`)
+
+Every screen that promises an email (affiliate / contractor signup done, partner form, Contact partner request, team join) shows a small gray line with a gold mail icon: "Don't see our email? Check your spam or junk folder."
+
+### Bulk card links (`BulkCardLinksBanner`, Admin → Billing)
+
+Under the Billing header, staff with `finance.write` see a `.gw-resign` strip: "N approved members have no card on file yet (X affiliates, Y contractors)" and a gold **Send card link to N members** button (confirm dialog). It sends each member the standard secure add-card email + text with their price and free period. Skips anyone with a membership running, waived or no price, and anyone sent a link in the last 3 days. After sending it shows "Card link sent to N members."
+
+### Mail: empty message body
+
+An email with no text and no images shows a muted line in the thread ("This email has no text. If you expected a message, open it in Outlook.") instead of an empty white frame (`EmailFrame`, `.gw-mail-empty`).
+
+### Browser tab titles (portals)
+
+Every portal page has a tab title "<Page> | Groundwork Capital". `PortalShell` sets a fallback from the active menu item (longest matching link), so pages with custom headers (Mail, wizards) never keep the previous page's title. Pages that know more set their own and win: record pages use the record name (client, affiliate, contractor, project, automation, event) and Mail uses the open email's subject ("Subject · Mail").
+
+### Scorecards (`/admin/scorecards`, flag `SCORECARD_ENABLED`)
+
+Weekly A to F scorecards for affiliates and contractors, admins only (super_admin + admin). With the flag off, nothing shows: no nav item, no Scorecard button on records, no tracking panel on projects, and the API returns 404.
+
+- **Colors (one system everywhere):** green `#1f9d6b` (A-B), yellow `#e0b23a` (C), orange `#e07a2e`, red `#d0453a`, grey `#c3c8d0` (not graded). Pages set `--sc-tone` from `.is-<color>`; rows and cards carry a 4px left or top stripe in that tone.
+- **Charts (`client/components/scorecard/ScorecardCharts.tsx`, hand-built SVG, no chart library):** `ScoreRing` (animated gauge with the grade letter), `TrendChart` (weekly score over A-F bands; click a week to drill in, hover shows the score; it measures its real width so labels never stretch), `Sparkline` + `StreakStrip` (last weeks as colored squares), `MetricBar` (actual vs goal with a goal marker), `ColorDonut` (status mix), `TeamBars` (team average per week). Motion respects `prefers-reduced-motion`.
+- **Board:** hero row (team average ring · team trend bars · status donut), "Needs follow-up" (one line per person and scorecard, most serious open item first, "+N more"), filter tabs (Everyone / Contractors / Affiliates / Orange or red), ranked rows (avatar, scorecard chip, per-metric mini bars, sparkline, streak, ring). Rows collapse to two lines on phones; metric bars hide under 980px.
+- **Person page:** identity card with "Scored as" toggles (Lead rep / Project coordinator), then tabs: Score (ring, trend, metric bars, drill-down list of exactly what counted: met / missed / not due yet), Follow-ups (automatic coaching notes list the weakest metrics with a tip; meetings, warnings and termination reviews close only with the written record), Work log (one-tap call outcomes, "Reached", next step with note, assign or take back leads; coordinator project panels; affiliate "Log event"), Days off.
+- **Project tracking panel (`ProjectTrackingPanel`, also on Project detail):** weekly "Reviewed this week" / "Homeowner updated" buttons, plans (due vs delivered), city corrections (received vs resolved), stage target dates. Rows carry a left stripe: green on time, yellow open, red late.
+- Copy is staff-facing (EN + ES under `scorecards.*`); no long dashes.
+- **Touch:** every Scorecards control is at least 44px tall (buttons, inputs, selects, role pills, "Open record"); form fields have visible labels; row actions stay grouped (toggle + delete) when they wrap. Week squares use 11px+ text. Audited at 320, 360, 375, 414 and 768 (tablet) with no sideways scrolling; `npm run audit:mobile` now includes `/admin/scorecards`, a scorecard detail and `/admin/qr-codes`.

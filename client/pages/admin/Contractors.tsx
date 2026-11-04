@@ -1,3 +1,4 @@
+import { useCityFilterOptions } from "@/hooks/useCityFilter";
 import { useEffect, useRef, useState } from "react";
 import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import { Link, useNavigate } from "react-router-dom";
@@ -61,6 +62,8 @@ export default function AdminContractors() {
   const canInvite = useAdminCan("approvals");
   const [q, setQ] = useState("");
   const [status, setStatus] = useStatusQueryParam(FILTER_STATUSES);
+  const [cityId, setCityId] = useState("");
+  const cityOptions = useCityFilterOptions();
   const [offset, setOffset] = useState(0);
   const [appStatus, setAppStatus] = useState("");
   const [open, setOpen] = useState(false);
@@ -78,6 +81,7 @@ export default function AdminContractors() {
   const load = () =>
     void dispatch(
       fetchAdminContractors({
+        city_id: cityId || undefined,
         q: q || undefined,
         status: status || undefined,
         application_status: appStatus || undefined,
@@ -88,7 +92,7 @@ export default function AdminContractors() {
   useEffect(() => {
     dispatch(clearAdminSaveError());
     load();
-  }, [q, status, appStatus, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, status, appStatus, cityId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyStatus = async (id: number, next: string) => {
     await rowBusy.run(
@@ -180,6 +184,13 @@ export default function AdminContractors() {
       <DuplicatesPanel entity="contractor" />
       <div className="pf-filters">
         <SearchBox onSearch={setQ} />
+        <FilterSelect
+          value={cityId}
+          onChange={setCityId}
+          ariaLabel={t("cities.filter")}
+          allLabel={t("cities.filterAll")}
+          options={cityOptions}
+        />
         <FilterSelect
           value={status}
           onChange={setStatus}

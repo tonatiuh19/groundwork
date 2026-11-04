@@ -117,12 +117,10 @@ describe("LeadForm", () => {
     ).toHaveAttribute("href", "#free-report");
   });
 
-  it("standard mode keeps the soft-pull consent and omits event_id", async () => {
+  it("standard mode is a plain inquiry (no credit-pull checkbox) and omits event_id", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ok: true, lead_id: 2, message: "ok" } });
     mount(null);
-    expect(
-      screen.getByRole("checkbox", { name: i18n.t("form.consent") }),
-    ).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: i18n.t("form.consent") })).toBeNull();
     expect(
       screen.getByRole("checkbox", { name: i18n.t("form.smsMarketingConsent") }),
     ).not.toBeChecked();
@@ -132,7 +130,7 @@ describe("LeadForm", () => {
     expect(body).toMatchObject({
       mode: "standard",
       event_id: null,
-      soft_pull_consent: true,
+      soft_pull_consent: false,
       sms_marketing_consent: false,
     });
   });

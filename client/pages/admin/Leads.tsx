@@ -1,4 +1,6 @@
+import { useCityFilterOptions } from "@/hooks/useCityFilter";
 import { useEffect, useMemo, useState, useRef } from "react";
+import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import { ArrowRightCircle, MessageSquare, NotebookPen, Phone } from "lucide-react";
@@ -81,6 +83,8 @@ export default function AdminLeads() {
   const [view, setView] = useState<LeadListView>("active");
   const [textLead, setTextLead] = useState<AdminLead | null>(null);
   const [status, setStatus] = useState("");
+  const [cityId, setCityId] = useState("");
+  const cityOptions = useCityFilterOptions();
   const [mode, setMode] = useState("");
   const [eventId, setEventId] = useState("");
   // ?q= deep link (e.g. "Move back to Leads" lands on the restored lead).
@@ -108,6 +112,7 @@ export default function AdminLeads() {
   const load = () =>
     void dispatch(
       fetchAdminLeads({
+        city_id: cityId || undefined,
         view,
         status: status || undefined,
         q: q || undefined,
@@ -120,7 +125,7 @@ export default function AdminLeads() {
   useEffect(() => {
     dispatch(clearAdminSaveError());
     load();
-  }, [view, status, q, mode, eventId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, status, q, mode, eventId, cityId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openConvert = (lead: AdminLead) => {
     dispatch(clearAdminSaveError());
@@ -213,6 +218,13 @@ export default function AdminLeads() {
       <div className="pf-filters">
         <SearchBox value={q} onSearch={setQ} />
         <FilterSelect
+          value={cityId}
+          onChange={setCityId}
+          ariaLabel={t("cities.filter")}
+          allLabel={t("cities.filterAll")}
+          options={cityOptions}
+        />
+        <FilterSelect
           value={status}
           onChange={setStatus}
           ariaLabel={t("pf.status")}
@@ -254,6 +266,7 @@ export default function AdminLeads() {
           {
             key: "name",
             headerKey: "pf.name",
+            className: "pf-col-person",
             render: (l) => (
               <>
                 <strong>{l.full_name}</strong>
@@ -264,16 +277,18 @@ export default function AdminLeads() {
           },
           { key: "lastText", headerKey: "admin.leadLastText", render: (l) => <LeadTouchCell touch={l.last_sms} kind="sms" /> },
           { key: "lastCall", headerKey: "admin.leadLastCall", render: (l) => <LeadTouchCell touch={l.last_call} kind="call" /> },
-          { key: "address", headerKey: "pf.address", render: (l) => l.property_address || "—" },
+          { key: "address", headerKey: "pf.address", className: "pf-col-md", render: (l) => l.property_address || "—" },
           { key: "source", headerKey: "admin.source", render: (l) => l.source || "—" },
           {
             key: "mode",
             headerKey: "admin.leadMode",
+            className: "pf-col-sm",
             render: (l) => t(`leadMode.${l.mode}`, { defaultValue: l.mode }),
           },
           {
             key: "event",
             headerKey: "admin.leadEvent",
+            className: "pf-col-md",
             render: (l) =>
               l.event_id ? (
                 <>
@@ -371,6 +386,7 @@ export default function AdminLeads() {
                 ) : leadAlreadyConverted(l) ? (
                   <LeadPersonLink lead={l} />
                 ) : null}
+                <DeletePersonButton entity="lead" id={l.id} name={l.full_name || l.email} onDeleted={load} className="pf-btn pf-btn--danger-ghost" />
               </div>
             ),
           },

@@ -400,7 +400,7 @@ export const uploadConversationMedia = createApiThunk<
 
 export const createConversationTemplate = createApiThunk<
   ConversationTemplate,
-  { title: string; body_en: string; body_es?: string | null; sort_order?: number; category?: ConversationTemplateCategory }
+  { title: string; body_en: string; body_es?: string | null; sort_order?: number; category?: ConversationTemplateCategory; channel?: "sms" | "email"; subject_en?: string | null; subject_es?: string | null }
 >("conversations/createTemplate", A, async (body) => {
   const { data } = await api.post<{ template: ConversationTemplate }>(
     "/admin/conversation-templates",
@@ -419,6 +419,8 @@ export const updateConversationTemplate = createApiThunk<
     is_active?: boolean;
     sort_order?: number;
     category?: ConversationTemplateCategory;
+    subject_en?: string | null;
+    subject_es?: string | null;
   }
 >("conversations/updateTemplate", A, async ({ id, ...body }) => {
   const { data } = await api.patch<{ template: ConversationTemplate }>(
@@ -448,11 +450,11 @@ export const markConversationTemplateUsed = createApiThunk<boolean, number>(
 
 export const fetchConversationTemplates = createApiThunk<
   ConversationTemplate[],
-  { all?: boolean } | void
+  { all?: boolean; channel?: "sms" | "email" | "all" } | void
 >("conversations/templates", A, async (args) => {
   const { data } = await api.get<{ templates: ConversationTemplate[] }>(
     "/admin/conversation-templates",
-    { params: args && args.all ? { all: "1" } : undefined },
+    { params: { ...(args && args.all ? { all: "1" } : {}), ...(args && args.channel ? { channel: args.channel } : {}) } },
   );
   return data.templates || [];
 });

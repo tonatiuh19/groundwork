@@ -9,7 +9,7 @@ export type AdminRole =
   | "finance"
   | "content";
 
-export type PortalActor = "admin" | "affiliate" | "contractor" | "client";
+export type PortalActor = "admin" | "affiliate" | "contractor" | "client" | "city";
 
 export type AdminNotifyEventKey =
   | "lead_submitted"
@@ -33,7 +33,8 @@ export type AdminNotifyEventKey =
   | "milestone_changed"
   | "commission_accrued"
   | "contract_sent"
-  | "inbound_sms";
+  | "inbound_sms"
+  | "inbound_email";
 
 export type AdminNotifyChannel = "email" | "in_app" | "sms";
 
@@ -303,6 +304,10 @@ export interface ConversationsAccessResponse {
 export interface ConversationTemplate {
   id: number;
   title: string;
+  /** sms (texting composer) or email (Mail composer). */
+  channel?: "sms" | "email";
+  subject_en?: string | null;
+  subject_es?: string | null;
   body_en: string;
   body_es: string | null;
   is_active: boolean;
@@ -380,7 +385,9 @@ export type AdminPerm =
   | "events"
   | "staff"
   | "settings"
-  | "campaigns";
+  | "campaigns"
+  | "mail.manage"
+  | "flows.write";
 
 export const ADMIN_PERMS: Record<AdminPerm, AdminRole[]> = {
   leads: ["super_admin", "admin", "agent"],
@@ -396,6 +403,8 @@ export const ADMIN_PERMS: Record<AdminPerm, AdminRole[]> = {
   staff: ["super_admin"],
   settings: ["super_admin", "finance"],
   campaigns: ["super_admin", "admin", "agent", "content"],
+  "mail.manage": ["super_admin", "admin"],
+  "flows.write": ["super_admin", "admin"],
 };
 
 export type CampaignAudienceKind = "leads" | "affiliates" | "contractors";
@@ -494,6 +503,13 @@ export type EventRegistrationStatus = "confirmed" | "waitlisted";
 
 export type MarketingEventStatus = "draft" | "published" | "archived";
 
+/** Automation an event can start on RSVP (`GET /api/admin/events/rsvp-flows`). */
+export interface EventRsvpFlow {
+  id: number;
+  name: string;
+  is_active: boolean;
+}
+
 export interface MarketingEvent {
   id: number;
   slug: string;
@@ -533,6 +549,8 @@ export interface MarketingEvent {
   qr_last_scanned_at?: string | null;
   /** RSVPs submitted after a QR scan (`leads.source = 'qr'`; admin detail). */
   qr_rsvp_count?: number;
+  /** Automation (trigger event_rsvp) started on RSVP; null = no automatic messages. */
+  rsvp_flow_id?: number | null;
 }
 
 /** `POST /api/public/events/:slug/qr-scan` — where a scanned flyer should land. */
@@ -639,6 +657,8 @@ export interface PortalAuthUser {
   avatar_url?: string | null;
   /** Admin only — Conversations unlocks when a brand Twilio line is assigned. */
   conversations_enabled?: boolean;
+  /** Admin -> Scorecards (SCORECARD_ENABLED + super_admin/admin). */
+  scorecard_enabled?: boolean;
   assigned_phone_numbers?: AdminPhoneNumber[];
   voice_available?: boolean;
   call_forwarding_enabled?: boolean;
@@ -661,6 +681,7 @@ export interface PortalAuthResponse {
 }
 
 export interface SubmitLeadRequest {
+  city_ids?: number[];
   full_name: string;
   email: string;
   phone: string;
@@ -688,6 +709,7 @@ export interface SubmitLeadResponse {
 }
 
 export interface SubmitGetCreditReportLeadRequest {
+  city_ids?: number[];
   first_name: string;
   last_name: string;
   email: string;
@@ -720,14 +742,22 @@ export interface SubmitContactRequest {
 }
 
 export interface SubmitPartnerReferralRequest {
+  city_ids?: number[];
+  /** Required once the Terms are published: agrees to the Terms, Refund policy and Privacy Policy. */
+  accept_terms?: boolean;
   full_name: string;
   email: string;
   phone: string;
   company?: string | null;
   notes?: string | null;
   preferred_language?: "en" | "es";
+  /** OK to text automatic follow-ups (Reply STOP to opt out). */
+  sms_marketing_consent?: boolean;
   /** From `/r/:code` cookie / `?ref=` — attributes parent affiliate on the new pending affiliate. */
   referral_code?: string | null;
+  partner_type?: "realtor" | "lender" | "other" | null;
+  /** DRE # (realtor) or NMLS # (lender). */
+  license_number?: string | null;
 }
 
 export interface SubmitSimpleLeadResponse {
@@ -1087,6 +1117,8 @@ export interface AdminProject {
   anchor_last_synced_at: string | null;
   commission_expected_pay_at: string | null;
   commission_paid_at: string | null;
+  /** Finance only: starts City Partner fees (due 5 days later). */
+  funds_received_on?: string | null;
   notes: string | null;
   created_at: string;
   client_name: string;
@@ -1208,6 +1240,10 @@ export interface AdminAffiliate {
   last_name: string;
   phone: string | null;
   company: string | null;
+  /** Realtor (DRE #) / Lender (NMLS #) / neither. */
+  partner_type?: "realtor" | "lender" | "other" | null;
+  license_number?: string | null;
+  lender_id?: number | null;
   status: "pending" | "active" | "inactive" | "suspended";
   referral_code: string;
   slug: string | null;
@@ -1223,6 +1259,8 @@ export interface AdminAffiliate {
   created_at: string;
   click_count: number;
   client_count: number;
+  /** Last time the approval / referral-link message was sent. */
+  link_sent_at?: string | null;
 }
 
 export interface PublicAffiliateCard {
@@ -1329,6 +1367,9 @@ export interface AdminClient {
   deal_status_en?: string | null;
   deal_status_es?: string | null;
   deal_status_tone?: DealStatusTone | null;
+  /** Homeowner lender (Lenders directory); projects follow it unless they set their own. */
+  lender_id?: number | null;
+  lender_company?: string | null;
 }
 
 export interface AdminStaff {
@@ -1484,12 +1525,21 @@ export interface RegisterClientRequest {
 }
 
 export interface AffiliateSignupRequest {
+  city_ids?: number[];
+  /** Required once the Terms are published: agrees to the Terms, Refund policy and Privacy Policy. */
+  accept_terms?: boolean;
   first_name: string;
   last_name: string;
   email: string;
   phone: string;
   company?: string | null;
   preferred_language?: "en" | "es";
+  /** OK to text automatic follow-ups (Reply STOP to opt out). */
+  sms_marketing_consent?: boolean;
+  /** Referral code of the affiliate whose link they came from (becomes their Sponsor). */
+  sponsor_code?: string | null;
+  partner_type?: "realtor" | "lender" | "other" | null;
+  license_number?: string | null;
 }
 
 export type PortalSignupOutcome =
@@ -1518,12 +1568,17 @@ export interface ClientSignupRequest {
 }
 
 export interface ContractorSignupRequest {
+  city_ids?: number[];
+  /** Required once the Terms are published: agrees to the Terms, Refund policy and Privacy Policy. */
+  accept_terms?: boolean;
   first_name: string;
   last_name: string;
   email: string;
   phone: string;
   company?: string | null;
   preferred_language?: "en" | "es";
+  /** OK to text automatic follow-ups (Reply STOP to opt out). */
+  sms_marketing_consent?: boolean;
 }
 
 export interface ContractorProjectRow {
@@ -1906,11 +1961,15 @@ export interface Appointment {
   location_type: AppointmentLocationType;
   location: string | null;
   video_url: string | null;
+  /** Teams meeting created on the owner's Outlook calendar (join link lands in video_url). */
+  teams_meeting?: boolean;
+  /** Outlook free/busy (free events never block booking). */
+  show_as?: "busy" | "free" | "tentative" | "oof" | "workingElsewhere" | "unknown";
   description: string | null;
   /** Internal (staff only). */
   notes?: string | null;
   status: AppointmentStatus;
-  source: "staff" | "booking";
+  source: "staff" | "booking" | "outlook";
   notify_homeowner: boolean;
   client_id: number | null;
   client_name: string | null;
@@ -1949,6 +2008,7 @@ export interface AppointmentBody {
   owner_admin_id?: number | null;
   notify_homeowner: boolean;
   attendees: AppointmentAttendeeInput[];
+  teams_meeting?: boolean;
 }
 
 export interface AppointmentConflict {
@@ -1979,10 +2039,13 @@ export interface Lender {
   notes: string | null;
   is_active: boolean;
   project_count: number;
+  nmls_number?: string | null;
+  /** Affiliate account of this lender (joined through the affiliate program). */
+  affiliate_id?: number | null;
 }
 
 export type LenderBody = Pick<Lender, "company"> &
-  Partial<Pick<Lender, "contact_name" | "email" | "phone" | "preferred_language" | "notes" | "is_active">>;
+  Partial<Pick<Lender, "contact_name" | "email" | "phone" | "preferred_language" | "notes" | "is_active" | "nmls_number">>;
 
 export interface SchedulerAvailability {
   day_of_week: number;
@@ -2100,10 +2163,919 @@ export type RecordRef = { kind: "client" | "lead" | "project"; id: number; label
 /** What erasing a person removes (confirm modal). */
 export interface ErasePreview {
   ok: true;
-  person: { entity: "client" | "affiliate" | "contractor"; id: number; name: string; email: string | null; status: string };
+  person: { entity: "client" | "affiliate" | "contractor" | "lead"; id: number; name: string; email: string | null; status: string };
   counts: Record<string, number>;
   kept: Record<string, number>;
   subscription: boolean;
   card_on_file: boolean;
   files: number;
+}
+
+// ─── Mail (Microsoft 365 mailboxes connected to the CRM) ───
+
+export type MailPersonKind = "client" | "lead" | "affiliate" | "contractor" | "contact";
+export interface MailAddress {
+  email: string;
+  name: string | null;
+}
+export interface MailboxAccessEntry {
+  admin_id: number;
+  can_send: boolean;
+  name?: string;
+  email?: string;
+}
+export interface Mailbox {
+  id: number;
+  email: string;
+  display_name: string | null;
+  kind: "personal" | "shared";
+  owner_admin_id: number | null;
+  owner_name: string | null;
+  status: "active" | "paused" | "error";
+  mail_sync_enabled: boolean;
+  calendar_sync_enabled: boolean;
+  signature_html: string | null;
+  last_mail_sync_at: string | null;
+  last_calendar_sync_at: string | null;
+  last_error: string | null;
+  /** app = admin-connected org mailbox; delegated = owner signed in with Microsoft. */
+  auth_mode: "app" | "delegated";
+  unread: number;
+  can_send: boolean;
+  access?: MailboxAccessEntry[];
+}
+export interface MailStatus {
+  configured: boolean;
+  /** "Connect with Microsoft" available (app keys + MAIL_TOKEN_KEY set). */
+  oauth_enabled: boolean;
+  has_own_mailbox: boolean;
+  can_manage: boolean;
+  allowed_domains: string[];
+  mailboxes: Mailbox[];
+}
+export interface MailThread {
+  id: number;
+  mailbox_id: number;
+  mailbox_email: string | null;
+  subject: string | null;
+  snippet: string | null;
+  participants: MailAddress[];
+  last_message_at: string | null;
+  last_direction: "inbound" | "outbound" | null;
+  message_count: number;
+  unread_count: number;
+  has_attachments: boolean;
+  archived: boolean;
+  match: { kind: MailPersonKind; id: number; name: string; email: string | null } | null;
+}
+export interface MailMessage {
+  id: number;
+  direction: "inbound" | "outbound";
+  folder: "inbox" | "sent" | "archive" | "custom";
+  from_email: string | null;
+  from_name: string | null;
+  to: MailAddress[];
+  cc: MailAddress[];
+  subject: string | null;
+  preview: string | null;
+  /** Sanitized HTML; render only inside a sandboxed iframe. */
+  html: string;
+  sent_at: string | null;
+  is_read: boolean;
+  has_attachments: boolean;
+  sent_by_name: string | null;
+}
+export interface MailAttachment {
+  id: string;
+  name: string;
+  content_type: string;
+  size: number;
+}
+export interface MailCustomFolder {
+  id: number;
+  name: string;
+  thread_count: number;
+  unread: number;
+}
+export type MailRuleEngine = "outlook" | "crm";
+export interface MailRule {
+  id: string;
+  engine: MailRuleEngine;
+  name: string;
+  from: string | null;
+  subject: string | null;
+  person_kind: string | null;
+  folder_id: number | null;
+  mark_read: boolean;
+  active: boolean;
+}
+export type MailFolder = "inbox" | "sent" | "all" | "archived";
+export interface MailThreadsQuery {
+  mailbox_id?: number | null;
+  folder: MailFolder;
+  /** A custom Outlook folder; takes over from `folder`. */
+  mail_folder_id?: number | null;
+  unread?: boolean;
+  linked?: boolean;
+  q?: string;
+  cursor?: string | null;
+  match_kind?: MailPersonKind;
+  match_id?: number;
+}
+export interface MailSendBody {
+  mailbox_id: number;
+  to: string[];
+  cc: string[];
+  subject: string;
+  html: string;
+  reply_to_message_id?: number | null;
+  reply_all?: boolean;
+  /** Forward this message (original + attachments included); needs `to`. */
+  forward_message_id?: number | null;
+  /** Draft being sent (removed after sending). */
+  draft_id?: number | null;
+  attachments?: Array<{ name: string; content_type: string; base64: string }>;
+}
+export type MailDraftMode = "new" | "reply" | "replyAll" | "forward";
+export interface MailDraft {
+  id: number;
+  mailbox_id: number;
+  mode: MailDraftMode;
+  source_message_id: number | null;
+  source_thread_id: number | null;
+  to: string[];
+  cc: string[];
+  subject: string;
+  html: string;
+  attachments: Array<{ name: string; content_type: string; base64: string }>;
+  updated_at: string | null;
+}
+export interface MailDraftSaveBody {
+  id?: number | null;
+  mailbox_id: number;
+  mode: MailDraftMode;
+  source_message_id?: number | null;
+  to: string[];
+  cc: string[];
+  subject: string;
+  html: string;
+  attachments: Array<{ name: string; content_type: string; base64: string }>;
+}
+export interface MailboxSaveBody {
+  email?: string;
+  display_name?: string | null;
+  kind?: "personal" | "shared";
+  owner_admin_id?: number | null;
+  mail_sync_enabled?: boolean;
+  calendar_sync_enabled?: boolean;
+  signature_html?: string | null;
+  status?: "active" | "paused";
+  access?: MailboxAccessEntry[];
+}
+export interface LastEmail {
+  at: string;
+  direction: "inbound" | "outbound";
+  preview: string;
+  thread_id: number;
+}
+
+// ─── Staff notification routing (Settings → Team notifications) ───
+export type NotifyArea = "leads" | "clients" | "contractors" | "affiliates" | "projects" | "system";
+export interface NotifyRoutingArea {
+  area: NotifyArea;
+  events: AdminNotifyEventKey[];
+  /** false = not set up yet (super admins only). */
+  configured: boolean;
+  admin_ids: number[];
+  include_owner: boolean;
+}
+export interface NotifyRouting {
+  areas: NotifyRoutingArea[];
+  staff: Array<{ id: number; name: string; email: string; role: AdminRole | null }>;
+}
+export type NotifyRoutingSaveBody = { areas: Array<{ area: NotifyArea; admin_ids: number[]; include_owner: boolean } | { area: NotifyArea; reset: true }> };
+
+/** An automatic email / text the system sent a CRM person (record pages). */
+export interface AutomaticMessage {
+  id: number;
+  channel: "email" | "sms";
+  to: string;
+  subject: string | null;
+  preview: string;
+  /** Sent while the notification sandbox was on (not delivered). */
+  test_mode: boolean;
+  sent_at: string | null;
+}
+
+/** Known details for application forms opened from the A/B/C welcome links (?t=token). */
+export interface LeadPrefill {
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string;
+  preferred_language: "en" | "es";
+  property_address: string;
+}
+
+// ── Reminder flows (Automations) ──
+
+export type FlowStepType = "trigger" | "wait" | "send_email" | "send_sms" | "notify_staff" | "condition" | "wait_for_reply" | "close" | "end";
+export type FlowEdgeType = "next" | "yes" | "no" | "replied" | "no_reply";
+export type FlowSubjectKind = "lead" | "client" | "affiliate" | "contractor" | "project" | "appointment";
+export type FlowRunStatus = "active" | "paused" | "goal_met" | "completed" | "stopped" | "closed" | "failed";
+
+export interface FlowStats {
+  active: number;
+  entered: number;
+  goal_met: number;
+  closed: number;
+  stopped: number;
+}
+
+export interface ReminderFlow {
+  id: number;
+  name: string;
+  description: string | null;
+  trigger_event: string;
+  goal_key: string | null;
+  stop_on_reply: boolean;
+  quiet_start_hour: number;
+  quiet_end_hour: number;
+  is_active: boolean;
+  system_key: string | null;
+  updated_at: string | null;
+  stats: FlowStats;
+}
+
+/** wait / wait_for_reply: {amount, unit}; send_*: {subject_en, subject_es, body_en, body_es}; notify_staff: {body_en}; condition: {check}. */
+export interface FlowStepConfig {
+  amount?: number;
+  unit?: "minutes" | "hours" | "days";
+  subject_en?: string;
+  subject_es?: string;
+  body_en?: string;
+  body_es?: string;
+  check?: string;
+}
+
+export interface FlowStep {
+  step_key: string;
+  step_type: FlowStepType;
+  label: string;
+  config: FlowStepConfig;
+  position_x: number;
+  position_y: number;
+  stats?: Record<string, number>;
+}
+
+export interface FlowEdge {
+  source_key: string;
+  target_key: string;
+  edge_type: FlowEdgeType;
+}
+
+export interface ReminderFlowsListResponse {
+  ok: true;
+  flows: ReminderFlow[];
+  triggers: string[];
+  goals: string[];
+  checks: string[];
+  can_edit: boolean;
+  /** Signed on messages when the person has no assigned staff member (blank = "the Groundwork team"). */
+  default_rep_name: string;
+}
+
+export interface ReminderFlowDetail {
+  ok: true;
+  flow: ReminderFlow;
+  steps: FlowStep[];
+  edges: FlowEdge[];
+  engagement: { replied: number; opted_out: number; clicked: number };
+}
+
+export interface ReminderFlowSaveBody {
+  name: string;
+  description?: string | null;
+  trigger_event: string;
+  goal_key?: string | null;
+  stop_on_reply?: boolean;
+  quiet_start_hour?: number;
+  quiet_end_hour?: number;
+  steps?: FlowStep[];
+  edges?: FlowEdge[];
+}
+
+export interface FlowPreviewResponse {
+  ok: true;
+  channel: "email" | "sms" | "staff";
+  subject: string | null;
+  body: string;
+  html: string | null;
+  person: { name: string; lang: "en" | "es"; can_text: boolean };
+}
+
+export interface FlowRunEvent {
+  step_key: string | null;
+  label: string | null;
+  event: string;
+  channel: "email" | "sms" | "staff" | "none";
+  detail: Record<string, unknown> | null;
+  at: string | null;
+}
+
+export interface FlowRun {
+  id: number;
+  flow_id: number;
+  flow_name: string | null;
+  subject_kind: FlowSubjectKind;
+  subject_id: number;
+  subject_name: string | null;
+  status: FlowRunStatus;
+  current_step_key: string | null;
+  current_step_label: string | null;
+  next_run_at: string | null;
+  end_reason: string | null;
+  entered_at: string | null;
+  ended_at: string | null;
+  events?: FlowRunEvent[];
+}
+
+export interface PersonFlowsResponse {
+  ok: true;
+  runs: FlowRun[];
+  available_flows: Array<{ id: number; name: string }>;
+}
+
+export type FlowRunAction = "pause" | "resume" | "skip" | "remove";
+
+// ── ADU construction agreement ──
+
+export type ConstructionAgreementParty = "client" | "contractor" | "groundwork";
+export type ConstructionAgreementFieldGroup = "parties" | "property" | "contractor" | "price" | "schedule" | "terms";
+
+export interface ConstructionAgreementFieldDef {
+  key: string;
+  group: ConstructionAgreementFieldGroup;
+  required: boolean;
+  multiline?: boolean;
+}
+
+export interface ConstructionAgreementSigner {
+  party: ConstructionAgreementParty;
+  name: string;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  status: "pending" | "signed";
+  signed_name: string | null;
+  signed_at: string | null;
+  viewed_at: string | null;
+  last_sent_at: string | null;
+}
+
+export interface ConstructionAgreement {
+  id: number;
+  status: "draft" | "sent" | "signed" | "void";
+  template_version: number;
+  template_approved: boolean;
+  fields: Record<string, string>;
+  missing: string[];
+  /** Rendered text (frozen once sent). */
+  body: string;
+  /** Raw template markup while a draft (for the live preview). */
+  template_body: string | null;
+  signers: ConstructionAgreementSigner[];
+  sent_at: string | null;
+  signed_at: string | null;
+  has_pdf: boolean;
+}
+
+export interface ProjectConstructionAgreementResponse {
+  ok: true;
+  latest_template: { version: number; approved: boolean };
+  fields: ConstructionAgreementFieldDef[];
+  agreement: ConstructionAgreement | null;
+  history: Array<{ id: number; status: string; template_version: number; created_at: string | null; void_reason: string | null }>;
+}
+
+export interface ConstructionAgreementTemplate {
+  version: number;
+  body_en: string;
+  notes: string | null;
+  approved: boolean;
+  approved_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  agreements?: number;
+}
+
+export interface ConstructionAgreementTemplatesResponse {
+  ok: true;
+  versions: ConstructionAgreementTemplate[];
+  fields: ConstructionAgreementFieldDef[];
+}
+
+export interface PublicAgreementSignView {
+  ok: true;
+  party: ConstructionAgreementParty;
+  name: string;
+  title: string | null;
+  lang: "en" | "es";
+  status: "pending" | "signed";
+  agreement_status: string;
+  address: string;
+  body: string;
+  body_sha256: string;
+  template_version: number;
+  signers: Array<{ party: string; name: string; status: string; signed_at: string | null }>;
+  can_download: boolean;
+}
+
+export interface PublicAgreementSignBody {
+  signed_name: string;
+  title?: string;
+  signature_image: string;
+  body_sha256: string;
+  consent: true;
+}
+
+// ── Legal pages (Terms of Service, Privacy Policy, Refund & Cancellation) ──
+
+export type LegalSlug = "terms" | "privacy" | "refunds";
+export const LEGAL_PATHS: Record<LegalSlug, string> = { terms: "/terms", privacy: "/privacy", refunds: "/refund-policy" };
+
+export interface PublicLegalPage {
+  ok: true;
+  slug: LegalSlug;
+  version: number;
+  lang: "en" | "es";
+  title: string;
+  /** Markdown with live fields already filled. */
+  body: string;
+  effective_date: string | null;
+}
+
+export interface LegalStatusResponse {
+  ok: true;
+  versions: Record<LegalSlug, number | null>;
+}
+
+export interface LegalVersion {
+  version: number;
+  /** published = live now; scheduled = published with a future effective date. */
+  status: "draft" | "published" | "scheduled" | "archived";
+  title_en: string;
+  title_es: string;
+  effective_date: string | null;
+  requires_reacceptance: boolean;
+  notes: string | null;
+  published_at: string | null;
+  updated_at: string | null;
+  accepted_count: number;
+  /** Change notices emailed to members for this version. */
+  notices_sent?: number;
+  body_en?: string;
+  body_es?: string;
+}
+
+export interface AdminLegalDoc {
+  slug: LegalSlug;
+  path: string;
+  versions: LegalVersion[];
+  draft: LegalVersion | null;
+  published: LegalVersion | null;
+  scheduled: LegalVersion | null;
+}
+
+export interface AdminLegalResponse {
+  ok: true;
+  docs: AdminLegalDoc[];
+  live_fields: { en: Record<string, string>; es: Record<string, string> };
+  /** Active / pending affiliates and contractors who would get a change notice. */
+  member_count: number;
+  /** Today in California (YYYY-MM-DD). */
+  today: string;
+  can_edit: boolean;
+  can_publish: boolean;
+}
+
+export interface LegalDraftBody {
+  title_en: string;
+  title_es: string;
+  body_en: string;
+  body_es: string;
+  notes?: string | null;
+}
+
+export interface LegalPendingResponse {
+  ok: true;
+  pending: Array<{ slug: LegalSlug; version: number; title: string; path: string; effective_date: string | null }>;
+}
+
+/** Admin -> QR codes: a permanent /go/{slug} short link whose destination staff can change. */
+// ── City Partners (portal /city) ───────────────────────────────────────────
+export type CityStage = "target" | "official_contacted" | "meeting_scheduled" | "official_support" | "referred_to_staff" | "staff_meeting" | "plans_submitted" | "in_review" | "comments_received" | "resubmitted" | "preapproved" | "on_hold";
+export type CityLevel = "high" | "medium" | "low" | "unknown";
+export interface CityPipelineCity {
+  id: number;
+  name: string;
+  county: string | null;
+  priority: CityLevel;
+  interest: CityLevel;
+  pipeline_stage: CityStage | null;
+  next_action: string | null;
+  next_action_on: string | null;
+  follow_up: "overdue" | "due_today" | "upcoming" | "none";
+  suggested: { key: string; stale: boolean };
+  plan_set: string | null;
+  submitted_on: string | null;
+  review_round: number | null;
+  comments_on: string | null;
+  resubmitted_on: string | null;
+  opened_on: string | null;
+  pipeline_notes: string | null;
+  last_activity_on: string | null;
+  partners: string | null;
+}
+export interface CityKpis {
+  cities: number;
+  contacted: number;
+  meetings: number;
+  submitted: number;
+  opened: number;
+  overdue: number;
+  due_today: number;
+  upcoming: number;
+  high_interest: number;
+}
+export interface CityContact {
+  id: number;
+  kind: "elected" | "city_staff" | "planning" | "building" | "consultant";
+  name: string;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  notes: string | null;
+  verified_at: string | null;
+}
+export interface CityIntel {
+  council_summary: string | null;
+  adu_program_status: "none" | "in_development" | "active" | "paused" | "unknown";
+  adu_program_notes: string | null;
+  intel_sources: string | null;
+  intel_verified_at: string | null;
+}
+export interface CityActivity {
+  id: number;
+  occurred_on: string;
+  activity_type: "call" | "email" | "meeting" | "presentation" | "follow_up" | "plan_submission" | "other";
+  contact_name: string | null;
+  summary: string;
+  next_step: string | null;
+  follow_up_on: string | null;
+  link_url: string | null;
+  by_name: string | null;
+  mine: boolean;
+}
+export interface CityFeedItem {
+  kind: string;
+  at: string;
+  city: string | null;
+  city_id: number | null;
+  /** Who did it (when not the partner), homeowner name, or the new stage. */
+  title: string | null;
+  detail: string | null;
+  amount_cents: number | null;
+}
+export interface CityDetail {
+  city: CityPipelineCity;
+  /** When the city reached each stage (from the stage history). */
+  stage_dates?: Record<string, string | null>;
+  intel: CityIntel | null;
+  contacts: CityContact[];
+  score: { score: number; missing: string[]; stale_contacts: number; duplicates: number } | null;
+  activities: CityActivity[];
+}
+export interface CityPartnerAgreementState {
+  id: number;
+  version: number;
+  fee_cents_per_sqft: number;
+  signer_name: string;
+  signer_title: string | null;
+  signed_at: string | null;
+  countersigner_name: string | null;
+  countersigned_at: string | null;
+}
+export interface CityPartnerW9State {
+  id: number;
+  status: "submitted" | "accepted" | "rejected";
+  legal_name: string;
+  tin_type: string;
+  tin_last4: string;
+  signed_at: string | null;
+  review_note: string | null;
+}
+export interface CityPartner {
+  id: number;
+  email: string;
+  first_name: string;
+  last_name: string;
+  phone: string | null;
+  company: string | null;
+  status: "active" | "inactive";
+  preferred_language: "en" | "es";
+  fee_cents_per_sqft: number;
+  notes: string | null;
+  invited_at: string | null;
+  created_at: string | null;
+}
+export interface CityPartnerListItem extends CityPartner {
+  cities: { id: number; name: string }[];
+  agreement: CityPartnerAgreementState | null;
+  w9: CityPartnerW9State | null;
+}
+export interface CityPartnerFee {
+  id: number;
+  city_partner_id: number;
+  partner_name: string | null;
+  project_public_id: string | null;
+  city_name: string | null;
+  sq_ft: number;
+  rate_cents_per_sqft: number;
+  amount_cents: number;
+  status: "pending" | "approved" | "paid" | "void" | "refund_due" | "refunded";
+  due_on: string;
+  paid_at: string | null;
+  note: string | null;
+}
+export interface CityPartnerDetail {
+  partner: CityPartner;
+  cities: { id: number; name: string; opened_on: string | null }[];
+  agreement: CityPartnerAgreementState | null;
+  w9: CityPartnerW9State | null;
+  agreement_text: string | null;
+  agreement_sha256: string | null;
+  /** True once they signed: rate and LLC name are frozen in the agreement. */
+  terms_locked: boolean;
+  changes: { field: string; before: string | null; after: string | null; admin_name: string | null; at: string | null }[];
+  fees: CityPartnerFee[];
+}
+export interface CityPartnerOnboarding {
+  partner: CityPartner;
+  template: { version: number; body: string; sha256: string } | null;
+  agreement: CityPartnerAgreementState | null;
+  w9: CityPartnerW9State | null;
+  blank_w9_url: string;
+}
+export interface CityPartnerClient {
+  id: number;
+  name: string;
+  street: string | null;
+  city: string;
+  milestone: string;
+  sq_ft: number | null;
+  fee_status: string | null;
+  fee_cents: number | null;
+}
+export interface CityPartnerOverview {
+  cities: CityPipelineCity[];
+  kpis: CityKpis;
+  onboarding: { agreement: CityPartnerAgreementState | null; w9: CityPartnerW9State | null };
+  fees: { pending_cents: number; paid_cents: number; next_due_on: string | null };
+  earnings: { month: string; paid: number; coming: number }[];
+  feed: CityFeedItem[];
+}
+
+export interface ServiceCity {
+  id: number;
+  name: string;
+  active: boolean;
+  archived?: boolean;
+  lead_count: number;
+  client_count: number;
+  project_count: number;
+  /** Names of affiliates and contractors staff assigned here. */
+  assigned: string[];
+}
+export interface CitySuggestion {
+  kind: "lead" | "client" | "project";
+  id: number;
+  name: string;
+  address: string;
+  suggested_city_id: number | null;
+}
+export interface PersonCities {
+  cities: { id: number; name: string }[];
+  assigned: number[];
+  requested: number[];
+}
+export type QrDestinationType = "page" | "event" | "next_event" | "affiliate" | "external";
+/** What a code points at: always a known record, never typed. */
+export interface QrDestinationInput {
+  type: QrDestinationType;
+  key?: string | null;
+  id?: number | null;
+}
+export interface QrDestination extends QrDestinationInput {
+  label: string;
+  url: string;
+  /** False when the record stopped working (event unpublished, affiliate inactive...): scans use the fallback. */
+  ok: boolean;
+}
+export interface QrLink {
+  id: number;
+  slug: string;
+  label: string;
+  destination_url: string;
+  /** Null only for an older code saved before the picker. */
+  destination: QrDestination | null;
+  fallback: QrDestination | null;
+  active: boolean;
+  archived: boolean;
+  scan_count: number;
+  last_scanned_at: string | null;
+  lead_count: number;
+  application_count: number;
+  updated_at: string;
+  short_url: string;
+}
+export interface QrLinkInput {
+  slug?: string;
+  label?: string;
+  destination?: QrDestinationInput;
+  fallback?: QrDestinationInput | null;
+  active?: boolean;
+  archived?: boolean;
+}
+export interface QrEventCode {
+  id: number;
+  title: string;
+  city: string | null;
+  status: string;
+  starts_at: string | null;
+  short_url: string;
+  scan_count: number;
+  rsvp_count: number;
+  last_scanned_at: string | null;
+}
+export interface QrDestinationOption {
+  value: string;
+  label: string;
+  sub: string | null;
+}
+export interface QrExternalLink {
+  id: number;
+  label: string;
+  url: string;
+  active: boolean;
+}
+export interface QrLinkChange {
+  id: number;
+  action: "created" | "destination" | "fallback" | "label" | "on" | "off" | "archived" | "restored";
+  before: string | null;
+  after: string | null;
+  admin_name: string | null;
+  created_at: string;
+}
+export interface QrLinkInsights {
+  days: { day: string; scans: number }[];
+  destinations: { ref: string; label: string; scans: number }[];
+  changes: QrLinkChange[];
+}
+
+// ── Scorecards (admin, SCORECARD_ENABLED) ──────────────────────────────────
+export type ScorecardKind = "lead_rep" | "coordinator" | "affiliate";
+export type ScorecardSubjectType = "affiliate" | "contractor";
+export type ScorecardColor = "green" | "yellow" | "orange" | "red" | "none";
+
+export interface ScorecardItem {
+  ref: string;
+  label: string;
+  /** null = not due yet (not graded). */
+  ok: boolean | null;
+  detail?: string | null;
+}
+
+export interface ScorecardMetric {
+  key: string;
+  weight: number;
+  target: number;
+  unit: "pct" | "count";
+  met: number;
+  total: number;
+  value: number | null;
+  score: number | null;
+  goal?: number;
+  items?: ScorecardItem[];
+}
+
+export interface ScorecardWeekPoint {
+  week_start: string;
+  score: number | null;
+  grade: string | null;
+  color: ScorecardColor;
+  termination_review: boolean;
+  final: boolean;
+}
+
+export interface ScorecardBoardRow extends ScorecardWeekPoint {
+  subject_type: ScorecardSubjectType;
+  subject_id: number;
+  name: string;
+  company: string | null;
+  avatar_url: string | null;
+  scorecard: ScorecardKind;
+  metrics: ScorecardMetric[];
+  trend: ScorecardWeekPoint[];
+}
+
+export type ScorecardActionKind = "coaching_note" | "meeting" | "written_warning" | "termination_review" | "note";
+
+export interface ScorecardAction {
+  id: number;
+  subject_type: ScorecardSubjectType;
+  subject_id: number;
+  subject_name: string | null;
+  scorecard: ScorecardKind;
+  week_start: string;
+  kind: ScorecardActionKind;
+  auto: boolean;
+  /** Automatic notes: comma-separated weakest metric keys. Manual notes: the text. */
+  body: string | null;
+  resolution: string | null;
+  status: "open" | "done";
+  created_by: string | null;
+  completed_by: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface ScorecardBoard {
+  week_start: string;
+  weeks: string[];
+  items: ScorecardBoardRow[];
+  open_actions: ScorecardAction[];
+}
+
+export type ScorecardActivityKind = "call_attempt" | "contacted" | "next_step" | "status_review" | "homeowner_update" | "event_held";
+
+export interface ScorecardActivity {
+  id: number;
+  kind: ScorecardActivityKind;
+  outcome: "answered" | "no_answer" | "voicemail" | null;
+  lead_id: number | null;
+  lead_name: string | null;
+  project_public_id: string | null;
+  note: string | null;
+  occurred_at: string;
+  by: string | null;
+}
+
+export interface ScorecardDetail {
+  subject: {
+    type: ScorecardSubjectType;
+    id: number;
+    name: string;
+    company: string | null;
+    email: string | null;
+    phone: string | null;
+    avatar_url: string | null;
+    status: string;
+    roles: ScorecardKind[];
+  };
+  weeks: string[];
+  cards: { scorecard: ScorecardKind; weeks: (ScorecardWeekPoint & { metrics: ScorecardMetric[] })[] }[];
+  actions: ScorecardAction[];
+  time_off: { id: number; starts_on: string; ends_on: string; label: string | null }[];
+  activities: ScorecardActivity[];
+  leads: { id: number; name: string; phone: string | null; email: string | null; status: string; assigned_at: string | null }[];
+  projects: { public_id: string; milestone: string; name: string; address: string | null }[];
+}
+
+export interface ScorecardActivityInput {
+  kind: ScorecardActivityKind;
+  outcome?: "answered" | "no_answer" | "voicemail";
+  lead_id?: number;
+  project_public_id?: string;
+  note?: string;
+  occurred_at?: string;
+}
+
+export interface ScorecardLeadHit {
+  id: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  status: string;
+  contractor_id: number | null;
+  contractor_name: string | null;
+}
+
+export interface ProjectTracking {
+  contractor_id: number | null;
+  plans: { id: number; title: string; due_on: string; delivered_at: string | null }[];
+  corrections: { id: number; received_on: string; resolved_on: string | null; note: string | null }[];
+  targets: { milestone: string; due_on: string; reached_at: string | null }[];
+  last_status_review_at: string | null;
+  last_homeowner_update_at: string | null;
 }

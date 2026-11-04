@@ -22,11 +22,12 @@ import { cn } from "@/lib/cn";
 const TEMPLATE_ROLES = new Set(["super_admin", "admin", "agent"]);
 const SAMPLE = buildConversationMergeVars({ first_name: "Maria", last_name: "Lopez", phone: "(951) 555-0101", client_status: "Prospect" });
 
-type Draft = { id: number | null; title: string; category: ConversationTemplateCategory; body_en: string; body_es: string };
-const EMPTY: Draft = { id: null, title: "", category: "general", body_en: "", body_es: "" };
+type Channel = "sms" | "email";
+type Draft = { id: number | null; channel: Channel; title: string; category: ConversationTemplateCategory; subject_en: string; subject_es: string; body_en: string; body_es: string };
+const EMPTY: Draft = { id: null, channel: "sms", title: "", category: "general", subject_en: "", subject_es: "", body_en: "", body_es: "" };
 
 /** Textarea with {{variable}} chips that insert at the caret (same tokens the composer fills). */
-function VarTextarea({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+function VarTextarea({ label, value, onChange, sms = true }: { label: string; value: string; onChange: (v: string) => void; sms?: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const insert = (key: string) => {
     const el = ref.current;
@@ -51,9 +52,11 @@ function VarTextarea({ label, value, onChange }: { label: string; value: string;
             {`{{${v.key}}}`}
           </button>
         ))}
-        <span className="pf-hint gw-tpl-seg">
-          {seg.length} · {seg.segments} SMS
-        </span>
+        {sms ? (
+          <span className="pf-hint gw-tpl-seg">
+            {seg.length} · {seg.segments} SMS
+          </span>
+        ) : null}
       </div>
     </label>
   );
@@ -74,13 +77,14 @@ export default function AdminTemplates() {
   const canManage = TEMPLATE_ROLES.has(String(me?.role || ""));
   const [q, setQ] = useState("");
   const [cat, setCat] = useState<ConversationTemplateCategory | "">("");
+  const [channel, setChannel] = useState<Channel>("sms");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [previewLang, setPreviewLang] = useState<"en" | "es">("en");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void dispatch(fetchConversationTemplates({ all: true }));
+    void dispatch(fetchConversationTemplates({ all: true, channel: "all" }));
   }, [dispatch]);
 
   // "Save as template" from the message box: /admin/templates?new=1&body=…
@@ -94,22 +98,38 @@ export default function AdminTemplates() {
   const list = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return [...templates]
+      .filter((x) => (x.channel || "sms") === channel)
       .filter((x) => !cat || (x.category || "general") === cat)
       .filter((x) => !needle || `${x.title} ${x.body_en} ${x.body_es || ""}`.toLowerCase().includes(needle))
       .sort((a, b) => Number(b.is_active) - Number(a.is_active) || (b.usage_count || 0) - (a.usage_count || 0) || a.title.localeCompare(b.title));
-  }, [templates, q, cat]);
+  }, [templates, q, cat, channel]);
 
   const openEdit = (x: ConversationTemplate) =>
-    setDraft({ id: x.id, title: x.title, category: (x.category || "general") as ConversationTemplateCategory, body_en: x.body_en, body_es: x.body_es || "" });
+    setDraft({
+      id: x.id,
+      channel: (x.channel || "sms") as Channel,
+      title: x.title,
+      category: (x.category || "general") as ConversationTemplateCategory,
+      subject_en: x.subject_en || "",
+      subject_es: x.subject_es || "",
+      body_en: x.body_en,
+      body_es: x.body_es || "",
+    });
 
   const save = async () => {
     if (!draft) return;
     setBusy(true);
     setError(null);
     try {
-      const body = { title: draft.title.trim(), category: draft.category, body_en: draft.body_en.trim(), body_es: draft.body_es.trim() || null };
+      const body = {
+        title: draft.title.trim(),
+        category: draft.category,
+        body_en: draft.body_en.trim(),
+        body_es: draft.body_es.trim() || null,
+        ...(draft.channel === "email" ? { subject_en: draft.subject_en.trim() || null, subject_es: draft.subject_es.trim() || null } : {}),
+      };
       if (draft.id) await dispatch(updateConversationTemplate({ id: draft.id, ...body })).unwrap();
-      else await dispatch(createConversationTemplate(body)).unwrap();
+      else await dispatch(createConversationTemplate({ ...body, channel: draft.channel })).unwrap();
       setDraft(null);
     } catch (e) {
       setError(typeof e === "string" ? e : "errors.server");
@@ -125,12 +145,20 @@ export default function AdminTemplates() {
         leadKey="templates.lead"
         actions={
           canManage ? (
-            <button type="button" className="button button-gold" onClick={() => setDraft({ ...EMPTY })}>
+            <button type="button" className="button button-gold" onClick={() => setDraft({ ...EMPTY, channel })}>
               <Plus size={16} /> {t("templates.new")}
             </button>
           ) : undefined
         }
       />
+      <div className="gw-tpl-channels" role="tablist" aria-label={t("templates.channel")}>
+        {(["sms", "email"] as const).map((c) => (
+          <button key={c} type="button" role="tab" aria-selected={channel === c} className={cn("gw-tpl-channel", channel === c && "is-active")} onClick={() => setChannel(c)}>
+            {t(`templates.channel_${c}`)}
+            <span className="gw-tpl-channel__n">{templates.filter((x) => (x.channel || "sms") === c).length}</span>
+          </button>
+        ))}
+      </div>
       <div className="pf-filters">
         <label className="gw-tpl-search">
           <Search size={15} aria-hidden />
@@ -154,6 +182,7 @@ export default function AdminTemplates() {
               <strong>{x.title}</strong>
               <span className="pf-badge pf-badge--muted">{t(`templates.cat.${x.category || "general"}`)}</span>
             </div>
+            {x.channel === "email" && x.subject_en ? <p className="gw-tpl-card__subject">{applyConversationTemplateVars(x.subject_en, SAMPLE)}</p> : null}
             <p className="gw-tpl-card__body">{applyConversationTemplateVars(x.body_en, SAMPLE)}</p>
             {x.body_es ? <p className="gw-tpl-card__body is-es">ES · {applyConversationTemplateVars(x.body_es, SAMPLE)}</p> : null}
             <div className="gw-tpl-card__foot">
@@ -206,8 +235,20 @@ export default function AdminTemplates() {
                 </select>
               </label>
             </div>
-            <VarTextarea label={t("conversations.templateBodyEn")} value={draft.body_en} onChange={(v) => setDraft({ ...draft, body_en: v })} />
-            <VarTextarea label={t("conversations.templateBodyEs")} value={draft.body_es} onChange={(v) => setDraft({ ...draft, body_es: v })} />
+            {draft.channel === "email" ? (
+              <div className="pf-form-grid">
+                <label className="pf-field">
+                  <span>{t("templates.subjectEn")}</span>
+                  <input value={draft.subject_en} maxLength={300} onChange={(e) => setDraft({ ...draft, subject_en: e.target.value })} />
+                </label>
+                <label className="pf-field">
+                  <span>{t("templates.subjectEs")}</span>
+                  <input value={draft.subject_es} maxLength={300} onChange={(e) => setDraft({ ...draft, subject_es: e.target.value })} />
+                </label>
+              </div>
+            ) : null}
+            <VarTextarea sms={draft.channel === "sms"} label={t("conversations.templateBodyEn")} value={draft.body_en} onChange={(v) => setDraft({ ...draft, body_en: v })} />
+            <VarTextarea sms={draft.channel === "sms"} label={t("conversations.templateBodyEs")} value={draft.body_es} onChange={(v) => setDraft({ ...draft, body_es: v })} />
             <div className="gw-tpl-preview">
               <div className="gw-tpl-preview__head">
                 <FileText size={14} aria-hidden /> {t("templates.preview")}
@@ -224,7 +265,14 @@ export default function AdminTemplates() {
             </div>
             <div className="pf-actions">
               <button type="button" className="pf-btn" onClick={() => setDraft(null)}>{t("pf.cancel")}</button>
-              <BusyButton tone="gold" className="pf-submit" label={t("pf.save")} busy={busy} disabled={!draft.title.trim() || !draft.body_en.trim()} onClick={() => void save()} />
+              <BusyButton
+                tone="gold"
+                className="pf-submit"
+                label={t("pf.save")}
+                busy={busy}
+                disabled={!draft.title.trim() || !draft.body_en.trim() || (draft.channel === "email" && !draft.subject_en.trim())}
+                onClick={() => void save()}
+              />
             </div>
           </div>
         ) : null}

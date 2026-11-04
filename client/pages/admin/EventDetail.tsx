@@ -12,6 +12,7 @@ import {
   deleteAdminEvent,
   fetchAdminEventAttendees,
   fetchAdminEventDetail,
+  fetchEventRsvpFlows,
   updateAdminEvent,
   type AdminEventAttendee,
 } from "@/store/slices/adminPortalSlice";
@@ -83,6 +84,7 @@ const toValues = (e: MarketingEvent) => ({
   cta_es: e.cta_es || "",
   body_en: e.body_en || "",
   body_es: e.body_es || "",
+  rsvp_flow_id: e.rsvp_flow_id == null ? "" : String(e.rsvp_flow_id),
 });
 
 export default function AdminEventDetail() {
@@ -94,6 +96,7 @@ export default function AdminEventDetail() {
   const fmt = useFormatters();
   const { data, loading, error } = useAppSelector((s) => s.adminPortal.eventDetail);
   const attendees = useAppSelector((s) => s.adminPortal.eventAttendees);
+  const rsvpFlows = useAppSelector((s) => s.adminPortal.eventRsvpFlows.data) ?? [];
   const { saving, saveError } = useAppSelector((s) => s.adminPortal);
   const canWrite = useAdminCan("events");
   const [saved, setSaved] = useState(false);
@@ -114,7 +117,10 @@ export default function AdminEventDetail() {
     dispatch(clearAdminEvent());
     setSaved(false);
     setOffset(0);
-    if (validId) void dispatch(fetchAdminEventDetail(id));
+    if (validId) {
+      void dispatch(fetchAdminEventDetail(id));
+      void dispatch(fetchEventRsvpFlows());
+    }
     return () => {
       dispatch(clearAdminEvent());
     };
@@ -355,6 +361,7 @@ export default function AdminEventDetail() {
                       cta_es: textOrNull(v.cta_es),
                       body_en: textOrNull(v.body_en),
                       body_es: textOrNull(v.body_es),
+                      rsvp_flow_id: v.rsvp_flow_id ? Number(v.rsvp_flow_id) : null,
                     },
                   }),
                 );
@@ -410,6 +417,23 @@ export default function AdminEventDetail() {
                 </div>
                 <CheckField name="waitlist_enabled" labelKey="admin.waitlistEnabled" disabled={!canWrite} />
                 <p className="pf-muted">{t("admin.capacityHelp")}</p>
+
+                <h3 className="pf-h3">{t("admin.eventSectionAutomation")}</h3>
+                <div className="pf-form-grid">
+                  <SelectField
+                    name="rsvp_flow_id"
+                    labelKey="admin.eventRsvpFlow"
+                    options={[
+                      { value: "", label: t("admin.eventRsvpFlowNone") },
+                      ...rsvpFlows.map((f) => ({
+                        value: String(f.id),
+                        label: f.is_active ? f.name : t("admin.eventRsvpFlowOff", { name: f.name }),
+                      })),
+                    ]}
+                    disabled={!canWrite}
+                  />
+                </div>
+                <p className="pf-muted">{t("admin.eventRsvpFlowHelp")}</p>
 
                 <h3 className="pf-h3">{t("admin.eventSectionVenue")}</h3>
                 <div className="pf-form-grid">

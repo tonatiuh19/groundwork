@@ -1,10 +1,14 @@
 import { useEffect, useState, useRef } from "react";
+import AutomaticMessagesPanel from "@/components/admin/AutomaticMessagesPanel";
+import PersonFlowsPanel from "@/components/admin/PersonFlowsPanel";
+import LenderSelectWithCard from "@/components/admin/LenderSelectWithCard";
+import { fetchLenders } from "@/store/slices/schedulerSlice";
 import LastContactStrip from "@/components/admin/LastContactStrip";
 import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
-import { ArchiveRestore, Check, Mail, MailWarning, MessageSquare, PencilLine, Phone, UserRound } from "lucide-react";
+import { ArchiveRestore, Check, Handshake, Mail, MailWarning, MessageSquare, PencilLine, Phone, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -39,6 +43,7 @@ import { useAdminCan } from "@/hooks/useAdminCan";
 import PersonConflictNotice from "@/components/portal/PersonConflictNotice";
 import ClientDealPanel from "@/components/admin/ClientDealPanel";
 import RevertClientModal from "@/components/admin/RevertClientModal";
+import MoveToAffiliateModal from "@/components/admin/MoveToAffiliateModal";
 import AppointmentsPanel from "@/components/admin/AppointmentsPanel";
 import { DetailList, SideDrawer } from "@/components/portal/SideDrawer";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
@@ -60,6 +65,7 @@ type ClientForm = {
   assigned_admin_id: string;
   preferred_language: string;
   admin_notes: string;
+  lender_id: string;
 };
 
 export default function AdminClientDetail() {
@@ -73,6 +79,7 @@ export default function AdminClientDetail() {
   const { saving, saveError } = useAppSelector((s) => s.adminPortal);
   const affiliates = useAppSelector((s) => s.adminPortal.affiliates.items);
   const assignees = useAppSelector((s) => s.adminPortal.assignees.items);
+  const lenders = useAppSelector((s) => s.scheduler.lenders);
   const canWrite = useAdminCan("people.write");
   const canApprove = useAdminCan("approvals");
   const [invited, setInvited] = useState(false);
@@ -85,6 +92,7 @@ export default function AdminClientDetail() {
   const [pendingValues, setPendingValues] = useState<ClientForm | null>(null);
   const [demoteBusy, setDemoteBusy] = useState(false);
   const [revertOpen, setRevertOpen] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
@@ -96,6 +104,7 @@ export default function AdminClientDetail() {
     void dispatch(fetchAdminClientDetail(id));
     void dispatch(fetchAdminAffiliates({ limit: 100 }));
     void dispatch(fetchAdminAssignees());
+    void dispatch(fetchLenders());
   }, [dispatch, id]);
 
   const c = data?.id === id ? data : null;
@@ -138,6 +147,7 @@ export default function AdminClientDetail() {
           zip: v.zip.trim() || null,
           affiliate_id: idOrNull(v.affiliate_id),
           assigned_admin_id: idOrNull(v.assigned_admin_id),
+          lender_id: idOrNull(v.lender_id),
           preferred_language: v.preferred_language,
           admin_notes: v.admin_notes.trim() || null,
         },
@@ -254,17 +264,27 @@ export default function AdminClientDetail() {
                     {t("clientRevert.open")}
                   </button>
                 ) : null}
+                {canApprove ? (
+                  <button type="button" className="pf-btn pf-btn--sm" title={t("moveToAffiliate.openHint")} onClick={() => setMoveOpen(true)}>
+                    <Handshake size={14} aria-hidden />
+                    {t("moveToAffiliate.open")}
+                  </button>
+                ) : null}
               </>
             }
           />
-          <LastContactStrip phone={c.phone} name={`${c.first_name} ${c.last_name}`.trim()} />
+          <LastContactStrip phone={c.phone} email={c.email} name={`${c.first_name} ${c.last_name}`.trim()} />
           {canApprove ? (
-            <RevertClientModal clientId={c.id} open={revertOpen} onClose={() => setRevertOpen(false)} />
+            <>
+              <RevertClientModal clientId={c.id} open={revertOpen} onClose={() => setRevertOpen(false)} />
+              <MoveToAffiliateModal clientId={c.id} open={moveOpen} onClose={() => setMoveOpen(false)} />
+            </>
           ) : null}
 
           <div className="pf-stats">
             <StatCard labelKey="portalNav.projects" value={c.project_count} />
             <StatCard labelKey="admin.affiliate" value={c.affiliate_name || "—"} />
+            <StatCard labelKey="lenders.lender" value={c.lender_company || "—"} />
             <StatCard labelKey="admin.lastLogin" value={fmt.date(c.last_login_at)} />
             <StatCard labelKey="pf.created" value={fmt.date(c.created_at)} />
             <StatCard
@@ -327,6 +347,9 @@ export default function AdminClientDetail() {
             />
           </section>
 
+          <AutomaticMessagesPanel kind="client" id={c.id} />
+          <PersonFlowsPanel kind="client" id={c.id} />
+
           <SideDrawer
             open={editOpen}
             onClose={() => setEditOpen(false)}
@@ -373,6 +396,7 @@ export default function AdminClientDetail() {
                 assigned_admin_id: c.assigned_admin_id ? String(c.assigned_admin_id) : "",
                 preferred_language: c.preferred_language || "en",
                 admin_notes: c.admin_notes || "",
+                lender_id: c.lender_id ? String(c.lender_id) : "",
               }}
               validationSchema={schema}
               onSubmit={async (v) => {
@@ -471,6 +495,8 @@ export default function AdminClientDetail() {
                     />
                   </div>
                   <p className="pf-muted">{t("admin.affiliateLockHelp")}</p>
+                  <LenderSelectWithCard name="lender_id" lenders={lenders} currentId={c.lender_id ?? null} disabled={!canWrite} />
+                  <p className="pf-muted">{t("lenders.clientHelp")}</p>
                 </section>
                 <section className="gw-drawer-section">
                   <h3 className="gw-drawer-section__title">{t("admin.internalNotes")}</h3>

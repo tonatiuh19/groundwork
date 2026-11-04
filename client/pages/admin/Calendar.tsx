@@ -177,6 +177,7 @@ export default function AdminCalendar() {
                       title={a.title}
                     >
                       <span>{formatApptTime(a.starts_at, a.timezone, lang)}</span> {a.client_name || a.lead_name || a.title}
+                      {a.source === "outlook" ? <span className="gw-outlook-dot" aria-label={t("appt.outlookTag")} /> : null}
                     </button>
                   ))}
                   {items.length > 3 ? <span className="gw-cal-more">{t("calendar.more", { count: items.length - 3 })}</span> : null}
@@ -202,7 +203,9 @@ export default function AdminCalendar() {
                 <button type="button" className={cn("gw-appt-item", a.status === "cancelled" && "is-cancelled")} onClick={() => setDrawer({ open: true, appt: a })}>
                   <span className={cn("gw-appt-item__dot", `is-${a.kind}`)} aria-hidden />
                   <span className="gw-appt-item__main">
-                    <strong>{a.title}</strong>
+                    <strong>
+                      {a.title} {a.source === "outlook" ? <span className="gw-outlook-tag">{t("appt.outlookTag")}</span> : null}
+                    </strong>
                     <span>{formatApptRange(a.starts_at, a.ends_at, a.timezone, lang)}</span>
                     {a.location ? (
                       <span className="gw-appt-item__meta">

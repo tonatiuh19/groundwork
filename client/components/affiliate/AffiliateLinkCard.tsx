@@ -1,25 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import QRCode from "qrcode";
 import { useTranslation } from "react-i18next";
 import { ArrowUpRight, Check, Copy, Download, FileText, MousePointerClick, QrCode, Sparkles, Users } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAffiliateLink } from "@/store/slices/affiliateLinkSlice";
-import EventQrCode, { QR_OPTIONS } from "@/components/events/EventQrCode";
+import EventQrCode from "@/components/events/EventQrCode";
+import { downloadBrandQr } from "@/lib/brandQr";
 import { Loading } from "@/components/portal/kit";
 import { logger } from "@/utils/logger";
 import { cn } from "@/lib/cn";
 
 type LinkLang = "en" | "es";
-
-function saveFile(href: string, name: string) {
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
 
 /**
  * The affiliate's link as a branded "business card": short link, EN/ES
@@ -39,6 +30,7 @@ export default function AffiliateLinkCard({ variant = "hero" }: { variant?: "her
   }, [dispatch, info]);
 
   if (!info) return loading ? <Loading /> : null;
+  // One link for everyone: the landing asks visitors whether they're a homeowner or a partner.
   const url = info.urls[lang];
   const shown = `${info.display}${lang === "es" ? "?lang=es" : ""}`;
   const copy = async () => {
@@ -53,13 +45,7 @@ export default function AffiliateLinkCard({ variant = "hero" }: { variant?: "her
   const name = info.slug || info.referral_code;
   const downloadQr = async (kind: "png" | "svg") => {
     try {
-      if (kind === "png") saveFile(await QRCode.toDataURL(url, { ...QR_OPTIONS, width: 1600 }), `groundwork-${name}-${lang}-qr.png`);
-      else {
-        const svg = await QRCode.toString(url, { ...QR_OPTIONS, type: "svg" });
-        const href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-        saveFile(href, `groundwork-${name}-${lang}-qr.svg`);
-        setTimeout(() => URL.revokeObjectURL(href), 1000);
-      }
+      await downloadBrandQr(url, kind, `groundwork-${name}-${lang}-qr`);
     } catch (e) {
       logger.warn("QR download failed", e);
     }
@@ -87,7 +73,9 @@ export default function AffiliateLinkCard({ variant = "hero" }: { variant?: "her
             {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />} {copied ? t("affLink.copied") : t("affLink.copy")}
           </span>
         </button>
-        <p className="gw-linkcard__hint">{lang === "es" ? t("affLink.hintEs") : t("affLink.hintEn")}</p>
+        <p className="gw-linkcard__hint">
+          {t("affLink.linkHint")} {lang === "es" ? t("affLink.hintEs") : t("affLink.hintEn")}
+        </p>
         {variant === "hero" ? (
           <dl className="gw-linkcard__stats">
             <div>

@@ -31,6 +31,8 @@ import AffiliateSignup from "./pages/auth/AffiliateSignup";
 import ContractorSignup from "./pages/auth/ContractorSignup";
 import ContractorApply from "./pages/contractor/Apply";
 import ContractorInvite from "./pages/auth/ContractorInvite";
+import LegalPage from "./pages/LegalPage";
+import AgreementSign from "./pages/AgreementSign";
 import ClientInvite from "./pages/auth/ClientInvite";
 import Start from "./pages/Start";
 import ReferralLanding from "./pages/ReferralLanding";
@@ -41,9 +43,23 @@ import BillingCardLinkPage from "./pages/billing/CardLink";
 import AdminDashboard from "./pages/admin/Dashboard";
 import AdminLeads from "./pages/admin/Leads";
 import AdminEvents from "./pages/admin/Events";
+import AdminQrCodes from "./pages/admin/QrCodes";
+import AdminCityPartners from "./pages/admin/CityPartners";
+import AdminCityPartnerDetail from "./pages/admin/CityPartnerDetail";
+import AdminCityPipeline, { CityPipelineCity as AdminCityPipelineCity } from "./pages/admin/CityPipeline";
+import CityLayout from "./pages/city/CityLayout";
+import CityAgreement from "./pages/city/CityAgreement";
+import CityProfile from "./pages/city/CityProfile";
+import { CityCities, CityCityDetail, CityClients, CityDashboard, CityFees, CityLogin } from "./pages/city/CityPages";
+import AdminScorecards from "./pages/admin/Scorecards";
+import AdminScorecardDetail from "./pages/admin/ScorecardDetail";
+import ScorecardGate from "./components/scorecard/ScorecardGate";
 import AdminCalendar from "./pages/admin/Calendar";
+import AdminMail from "./pages/admin/Mail";
 import AdminEventDetail from "./pages/admin/EventDetail";
 import AdminTemplates from "./pages/admin/Templates";
+import AdminFlows from "./pages/admin/Flows";
+import AdminFlowDetail from "./pages/admin/FlowDetail";
 import AdminProjects from "./pages/admin/Projects";
 import AdminProjectDetail from "./pages/admin/ProjectDetail";
 import AdminClients from "./pages/admin/Clients";
@@ -132,6 +148,7 @@ export default function App() {
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/admin/mcp-consent" element={<AdminMcpConsent />} />
             <Route path="/affiliate/login" element={<AffiliateLogin />} />
+            <Route path="/city/login" element={<CityLogin />} />
             <Route path="/affiliate/signup" element={<AffiliateSignup />} />
             <Route path="/contractor/login" element={<ContractorLogin />} />
             <Route path="/contractor/signup" element={<ContractorSignup />} />
@@ -143,15 +160,29 @@ export default function App() {
             <Route path="/client/login" element={<ClientLogin />} />
             <Route path="/client/signup" element={<Start canonical="/client/signup" />} />
             <Route path="/client/invite/:token" element={<ClientInvite />} />
+            <Route path="/sign/agreement/:token" element={<AgreementSign />} />
+            <Route path="/terms" element={<LegalPage slug="terms" />} />
+            <Route path="/privacy" element={<LegalPage slug="privacy" />} />
+            <Route path="/refund-policy" element={<LegalPage slug="refunds" />} />
 
             <Route path="/admin" element={<AdminLayout />}>
               <Route index element={<AdminDashboard />} />
               <Route path="profile" element={<AdminProfile />} />
               <Route path="leads" element={<AdminLeads />} />
               <Route path="events" element={<AdminEvents />} />
+              <Route path="qr-codes" element={<AdminQrCodes />} />
+              <Route path="city-partners" element={<AdminCityPartners />} />
+              <Route path="city-partners/:id" element={<AdminCityPartnerDetail />} />
+              <Route path="city-pipeline" element={<AdminCityPipeline />} />
+              <Route path="city-pipeline/:id" element={<AdminCityPipelineCity />} />
+              <Route path="scorecards" element={<ScorecardGate><AdminScorecards /></ScorecardGate>} />
+              <Route path="scorecards/:type/:id" element={<ScorecardGate><AdminScorecardDetail /></ScorecardGate>} />
               <Route path="calendar" element={<AdminCalendar />} />
+              <Route path="mail" element={<AdminMail />} />
               <Route path="events/:id" element={<AdminEventDetail />} />
               <Route path="templates" element={<AdminTemplates />} />
+              <Route path="flows" element={<AdminFlows />} />
+              <Route path="flows/:id" element={<AdminFlowDetail />} />
               <Route path="campaigns" element={<AdminCampaigns />} />
               <Route path="projects" element={<AdminProjects />} />
               <Route
@@ -182,6 +213,15 @@ export default function App() {
             {/* Welcome link from the signup email / text (no login; token-scoped). */}
             <Route path="/affiliate/welcome" element={<AffiliateWelcome />} />
             <Route path="/affiliate/welcome/:token" element={<AffiliateWelcome />} />
+            <Route path="/city" element={<CityLayout />}>
+              <Route index element={<CityDashboard />} />
+              <Route path="cities" element={<CityCities />} />
+              <Route path="cities/:id" element={<CityCityDetail />} />
+              <Route path="clients" element={<CityClients />} />
+              <Route path="fees" element={<CityFees />} />
+              <Route path="agreement" element={<CityAgreement />} />
+              <Route path="profile" element={<CityProfile />} />
+            </Route>
             <Route path="/affiliate" element={<AffiliateLayout />}>
               <Route index element={<AffiliateDashboard />} />
               <Route path="clients" element={<AffiliateClients />} />

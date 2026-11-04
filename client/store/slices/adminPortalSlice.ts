@@ -29,6 +29,7 @@ import type {
   EventRegistrationStatus,
   LeadConvertPhoneMatch,
   MarketingEvent,
+  EventRsvpFlow,
   ProjectDraw,
   ProjectMilestone,
 } from "@shared/api";
@@ -109,6 +110,7 @@ type AdminState = {
   plans: ListState<AduPlan>;
   projectDetail: SingleState<AdminProjectDetail>;
   eventDetail: SingleState<MarketingEvent>;
+  eventRsvpFlows: SingleState<EventRsvpFlow[]>;
   clientDetail: SingleState<AdminClient>;
   affiliateDetail: SingleState<AdminAffiliate>;
   contractorDetail: SingleState<AdminContractor>;
@@ -152,6 +154,7 @@ const initialState: AdminState = {
       contractor_id: "",
       assigned_admin_id: "",
       loan_status: "",
+      city_id: "",
     },
     movingId: null,
   },
@@ -162,6 +165,7 @@ const initialState: AdminState = {
   plans: list(),
   projectDetail: single(),
   eventDetail: single(),
+  eventRsvpFlows: single(),
   clientDetail: single(),
   affiliateDetail: single(),
   contractorDetail: single(),
@@ -191,6 +195,7 @@ export type AdminListFilter = {
   contractor_id?: string | number;
   assigned_admin_id?: string | number;
   loan_status?: string;
+  city_id?: string;
   /** Leads: `event` | `standard`. */
   mode?: string;
   /** Leads: `active` (default on the Leads page) | `converted` | `all`. */
@@ -232,6 +237,12 @@ export const fetchAdminEvents = createApiThunk<Page<MarketingEvent>, Filter>(
     const { data } = await api.get("/admin/events", params(f));
     return page<MarketingEvent>(data.events, data.total);
   },
+);
+/** Automations an event can start on RSVP (Event RSVP trigger). */
+export const fetchEventRsvpFlows = createApiThunk<EventRsvpFlow[], void>(
+  "adminPortal/eventRsvpFlows",
+  A,
+  async () => (await api.get<{ flows: EventRsvpFlow[] }>("/admin/events/rsvp-flows")).data.flows,
 );
 export const fetchAdminEventDetail = createApiThunk<MarketingEvent, number>(
   "adminPortal/eventDetail",
@@ -598,6 +609,7 @@ type SingleKey =
   | "dashboard"
   | "projectDetail"
   | "eventDetail"
+  | "eventRsvpFlows"
   | "clientDetail"
   | "affiliateDetail"
   | "contractorDetail"
@@ -700,6 +712,7 @@ const adminPortalSlice = createSlice({
     bindSingle(builder, "dashboard", fetchAdminDashboard);
     bindSingle(builder, "projectDetail", fetchAdminProject);
     bindSingle(builder, "eventDetail", fetchAdminEventDetail);
+    bindSingle(builder, "eventRsvpFlows", fetchEventRsvpFlows);
     bindSingle(builder, "clientDetail", fetchAdminClientDetail);
     bindSingle(builder, "affiliateDetail", fetchAdminAffiliateDetail);
     bindSingle(builder, "contractorDetail", fetchAdminContractorDetail);

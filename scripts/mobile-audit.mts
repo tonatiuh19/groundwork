@@ -40,6 +40,10 @@ try {
         `${prefix}ana`,
       ]),
     ),
+    gw_city_sid: await session(
+      "city_partner",
+      await ins(`INSERT INTO city_partners (email, first_name, last_name, company) VALUES (?, 'Cy', 'Audit', 'Audit LLC')`, [`${prefix}city@example.com`]),
+    ),
     gw_contractor_sid: await session(
       "contractor",
       await ins(`INSERT INTO contractors (email, first_name, last_name, status, preferred_language, activated_at) VALUES (?, 'Cal', 'Audit', 'active', 'en', NOW())`, [`${prefix}ctr@example.com`]),
@@ -51,14 +55,20 @@ try {
   const a = await first(`SELECT id FROM affiliates WHERE email NOT LIKE 'gw%' ORDER BY id DESC LIMIT 1`);
   const k = await first(`SELECT id FROM contractors WHERE email NOT LIKE 'gw%' ORDER BY id DESC LIMIT 1`);
   const p = await first(`SELECT public_id FROM projects ORDER BY id DESC LIMIT 1`);
+  const fl = await first(`SELECT id FROM reminder_flows WHERE system_key IS NOT NULL ORDER BY id LIMIT 1`);
   const pages = [
-    ...["", "leads", "calendar", "events", "campaigns", "conversations", "templates", "contacts", "projects", "clients", "affiliates", "contractors", "draws", "commissions", "billing", "staff", "settings", "profile", "plans"].map((x) => `/admin/${x}`),
+    ...["", "leads", "calendar", "events", "campaigns", "conversations", "templates", "contacts", "projects", "clients", "affiliates", "contractors", "draws", "commissions", "billing", "staff", "settings", "profile", "plans", "flows", "qr-codes", "scorecards"].map((x) => `/admin/${x}`),
     ...(c ? [`/admin/clients/${c.id}`] : []),
     ...(a ? [`/admin/affiliates/${a.id}`] : []),
     ...(k ? [`/admin/contractors/${k.id}`] : []),
     ...(p ? [`/admin/projects/${p.public_id}`] : []),
+    ...(fl ? [`/admin/flows/${fl.id}`] : []),
+    // Scorecards (redirects to /admin when SCORECARD_ENABLED is off).
+    ...(a ? [`/admin/scorecards/affiliate/${a.id}`] : []),
     ...["", "clients", "team", "commissions", "link", "agreement", "help", "profile", "appointments"].map((x) => `/affiliate/${x}`),
     ...["", "projects", "appointments", "photos", "draws"].map((x) => `/contractor/${x}`),
+    ...["city-partners", "city-pipeline"].map((x) => `/admin/${x}`),
+    ...["", "cities", "clients", "fees", "agreement", "profile"].map((x) => `/city/${x}`),
   ];
 
   const browser = await chromium.launch();

@@ -8,13 +8,14 @@ import { BusyButton, ErrorNote } from "@/components/portal/kit";
 import { SideDrawer } from "@/components/portal/SideDrawer";
 import { cn } from "@/lib/cn";
 
-type Draft = { id: number | null } & Required<Omit<LenderBody, "contact_name" | "email" | "phone" | "notes">> & {
+type Draft = { id: number | null } & Required<Omit<LenderBody, "contact_name" | "email" | "phone" | "notes" | "nmls_number">> & {
+  nmls_number: string;
   contact_name: string;
   email: string;
   phone: string;
   notes: string;
 };
-export const EMPTY_LENDER: Draft = { id: null, company: "", contact_name: "", email: "", phone: "", preferred_language: "en", notes: "", is_active: true };
+export const EMPTY_LENDER: Draft = { id: null, company: "", contact_name: "", email: "", phone: "", preferred_language: "en", notes: "", is_active: true, nmls_number: "" };
 
 /** Lender editor (drawer) — shared by Settings and the appointment drawer's quick add. */
 export function LenderEditor({ draft, onClose, onSaved }: { draft: Draft | null; onClose: () => void; onSaved?: (lenders: Lender[]) => void }) {
@@ -29,7 +30,7 @@ export function LenderEditor({ draft, onClose, onSaved }: { draft: Draft | null;
     const r = await dispatch(
       saveLender({
         id,
-        body: { ...b, company: b.company.trim(), contact_name: b.contact_name.trim() || null, email: b.email.trim() || null, phone: b.phone.trim() || null, notes: b.notes.trim() || null },
+        body: { ...b, company: b.company.trim(), contact_name: b.contact_name.trim() || null, email: b.email.trim() || null, phone: b.phone.trim() || null, notes: b.notes.trim() || null, nmls_number: b.nmls_number.trim() || null },
       }),
     );
     if (saveLender.fulfilled.match(r)) {
@@ -75,6 +76,10 @@ export function LenderEditor({ draft, onClose, onSaved }: { draft: Draft | null;
               <input type="tel" value={d.phone} maxLength={40} onChange={(e) => setD({ ...d, phone: e.target.value })} />
             </label>
           </div>
+          <label className="pf-field">
+            <span>{t("lenders.nmls")}</span>
+            <input value={d.nmls_number} maxLength={40} onChange={(e) => setD({ ...d, nmls_number: e.target.value })} />
+          </label>
           <label className="pf-field">
             <span>{t("admin.profileLanguage")}</span>
             <select value={d.preferred_language} onChange={(e) => setD({ ...d, preferred_language: e.target.value as "en" | "es" })}>
@@ -123,7 +128,7 @@ export default function LendersPanel({ className }: { className?: string }) {
           <li key={l.id} className={cn(!l.is_active && "is-off")}>
             <div className="gw-faq-admin__text">
               <strong>{l.company}</strong>
-              <span className="pf-muted">{[l.contact_name, l.email, l.phone].filter(Boolean).join(" · ") || "—"}</span>
+              <span className="pf-muted">{[l.contact_name, l.email, l.phone, l.nmls_number ? `NMLS ${l.nmls_number}` : null].filter(Boolean).join(" · ") || "—"}</span>
               <span className="pf-muted">{t("lenders.projects", { count: l.project_count })}</span>
             </div>
             <button
@@ -137,6 +142,7 @@ export default function LendersPanel({ className }: { className?: string }) {
                   contact_name: l.contact_name || "",
                   email: l.email || "",
                   phone: l.phone || "",
+                  nmls_number: l.nmls_number || "",
                   preferred_language: l.preferred_language,
                   notes: l.notes || "",
                   is_active: l.is_active,

@@ -1,3 +1,4 @@
+import CityPickerField from "@/components/CityPickerField";
 import { cameFromQr } from "@/lib/eventQr";
 import { useMemo } from "react";
 import { ArrowRight, Check, Clock } from "lucide-react";
@@ -29,10 +30,8 @@ function makeLeadSchema(t: TFunction, isEvent: boolean) {
       .trim()
       .min(5, t("validation.addressMin"))
       .required(t("validation.addressRequired")),
-    // Event RSVPs never ask for a soft pull — the credit report is a separate next step.
-    soft_pull_consent: isEvent
-      ? Yup.boolean()
-      : Yup.boolean().oneOf([true], t("validation.consent")),
+    // Inquiry / event RSVP: no soft pull here (the free credit report is its own page).
+    soft_pull_consent: Yup.boolean(),
   });
 }
 
@@ -145,7 +144,8 @@ export default function LeadForm({
         phone: "",
         email: "",
         property_address: "",
-        soft_pull_consent: true,
+        city_ids: [] as number[],
+        soft_pull_consent: false,
         sms_marketing_consent: false,
       }}
       validationSchema={schema}
@@ -156,8 +156,9 @@ export default function LeadForm({
             phone: values.phone,
             email: values.email,
             property_address: values.property_address,
-            // Not collected for events; the credit report is a separate CTA.
-            soft_pull_consent: event ? false : values.soft_pull_consent,
+            city_ids: values.city_ids,
+            // Not collected here; the credit report is a separate page.
+            soft_pull_consent: false,
             sms_marketing_consent: values.sms_marketing_consent,
             preferred_language: i18n.language?.startsWith("es") ? "es" : "en",
             mode: event ? "event" : "standard",
@@ -224,22 +225,7 @@ export default function LeadForm({
               <span className="form-error">{errors.property_address}</span>
             ) : null}
           </label>
-          {!isEvent ? (
-            <>
-              <label className="consent">
-                <input
-                  type="checkbox"
-                  name="soft_pull_consent"
-                  checked={values.soft_pull_consent}
-                  onChange={(e) => setFieldValue("soft_pull_consent", e.target.checked)}
-                />
-                <span>{t("form.consent")}</span>
-              </label>
-              {touched.soft_pull_consent && errors.soft_pull_consent ? (
-                <span className="form-error">{errors.soft_pull_consent}</span>
-              ) : null}
-            </>
-          ) : null}
+          <CityPickerField single labelKey="cities.propertyCity" />
           <label className="consent">
             <input
               type="checkbox"

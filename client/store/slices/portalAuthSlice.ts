@@ -28,6 +28,7 @@ const initialState: State = {
   admin: empty(),
   affiliate: empty(),
   contractor: empty(),
+  city: empty(),
   client: empty(),
 };
 

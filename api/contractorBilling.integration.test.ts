@@ -248,17 +248,23 @@ describe.runIf(hasDb)("contractor membership: card in the application, free peri
     await db.execute(`UPDATE contractors SET billing_card_exp = '01/2027', billing_expiry_notice = NULL WHERE id = ?`, [k.id]);
     const mine = () => __testGetEmailDryRuns().filter((m: any) => m.to === em("tess") && /expires soon/.test(String(m.subject)));
     __testClearEmailDryRuns();
-    await runCardExpiryReminders(new Date("2026-12-01T12:00:00Z")); // 61 days out → nothing
+    await runCardExpiryReminders(new Date("2026-12-01T12:00:00Z"), prefix); // 61 days out → nothing
     expect(mine()).toHaveLength(0);
-    await runCardExpiryReminders(new Date("2027-01-12T12:00:00Z"));
-    await runCardExpiryReminders(new Date("2027-01-13T12:00:00Z")); // same threshold → no repeat
+    await runCardExpiryReminders(new Date("2027-01-12T12:00:00Z"), prefix);
+    await runCardExpiryReminders(new Date("2027-01-13T12:00:00Z"), prefix); // same threshold → no repeat
     expect(mine()).toHaveLength(1);
-    await runCardExpiryReminders(new Date("2027-01-28T12:00:00Z"));
+    await runCardExpiryReminders(new Date("2027-01-28T12:00:00Z"), prefix);
     expect(mine()).toHaveLength(2);
     const [[row]] = (await db.query(`SELECT billing_expiry_notice FROM contractors WHERE id = ?`, [k.id])) as any;
     expect(row.billing_expiry_notice).toBe("01/2027:7");
     const c = await session("contractor", Number(k.id));
-    await db.execute(`UPDATE contractors SET billing_card_exp = DATE_FORMAT(NOW() + INTERVAL 10 DAY, '%m/%Y') WHERE id = ?`, [k.id]);
+    // A card ending this month (UTC) is always ≤ 30 days out, except on the 1st of a 31-day
+    // month: then use last month's (already expired, also flagged). Never depends on today's date.
+    const now = new Date();
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const ref = (end.getTime() - now.getTime()) / 86_400_000 > 30 ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15)) : now;
+    const exp = `${String(ref.getUTCMonth() + 1).padStart(2, "0")}/${ref.getUTCFullYear()}`;
+    await db.execute(`UPDATE contractors SET billing_card_exp = ? WHERE id = ?`, [exp, k.id]);
     const me = await request(app).get("/api/contractor/billing").set("Cookie", c).expect(200);
     expect(me.body.billing.card_expiring).toBe(true);
   });

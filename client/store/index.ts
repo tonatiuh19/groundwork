@@ -10,6 +10,8 @@ import clientPortalReducer from "./slices/clientPortalSlice";
 import onboardingReducer from "./slices/onboardingSlice";
 import enrollReducer from "./slices/enrollSlice";
 import publicEventsReducer from "./slices/publicEventsSlice";
+import citiesReducer from "./slices/citiesSlice";
+import cityPartnerReducer from "./slices/cityPartnerSlice";
 import adminMcpReducer from "./slices/adminMcpSlice";
 import conversationsReducer from "./slices/conversationsSlice";
 import contactsReducer from "./slices/contactsSlice";
@@ -29,6 +31,13 @@ import contractorBillingReducer from "./slices/contractorBillingSlice";
 import billingAdminReducer from "./slices/billingAdminSlice";
 import commandCenterReducer from "./slices/commandCenterSlice";
 import recordsReducer from "./slices/recordsSlice";
+import mailReducer from "./slices/mailSlice";
+import notifyRoutingReducer from "./slices/notifyRoutingSlice";
+import flowsReducer from "./slices/flowsSlice";
+import constructionAgreementReducer from "./slices/constructionAgreementSlice";
+import legalReducer from "./slices/legalSlice";
+import qrLinksReducer from "./slices/qrLinksSlice";
+import scorecardsReducer from "./slices/scorecardsSlice";
 import eventMediaReducer from "./slices/eventMediaSlice";
 import affiliateOnboardingReducer from "./slices/affiliateOnboardingSlice";
 import phoneLinesReducer from "./slices/phoneLinesSlice";
@@ -59,6 +68,8 @@ export const store = configureStore({
     onboarding: onboardingReducer,
     enroll: enrollReducer,
     publicEvents: publicEventsReducer,
+    cities: citiesReducer,
+    cityPartner: cityPartnerReducer,
     adminMcp: adminMcpReducer,
     conversations: conversationsReducer,
     contacts: contactsReducer,
@@ -78,6 +89,13 @@ export const store = configureStore({
     billingAdmin: billingAdminReducer,
     commandCenter: commandCenterReducer,
     records: recordsReducer,
+    mail: mailReducer,
+    notifyRouting: notifyRoutingReducer,
+    flows: flowsReducer,
+    constructionAgreement: constructionAgreementReducer,
+    legal: legalReducer,
+    qrLinks: qrLinksReducer,
+    scorecards: scorecardsReducer,
     eventMedia: eventMediaReducer,
     affiliateOnboarding: affiliateOnboardingReducer,
     phoneLines: phoneLinesReducer,

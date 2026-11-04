@@ -15,7 +15,8 @@ import {
  */
 export function createApiThunk<Ret, Arg = void>(
   type: string,
-  actor: PortalActor | null,
+  /** Whose session a 401 expires; a function when one thunk serves several portals. */
+  actor: PortalActor | null | ((arg: Arg) => PortalActor | null),
   fn: (arg: Arg) => Promise<Ret>,
 ) {
   return createAsyncThunk<Ret, Arg, { rejectValue: string }>(
@@ -24,8 +25,9 @@ export function createApiThunk<Ret, Arg = void>(
       try {
         return await fn(arg);
       } catch (error) {
-        if (actor && axios.isAxiosError(error) && error.response?.status === 401) {
-          dispatch(portalSessionExpired(actor));
+        const who = typeof actor === "function" ? actor(arg) : actor;
+        if (who && axios.isAxiosError(error) && error.response?.status === 401) {
+          dispatch(portalSessionExpired(who));
         }
         // One-role-per-person conflicts carry the matched record for <PersonConflictNotice />.
         if (axios.isAxiosError(error) && error.response?.status === 409) {

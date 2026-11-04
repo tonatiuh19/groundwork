@@ -1,3 +1,4 @@
+import citiesReducer from "@/store/slices/citiesSlice";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,6 +13,7 @@ import adminPortalReducer from "@/store/slices/adminPortalSlice";
 import portalAuthReducer from "@/store/slices/portalAuthSlice";
 import personConflictReducer from "@/store/slices/personConflictSlice";
 import duplicatesReducer from "@/store/slices/duplicatesSlice";
+import recordsReducer from "@/store/slices/recordsSlice";
 import AdminLeads from "./Leads";
 
 const user = userEvent.setup();
@@ -51,10 +53,12 @@ function mount(role: "super_admin" | "agent" = "super_admin") {
   };
   const store = configureStore({
     reducer: {
+      cities: citiesReducer,
       adminPortal: adminPortalReducer,
       portalAuth: portalAuthReducer,
       personConflict: personConflictReducer,
       duplicates: duplicatesReducer,
+      records: recordsReducer,
     },
     preloadedState: {
       portalAuth: {
@@ -78,6 +82,7 @@ function mount(role: "super_admin" | "agent" = "super_admin") {
   } as any);
 
   vi.spyOn(api, "get").mockImplementation(async (url: string) => {
+    if (url === "/admin/cities") return { data: { cities: [] } } as never;
     if (String(url).includes("/admin/leads")) {
       return {
         data: { leads: [sampleLead], total: 1, limit: 50, offset: 0 },

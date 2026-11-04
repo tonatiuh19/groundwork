@@ -1,10 +1,15 @@
+import PersonCitiesPanel from "@/components/admin/PersonCitiesPanel";
 import { useEffect, useState, useRef } from "react";
+import AutomaticMessagesPanel from "@/components/admin/AutomaticMessagesPanel";
+import PersonFlowsPanel from "@/components/admin/PersonFlowsPanel";
 import LastContactStrip from "@/components/admin/LastContactStrip";
+import AffiliateLinkSend from "@/components/admin/AffiliateLinkSend";
 import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import { useTranslation } from "react-i18next";
+import ScorecardLink from "@/components/scorecard/ScorecardLink";
 import { Handshake, MailWarning, PencilLine } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -50,6 +55,8 @@ type AffForm = {
   preferred_language: string;
   company: string;
   phone: string;
+  partner_type: string;
+  license_number: string;
   slug: string;
   status: string;
   notes: string;
@@ -110,6 +117,8 @@ export default function AdminAffiliateDetail() {
           preferred_language: v.preferred_language,
           company: v.company.trim() || null,
           phone: v.phone.trim() || null,
+          partner_type: v.partner_type || null,
+          license_number: v.license_number.trim() || null,
           slug: v.slug.trim() ? slugifyAffiliate(v.slug.trim()) : null,
           status: v.status,
           notes: v.notes.trim() || null,
@@ -143,10 +152,14 @@ export default function AdminAffiliateDetail() {
             statusGroup="accountStatus"
             status={a.status}
             actions={
-              <TrackingLinkChip slug={a.slug} referralCode={a.referral_code} />
+              <>
+                <TrackingLinkChip slug={a.slug} referralCode={a.referral_code} />
+                <ScorecardLink type="affiliate" id={a.id} />
+              </>
             }
           />
-          <LastContactStrip phone={a.phone} name={`${a.first_name} ${a.last_name}`.trim()} />
+          <LastContactStrip phone={a.phone} email={a.email} name={`${a.first_name} ${a.last_name}`.trim()} />
+          <AffiliateLinkSend affiliate={a} onSent={() => void dispatch(fetchAdminAffiliateDetail(a.id))} />
 
           {a.avatar_url || a.bio ? (
             <section className="pf-section pf-affiliate-public">
@@ -203,6 +216,12 @@ export default function AdminAffiliateDetail() {
                 { label: t("form.email"), value: a.email },
                 { label: t("form.phone"), value: a.phone },
                 { label: t("pf.company"), value: a.company },
+                {
+                  label: t("partnerType.question"),
+                  value: a.partner_type
+                    ? `${t(`partnerType.${a.partner_type}`)}${a.license_number ? ` · ${a.partner_type === "realtor" ? "DRE" : "NMLS"} ${a.license_number}` : ""}`
+                    : null,
+                },
                 { label: t("admin.profileLanguage"), value: t(`lang.${a.preferred_language || "en"}`) },
                 { label: t("admin.slug"), value: a.slug },
                 { label: t("admin.affiliateSponsor"), value: a.parent_name || t("admin.affiliateSponsorNone") },
@@ -210,6 +229,10 @@ export default function AdminAffiliateDetail() {
               ]}
             />
           </section>
+
+          <PersonCitiesPanel kind="affiliate" id={a.id} />
+          <AutomaticMessagesPanel kind="affiliate" id={a.id} />
+          <PersonFlowsPanel kind="affiliate" id={a.id} />
 
           <SideDrawer
             open={editOpen}
@@ -251,6 +274,8 @@ export default function AdminAffiliateDetail() {
                 preferred_language: a.preferred_language || "en",
                 company: a.company || "",
                 phone: a.phone || "",
+                partner_type: a.partner_type || "",
+                license_number: a.license_number || "",
                 slug: a.slug || "",
                 status: a.status as string,
                 notes: a.notes || "",
@@ -298,6 +323,22 @@ export default function AdminAffiliateDetail() {
                       />
                     </div>
                     <TextField name="company" labelKey="pf.company" disabled={!canWrite} />
+                    <div className="pf-form-grid">
+                      <SelectField
+                        name="partner_type"
+                        labelKey="partnerType.question"
+                        disabled={!canWrite}
+                        options={[
+                          { value: "", label: t("partnerType.unknown") },
+                          { value: "realtor", label: t("partnerType.realtor") },
+                          { value: "lender", label: t("partnerType.lender") },
+                          { value: "other", label: t("partnerType.other") },
+                        ]}
+                      />
+                      {values.partner_type === "realtor" || values.partner_type === "lender" ? (
+                        <TextField name="license_number" labelKey={values.partner_type === "realtor" ? "partnerType.dre" : "partnerType.nmls"} disabled={!canWrite} />
+                      ) : null}
+                    </div>
                   </section>
                   <section className="gw-drawer-section">
                     <h3 className="gw-drawer-section__title">{t("editPanel.program")}</h3>

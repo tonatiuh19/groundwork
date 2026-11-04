@@ -11,6 +11,7 @@ import {
 import { BusyButton, ErrorNote, Loading, Modal, StatusBadge } from "@/components/portal/kit";
 import { useAdminCan } from "@/hooks/useAdminCan";
 import { useFormatters } from "@/lib/format";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 /**
  * Admin → Affiliate → "Agreement & W-9": set the monthly price after the
@@ -40,7 +41,7 @@ export default function AffiliateOnboardingPanel({ affiliateId }: { affiliateId:
     setPrice(c == null ? "" : (c / 100).toFixed(2));
   }, [data?.state.subscription_price_cents]);
 
-  if (adminLoading && !data) return <section className="pf-section"><Loading /></section>;
+  if (adminLoading && !data) return <section className="pf-section"><KitSkeleton layout="list" rows={3} /></section>;
   if (!data) return <section className="pf-section"><ErrorNote error={adminError} /></section>;
   const { state } = data;
   const signed = data.agreements.find((a) => a.status === "signed");

@@ -83,8 +83,10 @@ export const inviteAffiliateSub = createApiThunk<
     last_name: string;
     email: string;
     phone?: string;
-    company?: string;
+    company?: string | null;
     preferred_language?: string;
+    partner_type?: "realtor" | "lender" | "other" | null;
+    license_number?: string | null;
   }
 >("affiliatePortal/inviteSub", A, async (body) =>
   (await api.post("/affiliate/team", body)).data,

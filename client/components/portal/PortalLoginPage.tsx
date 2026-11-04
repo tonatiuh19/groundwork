@@ -5,6 +5,7 @@ import * as Yup from "yup";
 import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PortalActor } from "@shared/api";
+import SessionCheck from "@/components/portal/SessionCheck";
 import PageMeta from "@/components/PageMeta";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import OtpCodeInput from "@/components/portal/OtpCodeInput";
@@ -41,6 +42,11 @@ const COPY: Record<
   contractor: {
     titleKey: "portalAuth.contractorTitle",
     leadKey: "portalAuth.contractorLead",
+    accent: "pine",
+  },
+  city: {
+    titleKey: "portalAuth.cityTitle",
+    leadKey: "portalAuth.cityLead",
     accent: "pine",
   },
   client: {
@@ -138,11 +144,8 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
           canonical={`/${actor}/login`}
           noIndex
         />
-        <div className="portal-login-stage" aria-busy="true" aria-live="polite">
-          <p className="portal-login-session-check">
-            <Loader2 className="spin" size={22} aria-hidden />
-            <span>{t("portalAuth.checkingSession")}</span>
-          </p>
+        <div className="portal-login-stage portal-login-stage--check">
+          <SessionCheck />
         </div>
       </div>
     );

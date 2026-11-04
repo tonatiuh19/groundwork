@@ -51,7 +51,7 @@ describe.skipIf(!process.env.DB_HOST)("testDbCleanup", () => {
       `INSERT INTO admin_phone_numbers (e164, friendly_name, assigned_admin_id, is_active) VALUES (?, 'Clean line', ?, 1)`,
       [`+1555${crypto.randomInt(1_000_000, 9_999_999)}`, adminId],
     );
-    const unknownId = await insertId(`INSERT INTO conversation_unknown_contacts (phone_e164, ofg_number_id) VALUES ('+13105550100', ?)`, [lineId]);
+    const unknownId = await insertId(`INSERT INTO conversation_unknown_contacts (phone_e164, ofg_number_id) VALUES ('+15555550100', ?)`, [lineId]);
     const lineConv = await insertId(`INSERT INTO conversations (channel, ofg_number_id, unknown_contact_id) VALUES ('sms', ?, ?)`, [lineId, unknownId]);
     await insertId(`INSERT INTO conversation_messages (conversation_id, channel, direction, body) VALUES (?, 'sms', 'inbound', 'hi')`, [lineConv]);
     const contactId = await insertId(`INSERT INTO contacts (first_name, last_name, email, created_by_admin_id) VALUES ('Clean', 'Contact', ?, ?)`, [e("contact"), adminId]);
@@ -80,7 +80,32 @@ describe.skipIf(!process.env.DB_HOST)("testDbCleanup", () => {
       `INSERT INTO billing_card_links (member_role, member_id, token_hash, created_by_admin_id, expires_at) VALUES ('affiliate', ?, ?, ?, NOW() + INTERVAL 1 DAY)`,
       [affId, crypto.randomBytes(32).toString("hex"), adminId],
     );
-    return { adminId, affId, clientId, lineId, unknownId, lineConv, contactId, contactConv, templateId, statusId, dedupeId, bellId, eventId, billingActionId, cardLinkId };
+    const mailboxId = await insertId(`INSERT INTO mailboxes (email, kind, owner_admin_id) VALUES (?, 'personal', ?)`, [e("box"), adminId]);
+    const mailThreadId = await insertId(`INSERT INTO mail_threads (mailbox_id, graph_conversation_id) VALUES (?, ?)`, [mailboxId, `${p}conv`]);
+    await insertId(
+      `INSERT INTO mail_messages (mailbox_id, thread_id, graph_id, folder, direction, sent_at) VALUES (?, ?, ?, 'inbox', 'inbound', NOW())`,
+      [mailboxId, mailThreadId, `${p}msg`],
+    );
+    const mailDraftId = await insertId(`INSERT INTO mail_drafts (mailbox_id, admin_id, mode, subject) VALUES (?, ?, 'new', ?)`, [mailboxId, adminId, `${p}draft`]);
+    // Automation built by fixture staff + a run for the fixture affiliate in it (FK-less subject).
+    const flowId = await insertId(`INSERT INTO reminder_flows (name, trigger_event, created_by_admin_id) VALUES (?, 'affiliate_signup', ?)`, [`${p}Flow`, adminId]);
+    const flowRunId = await insertId(`INSERT INTO reminder_flow_runs (flow_id, subject_kind, subject_id, status) VALUES (?, 'affiliate', ?, 'stopped')`, [flowId, affId]);
+    const caTemplateVersion = Number(((await db.query(`SELECT COALESCE(MAX(version), 0) + 1000 v FROM construction_agreement_templates`)) as any)[0][0].v);
+    await insertId(`INSERT INTO construction_agreement_templates (version, body_en, notes) VALUES (?, 'x', ?)`, [caTemplateVersion, `${p}template`]);
+    const legalVersion = 7_000_000 + (Number(String(Date.now()).slice(-6)) % 900_000);
+    await insertId(`INSERT INTO legal_documents (slug, version, title_en, title_es, body_en, body_es, notes) VALUES ('terms', ?, 't', 't', 'x', 'x', ?)`, [legalVersion, `${p}legal`]);
+    await insertId(`INSERT INTO legal_acceptances (person_kind, person_id, slug, version) VALUES ('affiliate', ?, 'terms', ?)`, [affId, legalVersion]);
+    const qrId = await insertId(`INSERT INTO qr_links (slug, label, destination_url) VALUES (?, 'x', '/')`, [`${p}qr`]);
+    const cityId = await insertId(`INSERT INTO service_cities (name, active) VALUES (?, 0)`, [`${p}city`]);
+    const cityPartnerId = await insertId(`INSERT INTO city_partners (email, first_name, company) VALUES (?, 'Cp', 'Cp LLC')`, [`${p}cp@example.com`]);
+    await db.execute(`INSERT INTO city_partner_cities (city_partner_id, city_id) VALUES (?, ?)`, [cityPartnerId, cityId]);
+    await insertId(`INSERT INTO city_activities (city_id, city_partner_id, occurred_on, activity_type, summary) VALUES (?, ?, CURDATE(), 'call', 'x')`, [cityId, cityPartnerId]);
+    // Scorecard rows for the fixture affiliate (FK-less subject).
+    await insertId(`INSERT INTO scorecard_weeks (subject_type, subject_id, scorecard, week_start, metrics_json) VALUES ('affiliate', ?, 'affiliate', '2026-01-05', '[]')`, [affId]);
+    await insertId(`INSERT INTO scorecard_actions (subject_type, subject_id, scorecard, week_start, kind, body) VALUES ('affiliate', ?, 'affiliate', '2026-01-05', 'note', 'x')`, [affId]);
+    await insertId(`INSERT INTO scorecard_time_off (subject_type, subject_id, starts_on, ends_on) VALUES ('affiliate', ?, '2026-01-05', '2026-01-06')`, [affId]);
+    await insertId(`INSERT INTO scorecard_activities (subject_type, subject_id, kind, occurred_at) VALUES ('affiliate', ?, 'event_held', NOW())`, [affId]);
+    return { qrId, cityId, cityPartnerId, legalVersion, caTemplateVersion, flowId, flowRunId, mailDraftId, mailboxId, mailThreadId, adminId, affId, clientId, lineId, unknownId, lineConv, contactId, contactConv, templateId, statusId, dedupeId, bellId, eventId, billingActionId, cardLinkId };
   };
 
   const remaining = async (f: Awaited<ReturnType<typeof seed>>) => ({
@@ -100,6 +125,26 @@ describe.skipIf(!process.env.DB_HOST)("testDbCleanup", () => {
     event: await count(`SELECT COUNT(*) n FROM marketing_events WHERE id = ?`, [f.eventId]),
     billingAction: await count(`SELECT COUNT(*) n FROM billing_admin_actions WHERE id = ?`, [f.billingActionId]),
     cardLink: await count(`SELECT COUNT(*) n FROM billing_card_links WHERE id = ?`, [f.cardLinkId]),
+    mailbox: await count(`SELECT COUNT(*) n FROM mailboxes WHERE id = ?`, [f.mailboxId]),
+    mailThread: await count(`SELECT COUNT(*) n FROM mail_threads WHERE id = ?`, [f.mailThreadId]),
+    mailMessages: await count(`SELECT COUNT(*) n FROM mail_messages WHERE thread_id = ?`, [f.mailThreadId]),
+    mailDraft: await count(`SELECT COUNT(*) n FROM mail_drafts WHERE id = ?`, [f.mailDraftId]),
+    flow: await count(`SELECT COUNT(*) n FROM reminder_flows WHERE id = ?`, [f.flowId]),
+    legalDoc: await count(`SELECT COUNT(*) n FROM legal_documents WHERE slug = 'terms' AND version = ?`, [f.legalVersion]),
+    legalAccept: await count(`SELECT COUNT(*) n FROM legal_acceptances WHERE person_kind = 'affiliate' AND person_id = ?`, [f.affId]),
+    caTemplate: await count(`SELECT COUNT(*) n FROM construction_agreement_templates WHERE version = ?`, [f.caTemplateVersion]),
+    flowRun: await count(`SELECT COUNT(*) n FROM reminder_flow_runs WHERE id = ?`, [f.flowRunId]),
+    qrLink: await count(`SELECT COUNT(*) n FROM qr_links WHERE id = ?`, [f.qrId]),
+    city: await count(`SELECT COUNT(*) n FROM service_cities WHERE id = ?`, [f.cityId]),
+    cityPartner: await count(`SELECT COUNT(*) n FROM city_partners WHERE id = ?`, [f.cityPartnerId]),
+    cityActivity: await count(`SELECT COUNT(*) n FROM city_activities WHERE city_id = ?`, [f.cityId]),
+    scorecards: await count(
+      `SELECT (SELECT COUNT(*) FROM scorecard_weeks WHERE subject_type = 'affiliate' AND subject_id = ?)
+            + (SELECT COUNT(*) FROM scorecard_actions WHERE subject_type = 'affiliate' AND subject_id = ?)
+            + (SELECT COUNT(*) FROM scorecard_time_off WHERE subject_type = 'affiliate' AND subject_id = ?)
+            + (SELECT COUNT(*) FROM scorecard_activities WHERE subject_type = 'affiliate' AND subject_id = ?) AS n`,
+      [f.affId, f.affId, f.affId, f.affId],
+    ),
   });
   const allZero = (r: Record<string, number>) => Object.fromEntries(Object.keys(r).map((k) => [k, 0]));
 

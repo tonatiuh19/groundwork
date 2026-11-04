@@ -25,7 +25,8 @@ export default defineConfig({
           globalSetup: ["api/testGlobalSetup.ts"],
           environment: "node",
           env: { VITEST: "true" },
-          testTimeout: 45_000,
+          // Integration tests make many API calls to a remote DB: several take 35-40s even alone.
+          testTimeout: 120_000,
           hookTimeout: 90_000,
           maxWorkers: 2,
           sequence: { groupOrder: 0 },

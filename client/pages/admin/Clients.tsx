@@ -1,3 +1,4 @@
+import { useCityFilterOptions } from "@/hooks/useCityFilter";
 import { useEffect, useRef, useState } from "react";
 import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
@@ -28,6 +29,7 @@ import {
   PageHeader,
   SearchBox,
   SelectField,
+  CheckField,
   StatusBadge,
   SubmitButton,
   TextField,
@@ -60,6 +62,8 @@ export default function AdminClients() {
   const canApprove = useAdminCan("approvals");
   const [q, setQ] = useState("");
   const [status, setStatus] = useStatusQueryParam(FILTER_STATUSES);
+  const [cityId, setCityId] = useState("");
+  const cityOptions = useCityFilterOptions();
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState(false);
   const [invited, setInvited] = useState<number | null>(null);
@@ -75,6 +79,7 @@ export default function AdminClients() {
   const load = () =>
     void dispatch(
       fetchAdminClients({
+        city_id: cityId || undefined,
         q: q || undefined,
         status: status || undefined,
         limit: PAGE_SIZE,
@@ -84,7 +89,7 @@ export default function AdminClients() {
   useEffect(() => {
     dispatch(clearAdminSaveError());
     load();
-  }, [q, status, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, status, cityId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyClientStatus = async (id: number, next: string) => {
     await rowBusy.run(
@@ -140,6 +145,7 @@ export default function AdminClients() {
     city: string;
     zip: string;
     affiliate_id: string;
+    send_invite: boolean;
   };
   const lastClient = useRef<NewClient | null>(null);
   /** Create (or re-send with a staff shared-phone reason after a phone-only match). */
@@ -182,6 +188,13 @@ export default function AdminClients() {
       <DuplicatesPanel entity="client" />
       <div className="pf-filters">
         <SearchBox onSearch={setQ} />
+        <FilterSelect
+          value={cityId}
+          onChange={setCityId}
+          ariaLabel={t("cities.filter")}
+          allLabel={t("cities.filterAll")}
+          options={cityOptions}
+        />
         <FilterSelect
           value={status}
           onChange={setStatus}
@@ -362,7 +375,7 @@ export default function AdminClients() {
 
       <Modal open={open} titleKey="admin.addClient" onClose={() => setOpen(false)}>
         <Formik
-          initialValues={{ first_name: "", last_name: "", email: "", phone: "", address_line1: "", city: "", zip: "", affiliate_id: "" }}
+          initialValues={{ first_name: "", last_name: "", email: "", phone: "", address_line1: "", city: "", zip: "", affiliate_id: "", send_invite: true }}
           validationSchema={schema}
           onSubmit={(v) => submitClient(v)}
         >
@@ -393,6 +406,7 @@ export default function AdminClients() {
                   .map((a) => ({ value: a.id, label: `${a.first_name} ${a.last_name}` })),
               ]}
             />
+            <CheckField name="send_invite" labelKey="admin.sendPortalInvite" />
             <SubmitButton busy={saving} labelKey="pf.create" />
           </Form>
         </Formik>

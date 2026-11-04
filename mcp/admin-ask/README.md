@@ -76,6 +76,22 @@ Then Customize → MCP → Connect → same consent flow.
 | `search_contacts` / `get_contact` | CRM Contacts address book (not pipeline clients) |
 | `list_sms` / `get_texts` / `get_conversation` | Conversations hub timeline for a client |
 | `get_call_insights` | Call/voicemail rows + Twilio `transcript_full` when ready (no AI summaries) |
+| `list_mailboxes` | Connected Microsoft 365 mailboxes, unread counts, sync status |
+| `list_inbox` | Recent threads across clients, contacts and unknown numbers |
+| `get_thread` | Read any thread by `conversation_id` |
+| `reply_to_thread` | SMS reply to any thread (dry run, then CONFIRM; never to STOP) |
+| `list_mail_folders` / `list_mail_rules` | Outlook folders and CRM + Outlook rules of a mailbox |
+| `file_email_thread` | Move a thread to a folder or Inbox (dry run, then CONFIRM) |
+| `get_city_report` | Cities with counts and coverage (visibility only) |
+| `list_qr_codes` | QR codes with scans and credited leads, plus event codes |
+| `get_city_pipeline` / `get_city` | City pipeline, follow-ups, activity and city sheet |
+| `list_city_partners` | City Partners: cities, rate, agreement, W-9, fee totals |
+| `get_scorecards` | Scorecards board for a week: grade, color, metrics, open follow-ups (only when `SCORECARD_ENABLED`) |
+| `get_scorecard` | One affiliate's or contractor's weekly history, follow-ups and days off (only when `SCORECARD_ENABLED`) |
+| `search_email` / `get_email_thread` | Search synced email (Inbox + Sent) and read a full thread as text |
+| `send_email` | New email, reply (quote kept) or forward (`forward_thread_id`) from a connected mailbox; `save_as_draft` saves to Drafts (CRM + Outlook). Dry-run, then `confirm=true` + `CONFIRM` |
+| `sync_mailbox` | Sync one mailbox now (mail + Outlook calendar) |
+| `find_free_time` | Free slots for a staff member from CRM appointments (includes their synced Outlook calendar) |
 | `list_brand_phone_numbers` / `list_ofg_phone_numbers` | Brand Twilio lines (`line_mode`, `needs_owner`) + `acting_admin_from` (own personal line first, then shared memberships) |
 | `get_phone_line` | One line's settings by `line_id` or `e164`: mode, owner, members, what rings, ring time, voicemail, needs owner |
 | `list_message_templates` | Active SMS templates (EN/ES, category, usage); fill `{{first_name}}` etc. before sending |

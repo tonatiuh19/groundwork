@@ -1,3 +1,4 @@
+import { useCityFilterOptions } from "@/hooks/useCityFilter";
 import { useEffect, useState } from "react";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import { useNavigate } from "react-router-dom";
@@ -85,6 +86,7 @@ export default function AdminProjects() {
 
   // List and board share one filter set so toggling views keeps the same scope.
   const filters = board.filters;
+  const cityOptions = useCityFilterOptions();
   const setFilters = (patch: Parameters<typeof setProjectBoardFilters>[0]) =>
     dispatch(setProjectBoardFilters(patch));
 
@@ -111,6 +113,7 @@ export default function AdminProjects() {
     filters.contractor_id,
     filters.assigned_admin_id,
     filters.loan_status,
+    filters.city_id,
   ]);
 
   useEffect(() => {
@@ -123,6 +126,7 @@ export default function AdminProjects() {
         contractor_id: filters.contractor_id || undefined,
         assigned_admin_id: filters.assigned_admin_id || undefined,
         loan_status: filters.loan_status || undefined,
+        city_id: filters.city_id || undefined,
         limit: PAGE_SIZE,
         offset,
       }),
@@ -137,6 +141,7 @@ export default function AdminProjects() {
     filters.contractor_id,
     filters.assigned_admin_id,
     filters.loan_status,
+    filters.city_id,
   ]);
 
   useEffect(() => {
@@ -150,6 +155,7 @@ export default function AdminProjects() {
     filters.contractor_id,
     filters.assigned_admin_id,
     filters.loan_status,
+    filters.city_id,
   ]);
 
   const openCreate = () => {
@@ -207,6 +213,13 @@ export default function AdminProjects() {
             options={milestoneOptions(t)}
           />
         ) : null}
+        <FilterSelect
+          value={filters.city_id || ""}
+          onChange={(v) => setFilters({ city_id: v })}
+          ariaLabel={t("cities.filter")}
+          allLabel={t("cities.filterAll")}
+          options={cityOptions}
+        />
         <FilterSelect
           value={filters.affiliate_id}
           onChange={(v) => setFilters({ affiliate_id: v })}

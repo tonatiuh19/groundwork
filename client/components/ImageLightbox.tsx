@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X, ZoomIn } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -12,11 +12,14 @@ export default function ImageLightbox({
   src,
   alt,
   onClose,
+  children,
 }: {
   open: boolean;
   src: string;
   alt: string;
   onClose: () => void;
+  /** Custom content (e.g. a designed card) instead of the plain image. */
+  children?: ReactNode;
 }) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -76,8 +79,8 @@ export default function ImageLightbox({
             <X size={20} />
           </button>
         </div>
-        <div className="image-lightbox-stage">
-          <img src={src} alt={alt} />
+        <div className={children ? "image-lightbox-stage image-lightbox-stage--custom" : "image-lightbox-stage"}>
+          {children ?? <img src={src} alt={alt} />}
         </div>
       </div>
     </div>,

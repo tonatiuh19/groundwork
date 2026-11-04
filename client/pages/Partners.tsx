@@ -1,8 +1,12 @@
+import CityPickerField from "@/components/CityPickerField";
 import { useMemo } from "react";
+import TermsConsentField from "@/components/TermsConsentField";
+import SmsConsentField from "@/components/SmsConsentField";
 import { Formik, Form, Field } from "formik";
 import * as Yup from "yup";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import SpamFolderHint from "@/components/SpamFolderHint";
 import type { TFunction } from "i18next";
 import PageMeta from "@/components/PageMeta";
 import SiteHeader from "@/components/SiteHeader";
@@ -13,6 +17,7 @@ import {
   submitPartnerReferral,
 } from "@/store/slices/contactSlice";
 import { translateApiError } from "@/lib/api";
+import PartnerTypeFields, { PARTNER_TYPE_DEFAULTS, partnerTypePayload, partnerTypeSchema, type PartnerTypeValues } from "@/components/portal/PartnerTypeFields";
 
 function makeSchema(t: TFunction) {
   return Yup.object({
@@ -28,7 +33,7 @@ function makeSchema(t: TFunction) {
       .trim()
       .min(10, t("validation.phoneMin"))
       .required(t("validation.phoneRequired")),
-    company: Yup.string().trim().max(200),
+    ...partnerTypeSchema(t),
     notes: Yup.string().trim().max(2000),
   });
 }
@@ -103,6 +108,7 @@ export default function Partners() {
               <div className="success-state">
                 <h3>{t("partners.successTitle")}</h3>
                 <p>{t("partners.successBody")}</p>
+                <SpamFolderHint />
                 <button
                   className="text-link"
                   type="button"
@@ -117,8 +123,11 @@ export default function Partners() {
                   full_name: "",
                   email: "",
                   phone: "",
-                  company: "",
+                  ...PARTNER_TYPE_DEFAULTS,
                   notes: "",
+                  city_ids: [] as number[],
+            sms_marketing_consent: false,
+                  accept_terms: false,
                 }}
                 validationSchema={schema}
                 onSubmit={async (values) => {
@@ -127,8 +136,11 @@ export default function Partners() {
                       full_name: values.full_name.trim(),
                       email: values.email.trim(),
                       phone: values.phone.trim(),
-                      company: values.company.trim() || null,
+                      ...partnerTypePayload(values as PartnerTypeValues),
                       notes: values.notes.trim() || null,
+                      city_ids: values.city_ids,
+                sms_marketing_consent: values.sms_marketing_consent,
+                      accept_terms: values.accept_terms,
                       preferred_language: i18n.language?.startsWith("es")
                         ? "es"
                         : "en",
@@ -166,14 +178,14 @@ export default function Partners() {
                         ) : null}
                       </label>
                     </div>
-                    <label>
-                      {t("partners.company")}
-                      <Field name="company" autoComplete="organization" />
-                    </label>
+                    <PartnerTypeFields />
                     <label>
                       {t("partners.notes")}
                       <Field as="textarea" name="notes" rows={3} />
                     </label>
+                    <CityPickerField labelKey="cities.workIn" />
+            <SmsConsentField />
+                    <TermsConsentField />
                     <button
                       className="button button-gold form-submit"
                       type="submit"

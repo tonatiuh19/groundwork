@@ -5,6 +5,7 @@ import { configureStore } from "@reduxjs/toolkit";
 import axios from "axios";
 import { LayoutDashboard, Settings, Users } from "lucide-react";
 import { Provider } from "react-redux";
+import { HelmetProvider } from "react-helmet-async";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { AdminRole, PortalAuthUser } from "@shared/api";
 import i18n from "@/i18n";
@@ -46,6 +47,7 @@ function Gate() {
 
 function mount(target: typeof store = store) {
   render(
+    <HelmetProvider>
     <Provider store={target}>
       <MemoryRouter initialEntries={["/admin"]}>
         <Routes>
@@ -58,7 +60,8 @@ function mount(target: typeof store = store) {
           </Route>
         </Routes>
       </MemoryRouter>
-    </Provider>,
+    </Provider>
+    </HelmetProvider>,
   );
 }
 

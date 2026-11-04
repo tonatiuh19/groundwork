@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLeadPrefill } from "@/hooks/useLeadPrefill";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import {
@@ -81,14 +82,18 @@ type Props = {
   referralCode?: string | null;
   affiliate?: PublicAffiliateCard | null;
   leadKey?: string;
+  /** Affiliate link: go back to "homeowner or partner". */
+  onChangeRole?: () => void;
 };
 
 export default function EnrollWizard({
   referralCode,
   affiliate,
   leadKey = "enroll.lead",
+  onChangeRole,
 }: Props) {
   const { t, i18n } = useTranslation();
+  const prefill = useLeadPrefill();
   const dispatch = useAppDispatch();
   const { plans } = useAppSelector((s) => s.affiliatePortal);
   const { submitting, done, projectId, outcome, error } = useAppSelector((s) => s.enroll.enroll);
@@ -221,19 +226,25 @@ export default function EnrollWizard({
         <p className="enroll-pill">{t("enroll.stepOf", { current: step + 1, total: ENROLL_STEP_COUNT })}</p>
         <h1 className="enroll-stage-title">{t(`enroll.step${step}Title`)}</h1>
         <p className="enroll-stage-lead">{t(leadKey)}</p>
+        {onChangeRole && step === 0 ? (
+          <button type="button" className="enroll-partner__back" onClick={onChangeRole}>
+            <ArrowLeft size={14} aria-hidden /> {t("enrollRole.changeToPartner")}
+          </button>
+        ) : null}
 
         <div className="enroll-panel">
           <Formik
+            enableReinitialize
             initialValues={{
-              first_name: "",
-              last_name: "",
-              email: "",
-              phone: "",
-              property_address: "",
+              first_name: prefill?.first_name || "",
+              last_name: prefill?.last_name || "",
+              email: prefill?.email || "",
+              phone: prefill?.phone || "",
+              property_address: prefill?.property_address || "",
               property_city: "",
               property_zip: "",
               adu_plan_id: "",
-              preferred_language: i18n.language?.startsWith("es") ? "es" : "en",
+              preferred_language: prefill?.preferred_language || (i18n.language?.startsWith("es") ? "es" : "en"),
               soft_pull_consent: false,
               homeowner_consent: false,
             }}

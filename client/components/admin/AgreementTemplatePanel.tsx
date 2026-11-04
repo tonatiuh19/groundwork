@@ -3,10 +3,11 @@ import { Eye, FileSignature, Pencil, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAgreementTemplate, fetchOutdatedAgreements, publishAgreementTemplate, sendResignNotice } from "@/store/slices/affiliateOnboardingSlice";
-import { BusyButton, ErrorNote, Loading, Modal } from "@/components/portal/kit";
+import { BusyButton, ErrorNote, Modal } from "@/components/portal/kit";
 import AgreementDocument from "@/components/affiliate/AgreementDocument";
 import { useFormatters } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 /**
  * Settings → Affiliate Agreement: edit EN/ES text and publish a new version
@@ -31,7 +32,7 @@ export default function AgreementTemplatePanel({ className }: { className?: stri
     if (template) setDraft({ en: template.template.body_en, es: template.template.body_es });
   }, [template]);
 
-  if (!template || !draft) return <section className={className}><Loading /></section>;
+  if (!template || !draft) return <section className={className}><KitSkeleton layout="list" rows={3} /></section>;
   const dirty = draft.en !== template.template.body_en || draft.es !== template.template.body_es;
 
   return (

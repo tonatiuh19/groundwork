@@ -705,6 +705,7 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
     ).toBe(404);
   });
 
+  // Many API steps on the shared DB (~40s alone), too close to the default 45s under a full run.
   it("milestone state machine via the API: illegal jumps 409 with no partial write; legal path records events", async () => {
     const patch = (body: object) =>
       as(superCookie).patch(`/api/admin/projects/${projectId}`).send(body);
@@ -760,7 +761,7 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
       "cancelled",
       "lead",
     ]);
-  });
+  }, 120_000);
 
   it("concurrent milestone moves from the same state: exactly one wins", async () => {
     const created = await as(superCookie)

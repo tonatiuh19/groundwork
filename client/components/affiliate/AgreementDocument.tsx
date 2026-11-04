@@ -1,10 +1,34 @@
 import { Fragment, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
-/** **bold** spans inside a line. */
+/** Only our own pages, https and mailto links render as links (anything else stays plain text). */
+function safeHref(href: string): { internal: boolean; href: string } | null {
+  if (/^\/(?![\/\\])/.test(href)) return { internal: true, href };
+  if (/^(https:\/\/|mailto:)/i.test(href)) return { internal: false, href };
+  return null;
+}
+
+/** **bold** and [text](url) spans inside a line. */
 function inline(text: string): ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*)/).filter(Boolean).map((seg, i) =>
-    seg.startsWith("**") && seg.endsWith("**") ? <strong key={i}>{seg.slice(2, -2)}</strong> : <Fragment key={i}>{seg}</Fragment>,
-  );
+  return text
+    .split(/(\*\*[^*]+\*\*|\[[^\]]+\]\([^)\s]+\))/)
+    .filter(Boolean)
+    .map((seg, i) => {
+      if (seg.startsWith("**") && seg.endsWith("**")) return <strong key={i}>{seg.slice(2, -2)}</strong>;
+      const m = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(seg);
+      const link = m ? safeHref(m[2]) : null;
+      if (m && link)
+        return link.internal ? (
+          <Link key={i} className="text-link" to={link.href}>
+            {m[1]}
+          </Link>
+        ) : (
+          <a key={i} className="text-link" href={link.href} target="_blank" rel="noopener noreferrer">
+            {m[1]}
+          </a>
+        );
+      return <Fragment key={i}>{m ? m[1] : seg}</Fragment>;
+    });
 }
 
 /**
@@ -33,11 +57,11 @@ export default function AgreementDocument({ body }: { body: string }) {
         <div className="gw-agreement-table" key={`t${blocks.length}`}>
           <table>
             <thead>
-              <tr>{head.map((c, i) => <th key={i}>{c}</th>)}</tr>
+              <tr>{head.map((c, i) => <th key={i}>{inline(c)}</th>)}</tr>
             </thead>
             <tbody>
               {rest.map((r, ri) => (
-                <tr key={ri}>{r.map((c, i) => <td key={i}>{c}</td>)}</tr>
+                <tr key={ri}>{r.map((c, i) => <td key={i}>{inline(c)}</td>)}</tr>
               ))}
             </tbody>
           </table>
@@ -62,6 +86,7 @@ export default function AgreementDocument({ body }: { body: string }) {
     if (!line.trim()) continue;
     if (line.startsWith("# ")) blocks.push(<h2 key={blocks.length}>{inline(line.slice(2))}</h2>);
     else if (line.startsWith("## ")) blocks.push(<h3 key={blocks.length}>{inline(line.slice(3))}</h3>);
+    else if (line.startsWith("### ")) blocks.push(<h4 key={blocks.length}>{inline(line.slice(4))}</h4>);
     else blocks.push(<p key={blocks.length}>{inline(line)}</p>);
   }
   flush();

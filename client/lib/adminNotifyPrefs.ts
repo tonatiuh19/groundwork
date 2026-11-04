@@ -29,6 +29,7 @@ export const ADMIN_NOTIFY_EVENT_KEYS: AdminNotifyEventKey[] = [
   "commission_accrued",
   "contract_sent",
   "inbound_sms",
+  "inbound_email",
 ];
 
 /** Primary alert types shown in Settings Team notifications. */

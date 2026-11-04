@@ -3,6 +3,7 @@ import { Formik, Form, Field } from "formik";
 import * as Yup from "yup";
 import { ArrowRight, Mail, MapPin, Phone } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import SpamFolderHint from "@/components/SpamFolderHint";
 import type { TFunction } from "i18next";
 import type { ContactIntent } from "@shared/api";
 import PageMeta from "@/components/PageMeta";
@@ -127,6 +128,7 @@ export default function Contact() {
                     ? t("contact.partnerSuccessBody")
                     : t("contact.successBody")}
                 </p>
+                {submittedKind === "partner_affiliate" ? <SpamFolderHint /> : null}
                 <button
                   className="text-link"
                   type="button"

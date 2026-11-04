@@ -4,6 +4,7 @@ import type {
   ClientSignupRequest,
   ContractorInvitePreview,
   ContractorSignupRequest,
+  LeadPrefill,
   PortalSignupOutcome,
   PortalSignupResponse,
 } from "@shared/api";
@@ -30,6 +31,8 @@ type State = {
     applicationPath: string | null;
     error: string | null;
   };
+  /** From the A/B/C welcome links. */
+  prefill: LeadPrefill | null;
 };
 
 const emptySignup = (): SignupSlot => ({
@@ -51,6 +54,7 @@ const initialState: State = {
     applicationPath: null,
     error: null,
   },
+  prefill: null,
 };
 
 function outcomeFrom(payload: unknown): PortalSignupOutcome {
@@ -107,6 +111,13 @@ export const acceptContractorInvite = createApiThunk<
     (await api.post("/public/contractor-invite/accept", { token })).data,
 );
 
+/** Application forms opened from the A/B/C welcome links: what we already know (?t=token). */
+export const fetchLeadPrefill = createApiThunk<{ prefill: LeadPrefill }, string>(
+  "onboarding/leadPrefill",
+  null,
+  async (token) => (await api.get(`/public/lead-prefill/${encodeURIComponent(token)}`)).data,
+);
+
 const slice = createSlice({
   name: "onboarding",
   initialState,
@@ -123,6 +134,9 @@ const slice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      .addCase(fetchLeadPrefill.fulfilled, (s, a) => {
+        s.prefill = a.payload.prefill;
+      })
       .addCase(submitAffiliateSignup.pending, (s) => {
         s.signup = { submitting: true, done: false, outcome: null, error: null };
       })

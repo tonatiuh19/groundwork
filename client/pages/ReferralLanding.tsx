@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import EnrollApp from "@/components/enroll/EnrollApp";
 import EnrollWizard from "@/components/enroll/EnrollWizard";
 import EnrollInactive from "@/components/enroll/EnrollInactive";
+import EnrollRoleChooser, { type EnrollRole } from "@/components/enroll/EnrollRoleChooser";
+import PartnerSignupForm from "@/components/enroll/PartnerSignupForm";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearPublicAffiliate,
@@ -36,6 +38,12 @@ export default function ReferralLanding() {
 
   const toParam =
     searchParams.get("to") || searchParams.get("landing") || "home";
+  // ?for=homeowner | partner: ready-made links that skip the first choice.
+  const forParam = searchParams.get("for");
+  const [role, setRole] = useState<EnrollRole | null>(forParam === "homeowner" || forParam === "partner" ? forParam : null);
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+  }, [role]);
 
   useEffect(() => {
     if (!code) return;
@@ -110,11 +118,18 @@ export default function ReferralLanding() {
       noIndex
       affiliate={affiliate}
     >
-      <EnrollWizard
-        referralCode={affiliate.referral_code}
-        affiliate={affiliate}
-        leadKey="enroll.referralLead"
-      />
+      {role === null ? (
+        <EnrollRoleChooser affiliate={affiliate} onPick={setRole} />
+      ) : role === "partner" ? (
+        <PartnerSignupForm affiliate={affiliate} referralCode={affiliate.referral_code} onBack={() => setRole(null)} />
+      ) : (
+        <EnrollWizard
+          referralCode={affiliate.referral_code}
+          affiliate={affiliate}
+          leadKey="enroll.referralLead"
+          onChangeRole={forParam ? undefined : () => setRole(null)}
+        />
+      )}
     </EnrollApp>
   );
 }

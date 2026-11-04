@@ -6,6 +6,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchBillingOverview } from "@/store/slices/billingAdminSlice";
 import { DataTable, ErrorNote, PageHeader, StatCard, StatusBadge } from "@/components/portal/kit";
 import MembershipDrawer from "@/components/admin/MembershipDrawer";
+import BulkCardLinksBanner from "@/components/admin/BulkCardLinksBanner";
 import { useFormatters } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
@@ -60,6 +61,7 @@ export default function AdminBilling() {
   return (
     <div className="pf-page">
       <PageHeader titleKey="billAdmin.title" leadKey="billAdmin.lead" />
+      <BulkCardLinksBanner />
       <ErrorNote error={overviewError} />
       {overview && !overview.configured ? <p className="pf-hint">{t("ctrBilling.notConfigured")}</p> : null}
       <div className="pf-stats">

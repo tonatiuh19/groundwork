@@ -3,21 +3,41 @@ import type { AffiliateLinkInfo } from "@shared/api";
 import { api } from "@/lib/api";
 import { createApiThunk } from "@/lib/portalThunk";
 
-/** Affiliate portal → my link (card, QR, flyer, link name). */
+/** Affiliate portal → my link (card, QR, flyer; the link name is staff-only). */
 export const fetchAffiliateLink = createApiThunk<AffiliateLinkInfo, void>(
   "affiliateLink/fetch",
   "affiliate",
   async () => (await api.get("/affiliate/link")).data,
 );
 
-export const saveAffiliateSlug = createApiThunk<AffiliateLinkInfo, string>(
-  "affiliateLink/slug",
-  "affiliate",
-  async (slug) => (await api.patch("/affiliate/link", { slug })).data,
+type State = {
+  info: AffiliateLinkInfo | null;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  /** Staff: approved affiliates who never received their link. */
+  unsent: number | null;
+  bulkSending: boolean;
+  bulkResult: { sent: number; failed: number } | null;
+};
+/** Staff: send an approved affiliate their link again; bulk-send to approved affiliates who never got it. */
+export const sendAffiliateLinkAdmin = createApiThunk<{ email: boolean; sms: boolean }, number>(
+  "affiliateLink/adminSend",
+  "admin",
+  async (id) => (await api.post(`/admin/affiliates/${id}/send-link`)).data,
+);
+export const fetchUnsentLinks = createApiThunk<{ count: number }, void>(
+  "affiliateLink/unsent",
+  "admin",
+  async () => (await api.get("/admin/affiliate-links/unsent")).data,
+);
+export const sendAllAffiliateLinks = createApiThunk<{ sent: number; failed: number }, void>(
+  "affiliateLink/sendAll",
+  "admin",
+  async () => (await api.post("/admin/affiliate-links/send-all", { confirm: true })).data,
 );
 
-type State = { info: AffiliateLinkInfo | null; loading: boolean; saving: boolean; error: string | null };
-const initialState: State = { info: null, loading: false, saving: false, error: null };
+const initialState: State = { info: null, loading: false, saving: false, error: null, unsent: null, bulkSending: false, bulkResult: null };
 
 const slice = createSlice({
   name: "affiliateLink",
@@ -39,17 +59,19 @@ const slice = createSlice({
         s.loading = false;
         s.error = a.payload || "errors.server";
       })
-      .addCase(saveAffiliateSlug.pending, (s) => {
-        s.saving = true;
-        s.error = null;
+      .addCase(fetchUnsentLinks.fulfilled, (s, a) => {
+        s.unsent = a.payload.count;
       })
-      .addCase(saveAffiliateSlug.fulfilled, (s, a) => {
-        s.saving = false;
-        s.info = a.payload;
+      .addCase(sendAllAffiliateLinks.pending, (s) => {
+        s.bulkSending = true;
       })
-      .addCase(saveAffiliateSlug.rejected, (s, a) => {
-        s.saving = false;
-        s.error = a.payload || "errors.server";
+      .addCase(sendAllAffiliateLinks.fulfilled, (s, a) => {
+        s.bulkSending = false;
+        s.bulkResult = a.payload;
+        s.unsent = 0;
+      })
+      .addCase(sendAllAffiliateLinks.rejected, (s) => {
+        s.bulkSending = false;
       });
   },
 });

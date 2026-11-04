@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import request from "supertest";
 import {
   __test,
@@ -12,6 +12,7 @@ import {
   createServer,
   resolveAffiliateCommissionSplit,
   resolveCommissionCents,
+  __testSetNotifyRouting,
 } from "./index";
 import {
   cleanupPortalFixturesByPrefix,
@@ -507,17 +508,15 @@ describe("portal features (integration)", () => {
     expect(taken.status).toBe(409);
     expect(taken.body.error).toBe("errors.slugTaken");
 
+    // Link names are staff-only: affiliates can't rename themselves from their profile.
+    const before = await as(affCookie).get("/api/affiliate/me");
     const mePatch = await as(affCookie)
       .patch("/api/affiliate/me")
       .send({ slug: "Ada Affiliate Link" });
-    expect(mePatch.status).toBe(200);
-    expect(mePatch.body.profile.slug).toBe("ada-affiliate-link");
-    // Restore fixture affiliate so later tests still expect /r/{affCode}
-    const cleared = await as(affCookie)
-      .patch("/api/affiliate/me")
-      .send({ slug: null });
-    expect(cleared.status).toBe(200);
-    expect(cleared.body.profile.slug).toBeNull();
+    expect(mePatch.status).toBe(403);
+    expect(mePatch.body.error).toBe("errors.slugStaffOnly");
+    const unchanged = await as(affCookie).get("/api/affiliate/me");
+    expect(unchanged.body.profile.slug).toBe(before.body.profile.slug);
   });
 
   it("client signup → pending → admin approve → prospect + invite", async () => {
@@ -2041,6 +2040,13 @@ describe("portal features (integration)", () => {
   });
 
   it("self-service prefs, in-app inbox, and team SMS fan-out", async () => {
+    // Alerts are routed by area now: send every area to this finance fixture (in memory, never the shared table).
+    __testSetNotifyRouting(
+      Object.fromEntries(
+        (["leads", "clients", "contractors", "affiliates", "projects", "system"] as const).map((a) => [a, { adminIds: [financeId], includeOwner: true }]),
+      ),
+    );
+    onTestFinished(() => __testSetNotifyRouting(null));
     const mePrefs = await as(financeCookie).get(
       "/api/admin/me/notification-prefs",
     );

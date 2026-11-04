@@ -6,6 +6,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { addBlockedRange, fetchMyScheduler, removeBlockedRange, saveMyScheduler } from "@/store/slices/schedulerSlice";
 import { BusyButton, ErrorNote, Loading } from "@/components/portal/kit";
 import { cn } from "@/lib/cn";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 const DAYS = [1, 2, 3, 4, 5, 6, 0];
 
@@ -30,7 +31,7 @@ export default function BookingLinkPanel() {
     if (mine?.settings) setForm(mine.settings);
   }, [mine?.settings]);
 
-  if (!form) return <section className="pf-section"><Loading /></section>;
+  if (!form) return <section className="pf-section"><KitSkeleton layout="list" rows={3} /></section>;
   const set = (patch: Partial<SchedulerSettings>) => setForm({ ...form, ...patch });
   const dayName = (d: number) => new Intl.DateTimeFormat(lang === "es" ? "es-US" : "en-US", { weekday: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2026, 9, 4 + d)));
   const ranges = (d: number) => form.availability.filter((w) => w.day_of_week === d);

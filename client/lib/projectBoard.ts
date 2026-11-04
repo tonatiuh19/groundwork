@@ -19,6 +19,7 @@ export type BoardFilters = {
   contractor_id: string;
   assigned_admin_id: string;
   loan_status: string;
+  city_id?: string;
 };
 
 export const EMPTY_BOARD_FILTERS: BoardFilters = {
@@ -37,6 +38,7 @@ export function countActiveBoardFilters(f: BoardFilters): number {
       Boolean(f.contractor_id),
       Boolean(f.assigned_admin_id),
       Boolean(f.loan_status),
+      Boolean(f.city_id),
     ] as boolean[]
   ).filter(Boolean).length;
 }
@@ -49,6 +51,7 @@ export function boardQueryParams(f: BoardFilters, limit = 20) {
   if (f.contractor_id) params.contractor_id = Number(f.contractor_id);
   if (f.assigned_admin_id) params.assigned_admin_id = Number(f.assigned_admin_id);
   if (f.loan_status) params.loan_status = f.loan_status;
+  if (f.city_id) params.city_id = Number(f.city_id);
   return params;
 }
 

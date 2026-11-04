@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Expand } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import ImageLightbox from "@/components/ImageLightbox";
+import AduDesignSheet, { aduDesignPhoto } from "@/components/AduDesignSheet";
 
 const DESIGN_IDS = [1, 2, 3] as const;
 
@@ -24,7 +25,7 @@ export default function AduDesignsStage() {
   const stageRef = useRef<HTMLDivElement>(null);
 
   const activeId = DESIGN_IDS[active];
-  const activeSrc = `/adu/design-viz-${activeId}.jpg?v=20261002g`;
+  const activeSrc = aduDesignPhoto(activeId);
   const activeAlt = t(`designs.alt${activeId}`);
 
   useEffect(() => {
@@ -71,8 +72,6 @@ export default function AduDesignsStage() {
                 : slot === -1
                   ? "is-left"
                   : "is-right";
-            const src = `/adu/design-viz-${id}.jpg?v=20261002g`;
-            const alt = t(`designs.alt${id}`);
             const label = t(`designs.plan${id}Label`);
 
             if (slot === 0) {
@@ -85,10 +84,14 @@ export default function AduDesignsStage() {
                   aria-label={t("designs.openLarger", { plan: label })}
                   aria-current="true"
                 >
-                  <img src={src} alt={alt} loading="lazy" draggable={false} />
-                  <span className="designs-stage-zoom">
-                    <Expand size={15} aria-hidden /> {t("designs.viewLarger")}
-                  </span>
+                  <AduDesignSheet
+                    id={id}
+                    photoOverlay={
+                      <span className="designs-stage-zoom">
+                        <Expand size={15} aria-hidden /> {t("designs.viewLarger")}
+                      </span>
+                    }
+                  />
                 </button>
               );
             }
@@ -102,7 +105,9 @@ export default function AduDesignsStage() {
                 aria-label={t("designs.showPlan", { plan: label })}
                 tabIndex={-1}
               >
-                <img src={src} alt="" loading="lazy" draggable={false} />
+                <span aria-hidden>
+                  <AduDesignSheet id={id} />
+                </span>
               </button>
             );
           })}
@@ -163,7 +168,9 @@ export default function AduDesignsStage() {
         src={activeSrc}
         alt={activeAlt}
         onClose={() => setLightboxOpen(false)}
-      />
+      >
+        <AduDesignSheet id={activeId} size="large" eager />
+      </ImageLightbox>
     </div>
   );
 }

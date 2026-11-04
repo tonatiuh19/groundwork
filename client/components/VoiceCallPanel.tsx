@@ -3,6 +3,7 @@ import type { Call, Device } from "@twilio/voice-sdk";
 import {
   ChevronDown,
   ChevronUp,
+  Grid3x3,
   Mic,
   MicOff,
   PhoneOff,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { VoiceAudioDevicePicker } from "@/components/admin/VoiceAudioDevicePicker";
+import CallKeypad from "@/components/admin/CallKeypad";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { endOutboundCall, logVoiceCall } from "@/store/slices/voiceSlice";
 import {
@@ -47,6 +49,7 @@ export default function VoiceCallPanel({ call, deviceAudio, onHangup }: Props) {
   const [elapsed, setElapsed] = useState(0);
   const [activeCall, setActiveCall] = useState<Call | null>(call || null);
   const [showDevices, setShowDevices] = useState(false);
+  const [showKeypad, setShowKeypad] = useState(false);
 
   const elapsedRef = useRef(0);
   const callSidRef = useRef<string | undefined>(undefined);
@@ -187,6 +190,16 @@ export default function VoiceCallPanel({ call, deviceAudio, onHangup }: Props) {
         </button>
         <button
           type="button"
+          className={`pf-icon-btn${showKeypad ? " is-active" : ""}`}
+          aria-expanded={showKeypad}
+          aria-label={t("conversations.keypad")}
+          title={t("conversations.keypad")}
+          onClick={() => setShowKeypad((v) => !v)}
+        >
+          <Grid3x3 className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
           className="pf-icon-btn"
           aria-expanded={showDevices}
           aria-label={t("conversations.audioDevicesToggle")}
@@ -229,6 +242,7 @@ export default function VoiceCallPanel({ call, deviceAudio, onHangup }: Props) {
           {t("conversations.hangup")}
         </button>
       </div>
+      {showKeypad ? <CallKeypad call={activeCall} /> : null}
       {showDevices ? (
         <div className="gw-voice-panel__devices">
           <VoiceAudioDevicePicker deviceAudio={deviceAudio} compact />

@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
-import { __testClearEmailDryRuns, __testGetEmailDryRuns, createServer } from "./index";
+import { __testClearEmailDryRuns, __testGetEmailDryRuns, __testGetSmsDryRuns, createServer } from "./index";
 import { cleanupPortalFixturesByPrefix, createIntegrationTestPool } from "./testDbCleanup";
 
 const hasDb = Boolean(process.env.DB_HOST && process.env.DB_USER && process.env.DB_NAME);
@@ -28,7 +28,7 @@ describe.runIf(hasDb)("people context: conversation names, last text/call, agree
     adminCookie = `gw_admin_sid=${t}`;
     const lineId = await ins(
       `INSERT INTO admin_phone_numbers (e164, friendly_name, assigned_admin_id, is_active, capabilities_json) VALUES (?, 'Ctx line', ?, 1, JSON_OBJECT('sms', TRUE, 'voice', TRUE))`,
-      [`+1888${digits}`, adminId],
+      [`+1555${digits}`, adminId],
     );
     affId = await ins(
       `INSERT INTO affiliates (email, first_name, last_name, phone, status, referral_code, approved_at, subscription_price_cents) VALUES (?, 'Jaz', 'Tea', ?, 'active', ?, NOW(), 1999)`,
@@ -48,7 +48,7 @@ describe.runIf(hasDb)("people context: conversation names, last text/call, agree
     );
     await ins(
       `INSERT INTO conversation_messages (conversation_id, channel, direction, body, from_address, to_address) VALUES (?, 'sms', 'inbound', 'hi from Jaz', ?, ?)`,
-      [convId, affPhone, `+1888${digits}`],
+      [convId, affPhone, `+1555${digits}`],
     );
     // She signed v2 before v3 was published.
     await db.execute(
@@ -116,5 +116,30 @@ describe.runIf(hasDb)("people context: conversation names, last text/call, agree
     expect(when.answer_en).toMatch(/within 5 business days after the loan funds/);
     const sub = (r.body.faqs as any[]).find((f) => /platform subscription/.test(f.question_en));
     expect(sub.answer_en).toMatch(/start the day Groundwork approves you/);
+  });
+
+  it("approving an affiliate sends congratulations + their EN/ES link by email and text; staff can resend", async () => {
+    const pendingId = await ins(
+      `INSERT INTO affiliates (email, first_name, last_name, phone, status, referral_code, slug, preferred_language) VALUES (?, 'Michael', 'Wu', ?, 'pending', ?, ?, 'en')`,
+      [em("michael"), `+1951${String(stamp).slice(-6)}9`, `GWM${digits}`, `${prefix}michael-wu`],
+    );
+    // Pending: no link yet.
+    expect((await request(app).post(`/api/admin/affiliates/${pendingId}/send-link`).set("Cookie", adminCookie)).status).toBe(409);
+    __testClearEmailDryRuns();
+    await request(app).patch(`/api/admin/affiliates/${pendingId}`).set("Cookie", adminCookie).send({ status: "active" }).expect(200);
+    const mail = __testGetEmailDryRuns().find((m: any) => m.to === em("michael")) as any;
+    expect(String(mail?.subject)).toMatch(/Michael, congratulations/);
+    expect(String(mail?.html)).toContain(`/r/${prefix}michael-wu`);
+    expect(String(mail?.html)).toContain("?lang=es");
+    const sms = (__testGetSmsDryRuns() as any[]).filter((m) => String(m.body).includes(`/r/${prefix}michael-wu`));
+    expect(sms.length).toBeGreaterThanOrEqual(1);
+    expect(String(sms[sms.length - 1].body)).toMatch(/congratulations 🎉 and welcome to Groundwork Capital Group as an affiliate/);
+    const [[row]] = (await db.query(`SELECT link_sent_at FROM affiliates WHERE id = ?`, [pendingId])) as any;
+    expect(row.link_sent_at).not.toBeNull();
+    // Staff resend + unsent counter (read-only here: never bulk-send against the shared DB in tests).
+    await request(app).post(`/api/admin/affiliates/${pendingId}/send-link`).set("Cookie", adminCookie).expect(200);
+    const unsent = await request(app).get("/api/admin/affiliate-links/unsent").set("Cookie", adminCookie).expect(200);
+    expect(typeof unsent.body.count).toBe("number");
+    await request(app).post("/api/admin/affiliate-links/send-all").set("Cookie", adminCookie).send({}).expect(400);
   });
 });

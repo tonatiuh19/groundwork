@@ -7,7 +7,8 @@ import { fetchAffiliateOnboarding } from "@/store/slices/affiliateOnboardingSlic
 
 /**
  * "Action needed" banner on the affiliate dashboard / commissions until the
- * agreement is signed and a W-9 is on file (payouts are held until then).
+ * agreement is signed, a W-9 is on file and the membership card is active
+ * (payouts are held until then). Names the step that is actually missing.
  */
 export default function OnboardingBanner() {
   const { t, i18n } = useTranslation();
@@ -31,7 +32,12 @@ export default function OnboardingBanner() {
         ? "affAgreement.bannerSign"
         : state.w9_status === "rejected"
           ? "affAgreement.bannerW9Fix"
-          : "affAgreement.bannerW9";
+          : state.w9_status === "missing"
+            ? "affAgreement.bannerW9"
+            : // Agreement + W-9 done: the only thing left is the membership card.
+              portal.billing.status === "past_due"
+              ? "affAgreement.bannerCardFix"
+              : "affAgreement.bannerCard";
   return (
     <section className="gw-onboard-banner" role="status">
       <FileSignature size={20} aria-hidden />

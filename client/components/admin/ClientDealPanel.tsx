@@ -19,6 +19,19 @@ import { useFormatters } from "@/lib/format";
  * by default; "Share with affiliate" posts to the affiliate's portal and sends
  * them a text + email. Status changes notify the affiliate the same way.
  */
+/** Shared notes reach the affiliate word for word by text and email, so staff see that as they write. */
+function AffiliateTextNotice({ name, note }: { name: string; note: string }) {
+  const { t } = useTranslation();
+  const text = note.trim();
+  return (
+    <div className="gw-deal-textnote">
+      <p>{t("deal.textWarning", { name })}</p>
+      {text ? <blockquote>{text}</blockquote> : null}
+      {text.length > 1450 ? <p>{t("deal.textTooLong")}</p> : null}
+    </div>
+  );
+}
+
 export default function ClientDealPanel({
   clientId,
   currentStatusId,
@@ -82,6 +95,7 @@ export default function ClientDealPanel({
                   {affiliate ? t("deal.notifyAffiliate", { name: affiliate.first_name }) : t("deal.noAffiliate")}
                 </span>
               </label>
+              {notify && affiliate ? <AffiliateTextNotice name={affiliate.first_name} note={statusNote} /> : null}
               <BusyButton
                 tone="gold"
                 label={t("deal.saveStatus")}
@@ -120,6 +134,7 @@ export default function ClientDealPanel({
                 <input type="checkbox" checked={share} disabled={!affiliate} onChange={(e) => setShare(e.target.checked)} />
                 <span>{affiliate ? t("deal.shareWith", { name: affiliate.first_name }) : t("deal.noAffiliate")}</span>
               </label>
+              {share && affiliate ? <AffiliateTextNotice name={affiliate.first_name} note={note} /> : null}
               <BusyButton
                 icon={Send}
                 label={t(share ? "deal.postShared" : "deal.postInternal")}

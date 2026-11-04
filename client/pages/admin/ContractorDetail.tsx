@@ -1,10 +1,14 @@
+import PersonCitiesPanel from "@/components/admin/PersonCitiesPanel";
 import { useEffect, useState, useRef } from "react";
+import AutomaticMessagesPanel from "@/components/admin/AutomaticMessagesPanel";
+import PersonFlowsPanel from "@/components/admin/PersonFlowsPanel";
 import LastContactStrip from "@/components/admin/LastContactStrip";
 import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import { Check, ClipboardCheck, Send, ShieldAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import ScorecardLink from "@/components/scorecard/ScorecardLink";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearAdminRecordDetail,
@@ -135,6 +139,7 @@ export default function AdminContractorDetail() {
             status={approved ? "active" : k.status}
             actions={
               <>
+                <ScorecardLink type="contractor" id={k.id} />
                 {isPending && canWrite && k.application_status === "approved" ? (
                   <BusyButton
                     tone="gold"
@@ -222,7 +227,7 @@ export default function AdminContractorDetail() {
               </>
             }
           />
-          <LastContactStrip phone={k.phone} name={`${k.first_name} ${k.last_name}`.trim()} />
+          <LastContactStrip phone={k.phone} email={k.email} name={`${k.first_name} ${k.last_name}`.trim()} />
 
           <div className="pf-stats">
             <StatCard labelKey="portalNav.projects" value={k.project_count} />
@@ -353,6 +358,10 @@ export default function AdminContractorDetail() {
               />
             </div>
           </Modal>
+
+          <PersonCitiesPanel kind="contractor" id={k.id} />
+          <AutomaticMessagesPanel kind="contractor" id={k.id} />
+          <PersonFlowsPanel kind="contractor" id={k.id} />
 
           <ConfirmStatusChangeModal
             pending={pendingDemote}

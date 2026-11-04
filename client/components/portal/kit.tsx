@@ -440,6 +440,26 @@ export function StatusBadge({
 
 // ── Table ────────────────────────────────────────────────────────────────────
 
+/** Table-shaped loading shimmer (header + rows); stacks like the real table on phones. */
+export function TableSkeleton({ cols = 4, rows = 6 }: { cols?: number; rows?: number }) {
+  const { t } = useTranslation();
+  const n = Math.min(Math.max(cols, 2), 6);
+  const line = (w: string, h = "0.75rem") => <span className="pk-skel__line" style={{ width: w, height: h }} />;
+  return (
+    <div className="pf-table-skel" role="status" aria-busy="true" style={{ ["--cols" as string]: n }}>
+      <span className="sr-only">{t("pf.loading")}</span>
+      <div className="pf-table-skel__row is-head" aria-hidden>
+        {Array.from({ length: n }, (_, c) => <span key={c}>{line("55%", "0.6rem")}</span>)}
+      </div>
+      {Array.from({ length: rows }, (_, r) => (
+        <div key={r} className="pf-table-skel__row" aria-hidden>
+          {Array.from({ length: n }, (_, c) => <span key={c}>{line(`${80 - ((r + c) % 3) * 18}%`)}</span>)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export type Column<T> = {
   key: string;
   headerKey: string;
@@ -454,6 +474,7 @@ export function DataTable<T>({
   loading,
   onRowClick,
   emptyKey,
+  skeleton,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -461,9 +482,11 @@ export function DataTable<T>({
   loading?: boolean;
   onRowClick?: (row: T) => void;
   emptyKey?: string;
+  /** Show a table-shaped shimmer while the first page loads (instead of the spinner). */
+  skeleton?: boolean;
 }) {
   const { t } = useTranslation();
-  if (loading && !rows.length) return <Loading />;
+  if (loading && !rows.length) return skeleton ? <TableSkeleton cols={columns.length} /> : <Loading />;
   if (!rows.length) return <EmptyState messageKey={emptyKey} />;
   return (
     <div className="pf-table-wrap">

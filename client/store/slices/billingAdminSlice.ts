@@ -15,6 +15,18 @@ export const fetchBillingOverview = createApiThunk<AdminBillingOverview, void>(
   async () => (await api.get("/admin/billing/overview")).data,
 );
 
+/** Bulk: approved members with no membership running and a price, then a confirmed email + text send. */
+export const fetchCardLinkEligible = createApiThunk<{ count: number; affiliates: number; contractors: number }, void>(
+  "billingAdmin/cardLinkEligible",
+  "admin",
+  async () => (await api.get("/admin/billing/card-links/eligible")).data,
+);
+export const sendAllCardLinks = createApiThunk<{ sent: number; failed: number }, void>(
+  "billingAdmin/cardLinkSendAll",
+  "admin",
+  async () => (await api.post("/admin/billing/card-links/send-all", { confirm: true })).data,
+);
+
 export const fetchMembership = createApiThunk<AdminMembership, Ref>(
   "billingAdmin/member",
   "admin",
@@ -84,6 +96,9 @@ type State = {
   linkBusy: boolean;
   linkCardError: string | null;
   linkDone: PlatformBilling | null;
+  cardLinkEligible: { count: number; affiliates: number; contractors: number } | null;
+  cardLinkSending: boolean;
+  cardLinkResult: { sent: number; failed: number } | null;
 };
 
 const initialState: State = {
@@ -99,6 +114,9 @@ const initialState: State = {
   linkBusy: false,
   linkCardError: null,
   linkDone: null,
+  cardLinkEligible: null,
+  cardLinkSending: false,
+  cardLinkResult: null,
 };
 
 const slice = createSlice({
@@ -118,6 +136,21 @@ const slice = createSlice({
     },
   },
   extraReducers: (b) => {
+    b.addCase(fetchCardLinkEligible.fulfilled, (s, a) => {
+      s.cardLinkEligible = a.payload;
+    })
+      .addCase(sendAllCardLinks.pending, (s) => {
+        s.cardLinkSending = true;
+      })
+      .addCase(sendAllCardLinks.fulfilled, (s, a) => {
+        s.cardLinkSending = false;
+        s.cardLinkResult = a.payload;
+        s.cardLinkEligible = { count: 0, affiliates: 0, contractors: 0 };
+      })
+      .addCase(sendAllCardLinks.rejected, (s, a) => {
+        s.cardLinkSending = false;
+        s.actionError = a.payload || "errors.server";
+      });
     b.addCase(fetchBillingOverview.pending, (s) => {
       s.overviewLoading = true;
       s.overviewError = null;

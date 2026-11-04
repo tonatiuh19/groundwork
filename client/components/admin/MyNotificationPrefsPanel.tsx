@@ -17,6 +17,7 @@ import {
   NOTIFY_CHANNELS,
 } from "@/components/admin/AdminNotifyPrefsControls";
 import { cn } from "@/lib/cn";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 type Props = { className?: string };
 
@@ -39,7 +40,7 @@ export default function MyNotificationPrefsPanel({ className }: Props) {
   if (prefsLoading && !prefs) {
     return (
       <section className={cn("pf-card", className)}>
-        <p className="pf-muted">{t("pf.loading")}</p>
+        <KitSkeleton layout="list" rows={3} />
       </section>
     );
   }

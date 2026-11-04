@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { personRecordPath } from "@/lib/recordPath";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -12,6 +13,8 @@ import {
   Search,
   Settings2,
   X,
+  Bot,
+  Mail,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -127,9 +130,11 @@ export default function AdminConversations() {
     timelineLoading,
     sending,
     sendError,
-    templates,
+    templates: allTemplates,
     realtimeSeq,
   } = useAppSelector((s) => s.conversations);
+  // Texting composer: SMS templates only (email templates live in Mail).
+  const templates = useMemo(() => allTemplates.filter((x) => x.channel !== "email"), [allTemplates]);
   const dialpadOpen = useAppSelector((s) => s.voice.dialpadOpen);
   const settingsOpen = useAppSelector((s) => s.voice.settingsOpen);
   const deviceStatus = useAppSelector((s) => s.voice.deviceStatus);
@@ -1129,7 +1134,13 @@ export default function AdminConversations() {
                       </div>
                     ) : (
                       <>
-                        {m.body && <p>{m.body}</p>}
+                        {m.metadata_json?.automatic ? (
+                          <span className="gw-conv-auto">
+                            {m.channel === "email" ? <Mail size={12} aria-hidden /> : <Bot size={12} aria-hidden />}{" "}
+                            {m.channel === "email" ? t("autoMsgs.badgeEmail") : t("autoMsgs.badge")}
+                          </span>
+                        ) : null}
+                        {m.body && <p className={m.channel === "email" ? "gw-conv-email-body" : undefined}>{m.body}</p>}
                         {m.media_url && (
                           <button
                             type="button"
@@ -1575,19 +1586,4 @@ function CallTranscriptStatus({ messageId, status }: { messageId: number; status
 }
 
 /** Where a matched phone number's record lives. */
-function matchPath(role: string, id: number, phone?: string | null): string {
-  switch (role) {
-    case "client":
-      return `/admin/clients/${id}`;
-    case "affiliate":
-      return `/admin/affiliates/${id}`;
-    case "contractor":
-      return `/admin/contractors/${id}`;
-    case "contact":
-      return `/admin/contacts?q=${encodeURIComponent(phone || "")}`;
-    case "lead":
-      return `/admin/leads?q=${encodeURIComponent(phone || "")}`;
-    default:
-      return "/admin/staff";
-  }
-}
+const matchPath = (role: string, id: number, phone?: string | null) => personRecordPath(role, id, phone);

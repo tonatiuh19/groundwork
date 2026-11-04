@@ -5,8 +5,9 @@ import MembershipDrawer from "@/components/admin/MembershipDrawer";
 import { useAdminCan } from "@/hooks/useAdminCan";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAdminContractorBilling, setContractorPrice } from "@/store/slices/contractorBillingSlice";
-import { BusyButton, ErrorNote, Loading, StatusBadge } from "@/components/portal/kit";
+import { BusyButton, ErrorNote, StatusBadge } from "@/components/portal/kit";
 import { useFormatters } from "@/lib/format";
+import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 type Mode = "default" | "custom" | "waived";
 const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -42,7 +43,7 @@ export default function ContractorBillingAdmin({
     void dispatch(fetchAdminContractorBilling(contractorId));
   }, [dispatch, contractorId, refreshKey]);
 
-  if (!data) return <section className="pf-section"><Loading /></section>;
+  if (!data) return <section className="pf-section"><KitSkeleton layout="list" rows={3} /></section>;
   const b = data.billing;
   const save = () => {
     const price_cents = mode === "default" ? null : mode === "waived" ? 0 : Math.round(Number(custom) * 100);

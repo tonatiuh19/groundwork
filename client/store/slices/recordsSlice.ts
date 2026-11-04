@@ -1,5 +1,5 @@
 import { createSlice } from "@reduxjs/toolkit";
-import type { ErasePreview, LeadTouch, RecordSearchResults } from "@shared/api";
+import type { AutomaticMessage, ErasePreview, LeadTouch, RecordSearchResults } from "@shared/api";
 import { api } from "@/lib/api";
 import { createApiThunk } from "@/lib/portalThunk";
 
@@ -30,6 +30,13 @@ export const fetchLastTouch = createApiThunk<{ last_sms: LeadTouch | null; last_
   async (phone) => (await api.get("/admin/last-touch", { params: { phone } })).data,
 );
 
+/** Record pages: automatic emails / texts the system sent this person. */
+export const fetchAutomaticMessages = createApiThunk<{ messages: AutomaticMessage[] }, { kind: "client" | "lead" | "affiliate" | "contractor" | "contact"; id: number }>(
+  "records/automaticMessages",
+  "admin",
+  async ({ kind, id }) => (await api.get(`/admin/people/${kind}/${id}/automatic-messages`)).data,
+);
+
 type State = {
   /** Keyed by the phone the record page asked about. */
   touches: Record<string, { last_sms: LeadTouch | null; last_call: LeadTouch | null }>;
@@ -40,8 +47,10 @@ type State = {
   previewLoading: boolean;
   erasing: boolean;
   eraseError: string | null;
+  /** Keyed by `${kind}:${id}`. */
+  automatic: Record<string, AutomaticMessage[]>;
 };
-const initialState: State = { touches: {}, query: "", results: null, searching: false, preview: null, previewLoading: false, erasing: false, eraseError: null };
+const initialState: State = { touches: {}, query: "", results: null, searching: false, preview: null, previewLoading: false, erasing: false, eraseError: null, automatic: {} };
 
 const slice = createSlice({
   name: "records",
@@ -57,6 +66,9 @@ const slice = createSlice({
     },
   },
   extraReducers: (b) => {
+    b.addCase(fetchAutomaticMessages.fulfilled, (s, a) => {
+      s.automatic[`${a.meta.arg.kind}:${a.meta.arg.id}`] = a.payload.messages;
+    });
     b.addCase(fetchLastTouch.fulfilled, (s, a) => {
       s.touches[a.meta.arg] = a.payload;
     });
