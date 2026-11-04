@@ -5,6 +5,8 @@
  * bot any message; the script saves that chat as TELEGRAM_CHAT_ID and from then on only accepts answers
  * from it. Without a token everything works in the terminal only.
  */
+import dns from "node:dns";
+import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -28,6 +30,12 @@ export const projectName = (() => {
 
 export type Choice = { key: string; label: string; /** Ask for typed text after picking this one. */ text?: string };
 export type Answer = { key: string; text?: string; via: "terminal" | "telegram" };
+
+// Many home / office networks have no working IPv6 route: Node would try Telegram's IPv6 address and
+// time out (ETIMEDOUT, "fetch failed"). IPv4 first, with a plain connect, makes it reliable.
+dns.setDefaultResultOrder("ipv4first");
+// Node's address racing gives up on a connection after 250ms, which drops slower (but fine) IPv4 handshakes.
+net.setDefaultAutoSelectFamily(false);
 
 const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN?.trim() || "";
 let chatId = process.env.TELEGRAM_CHAT_ID?.trim() || "";

@@ -2,6 +2,8 @@ import "dotenv/config";
 
 import { spawn, spawnSync } from "child_process";
 import { createInterface } from "readline/promises";
+import fs from "fs";
+import path from "path";
 import mysql from "mysql2/promise";
 import { checkApiIndexInline } from "./check-api-inline";
 import { ask, notify, projectName } from "./deployAsk";
@@ -63,6 +65,30 @@ function purgeTestData(reason: string) {
  * Wait for the children to stop, purge test fixtures synchronously, then exit.
  * A second Ctrl+C exits immediately. (Same approach as optimum-credit.)
  */
+/** Where the deploy is, for the abort message ("aborted during the tests"). */
+let stage = "starting";
+
+/** Failed tests from the last run (written by scripts/vitestProgressReporter.ts). */
+function failedTestsSummary(): string {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "node_modules/.cache/dl-test-failures.json"), "utf8")) as string[];
+    if (!list.length) return "";
+    return `\n${list.slice(0, 5).map((t) => `• ${t}`).join("\n")}${list.length > 5 ? `\n… and ${list.length - 5} more` : ""}`;
+  } catch {
+    return "";
+  }
+}
+
+const tgSafe = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Every abort tells the bot why, where and whether test data was cleaned. Never throws; at most ~10s. */
+async function notifyAbort(reason: string): Promise<void> {
+  const tests = stage === "tests" ? failedTestsSummary() : "";
+  const cleanup = testsStarted ? (purged ? "\n🧹 Test data cleaned up." : "\n⚠️ Test data cleanup did not finish: run npm run test:cleanup-fixtures") : "";
+  const text = `❌ <b>${tgSafe(projectName)} deploy aborted</b> (during ${tgSafe(stage)})\n${tgSafe(reason).slice(0, 600)}${tgSafe(tests)}${cleanup}\nNothing new went live.`;
+  await Promise.race([notify(text), new Promise((r) => setTimeout(r, 10_000))]);
+}
+
 function installInterruptCleanup() {
   const onSignal = (signal: NodeJS.Signals) => {
     if (interrupted) process.exit(130);
@@ -71,7 +97,7 @@ function installInterruptCleanup() {
     // Any abort purges, so staff never see test data; wait for vitest workers to exit first.
     setTimeout(() => {
       if (testsStarted) purgeTestData("Aborted");
-      process.exit(130);
+      void notifyAbort(`Stopped by hand (${signal === "SIGINT" ? "Ctrl+C" : signal}).`).finally(() => process.exit(130));
     }, testsRunning ? 1500 : 0);
   };
   process.on("SIGINT", onSignal);
@@ -309,6 +335,7 @@ async function runPreDeployChecks() {
     );
   }
 
+  stage = "typecheck";
   await runCommand("npm", ["run", "typecheck"]);
   console.log("\n✅ Typecheck passed.\n");
   // Tests write fixtures to the shared TiDB: purge test data whether the
@@ -319,13 +346,17 @@ async function runPreDeployChecks() {
   try {
     // On a terminal: one live progress bar (scripts/vitestProgressReporter.ts) instead of every test line.
     const progress = process.stdout.isTTY ? ["--reporter=./scripts/vitestProgressReporter.ts"] : [];
-    await runCommand("npx", ["vitest", "--run", ...progress]);
+    stage = "tests";
+    await runCommand("npx", ["vitest", "--run", ...progress]).catch((e) => {
+      throw interrupted ? e : new Error(`Tests failed.${failedTestsSummary() ? "" : ` (${e instanceof Error ? e.message : e})`}`);
+    });
     console.log("\n✅ Tests passed. Continuing to deploy...\n");
   } finally {
     testsRunning = false;
     if (!interrupted) purgeTestData("Tests finished");
   }
   if (!purged) throw new Error("Test data cleanup failed, so staff could see test rows. Run npm run test:cleanup-fixtures, then deploy again.");
+  stage = "production env check";
   await checkProductionEnv();
 }
 
@@ -493,6 +524,7 @@ async function main() {
       )
     : filteredArgs;
 
+  stage = "git check";
   await resolveGit(allowDirty);
   await notify(`🧪 <b>${projectName} deploy</b>: checks started on <code>${(await git(["rev-parse", "--short", "HEAD"])).slice(0, 12)}</code>.`);
 
@@ -505,6 +537,7 @@ async function main() {
   }
 
   // Again after the checks: nothing committed, pulled or edited meanwhile slips into the upload.
+  stage = "git re-check after the tests";
   await assertGitReady(allowDirty);
 
   // Short-lived connection — do not hold open across vercel --prod
@@ -512,7 +545,10 @@ async function main() {
   const currentVersion = await readAppVersion();
   const deployVersion = explicitVersion
     ? normalizeVersion(explicitVersion)
-    : await chooseVersion(currentVersion);
+    : await (async () => {
+        stage = "version question";
+        return chooseVersion(currentVersion);
+      })();
 
   if (!deployVersion) {
     throw new Error("Deploy version cannot be empty.");
@@ -522,7 +558,9 @@ async function main() {
   console.log(
     `\n🚀 Starting Vercel production deploy for version ${deployVersion}...\n`,
   );
+  stage = "Vercel upload";
   await runCommand("npx", ["vercel", "--prod", ...vercelArgs]);
+  stage = "after going live";
 
   // The site is already live here: a network blip on the version stamp must not read as a failed
   // deploy. Retry a few times, then say exactly what to run instead of "Deploy aborted".
@@ -553,13 +591,12 @@ async function main() {
   await notify(`🎉 <b>${projectName} ${deployVersion} is live.</b>`);
 }
 
-main().catch((error) => {
-  console.error(
-    `\n❌ Deploy aborted: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  // Ctrl+C: the signal handler is still waiting for vitest to stop and owns the cleanup + exit.
+main().catch(async (error) => {
+  const msg = error instanceof Error ? error.message : String(error);
+  console.error(`\n❌ Deploy aborted: ${msg}`);
+  // Ctrl+C: the signal handler is still waiting for vitest to stop and owns the cleanup, message and exit.
   if (interrupted) return;
   if (testsStarted && !purged) purgeTestData("Deploy aborted");
-  const msg = (error instanceof Error ? error.message : String(error)).replace(/[<>&]/g, "");
-  void notify(`❌ <b>${projectName} deploy aborted</b>\n${msg.slice(0, 500)}`).finally(() => process.exit(1));
+  await notifyAbort(msg);
+  process.exit(1);
 });

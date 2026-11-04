@@ -123,6 +123,16 @@ const shortName = (id: string) => path.basename(id).replace(/\.(integration\.)?(
 
 // ── timing memory (ETA from previous runs) ────────────────────────────────────
 const TIMES_FILE = path.resolve(process.cwd(), "node_modules/.cache/dl-test-times.json");
+/** Failed tests of the last run, read by the deploy script for its Telegram abort message. */
+const FAILURES_FILE = path.resolve(process.cwd(), "node_modules/.cache/dl-test-failures.json");
+const writeFailures = (list: string[]) => {
+  try {
+    fs.mkdirSync(path.dirname(FAILURES_FILE), { recursive: true });
+    fs.writeFileSync(FAILURES_FILE, JSON.stringify(list));
+  } catch {
+    /* the abort message just has no test list */
+  }
+};
 function loadTimes(): Record<string, number> {
   try {
     return JSON.parse(fs.readFileSync(TIMES_FILE, "utf8"));
@@ -161,6 +171,7 @@ export default class DashboardReporter implements Reporter {
 
   onTestRunStart(specs: ReadonlyArray<TestSpecification>) {
     this.specs = specs.map((s) => s.moduleId);
+    writeFailures([]);
     this.started = Date.now();
     printLogo(this.cols, `${c.bold(c.cyan("🧪 Test run"))} ${c.gray("·")} ${c.bold(projectName)} ${c.gray(`· ${specs.length} files · ${new Date().toLocaleTimeString()}`)}`);
     if (!this.tty) return;
@@ -198,6 +209,7 @@ export default class DashboardReporter implements Reporter {
       this.failed++;
       this.failures.push(t);
       this.lastFail = `${shortName(id)} › ${t.name}`;
+      writeFailures(this.failures.map((f) => `${shortName(f.module.moduleId)} › ${f.name}`));
       this.log(`   ${c.red("✗")} ${c.gray(`${shortName(id)} ›`)} ${c.red(t.name)}${time}`);
     } else this.skipped++;
     if (state !== "skipped" && ms > 0) {
