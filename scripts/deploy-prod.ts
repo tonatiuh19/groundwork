@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "child_process";
 import { createInterface } from "readline/promises";
 import mysql from "mysql2/promise";
 import { checkApiIndexInline } from "./check-api-inline";
-import { ask, notify } from "./deployAsk";
+import { ask, notify, projectName } from "./deployAsk";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -494,7 +494,7 @@ async function main() {
     : filteredArgs;
 
   await resolveGit(allowDirty);
-  await notify(`🧪 <b>Groundwork deploy</b>: checks started on <code>${(await git(["rev-parse", "--short", "HEAD"])).slice(0, 12)}</code>.`);
+  await notify(`🧪 <b>${projectName} deploy</b>: checks started on <code>${(await git(["rev-parse", "--short", "HEAD"])).slice(0, 12)}</code>.`);
 
   if (!skipChecks) {
     await runPreDeployChecks();
@@ -550,14 +550,16 @@ async function main() {
     `\n🎉 Production deploy succeeded! app_version updated to ${deployVersion}.`,
   );
   await tagRelease(deployVersion);
-  await notify(`🎉 <b>Groundwork ${deployVersion} is live.</b>`);
+  await notify(`🎉 <b>${projectName} ${deployVersion} is live.</b>`);
 }
 
 main().catch((error) => {
   console.error(
     `\n❌ Deploy aborted: ${error instanceof Error ? error.message : String(error)}`,
   );
-  if (testsStarted && !purged && !interrupted) purgeTestData("Deploy aborted");
+  // Ctrl+C: the signal handler is still waiting for vitest to stop and owns the cleanup + exit.
+  if (interrupted) return;
+  if (testsStarted && !purged) purgeTestData("Deploy aborted");
   const msg = (error instanceof Error ? error.message : String(error)).replace(/[<>&]/g, "");
-  void notify(`❌ <b>Groundwork deploy aborted</b>\n${msg.slice(0, 500)}`).finally(() => process.exit(1));
+  void notify(`❌ <b>${projectName} deploy aborted</b>\n${msg.slice(0, 500)}`).finally(() => process.exit(1));
 });

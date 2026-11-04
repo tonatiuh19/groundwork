@@ -9,6 +9,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 
+/**
+ * Project name on every Telegram message, so one bot can serve several repos:
+ * DEPLOY_NAME in .env, else package.json "name" ("the-mortgage-professionals" → "The Mortgage Professionals").
+ */
+export const projectName = (() => {
+  const set = process.env.DEPLOY_NAME?.trim();
+  if (set) return set;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "package.json"), "utf8")) as { name?: string };
+    const raw = String(pkg.name || "").replace(/^@[^/]+\//, "");
+    if (raw) return raw.split(/[-_\s]+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  } catch {
+    /* fall through */
+  }
+  return path.basename(process.cwd());
+})();
+
 export type Choice = { key: string; label: string; /** Ask for typed text after picking this one. */ text?: string };
 export type Answer = { key: string; text?: string; via: "terminal" | "telegram" };
 
@@ -44,10 +61,23 @@ function rememberChat(id: string) {
 }
 
 /** True when the bot can reach you. Finds the chat from the newest message to the bot on first use. */
+let linked = false;
+
 export async function telegramReady(): Promise<boolean> {
   if (!TOKEN() || telegramOff) return false;
+  if (linked) return true;
   try {
-    const updates = await tg<any[]>("getUpdates", { timeout: 0 });
+    // Wi-Fi / DNS blips are common: three tries before falling back to the terminal.
+    let updates: any[] = [];
+    for (let attempt = 1; ; attempt++) {
+      try {
+        updates = await tg<any[]>("getUpdates", { timeout: 0 }, AbortSignal.timeout(8000));
+        break;
+      } catch (e) {
+        if (attempt >= 3 || /Telegram getUpdates:/.test(String((e as Error)?.message))) throw e;
+        await new Promise((r) => setTimeout(r, attempt * 1500));
+      }
+    }
     if (updates.length) offset = updates[updates.length - 1].update_id + 1;
     if (!chatId) {
       const last = [...updates].reverse().find((u) => u.message?.chat?.type === "private");
@@ -59,10 +89,13 @@ export async function telegramReady(): Promise<boolean> {
       rememberChat(String(last.message.chat.id));
       console.log("📱 Telegram linked: deploy questions will also come to your chat.");
     }
+    linked = true;
     return true;
   } catch (e) {
-    console.log(`📱 Telegram unavailable (${e instanceof Error ? e.message : e}). Using the terminal.`);
-    telegramOff = true;
+    const cause = (e as { cause?: { code?: string } })?.cause?.code;
+    console.log(`📱 Telegram unavailable (${cause ? `network: ${cause}` : e instanceof Error ? e.message : e}). Using the terminal.`);
+    // A bad token stays off for the run; a network blip is retried at the next question (e.g. the version, after the tests).
+    if (!cause && /Telegram getUpdates:/.test(String((e as Error)?.message))) telegramOff = true;
     return false;
   }
 }
@@ -81,14 +114,14 @@ async function telegramAnswer(question: string, choices: Choice[], signal: Abort
     "sendMessage",
     {
       chat_id: chatId,
-      text: `🚀 <b>Groundwork deploy</b>\n${escapeHtml(question)}`,
+      text: `🚀 <b>${escapeHtml(projectName)} deploy</b>\n${escapeHtml(question)}`,
       parse_mode: "HTML",
       reply_markup: { inline_keyboard: choices.map((c) => [{ text: c.label, callback_data: c.key }]) },
     },
     signal,
   );
   const done = (note: string) =>
-    tg("editMessageText", { chat_id: chatId, message_id: msg.message_id, text: `🚀 <b>Groundwork deploy</b>\n${escapeHtml(question)}\n\n${note}`, parse_mode: "HTML" }).catch(() => undefined);
+    tg("editMessageText", { chat_id: chatId, message_id: msg.message_id, text: `🚀 <b>${escapeHtml(projectName)} deploy</b>\n${escapeHtml(question)}\n\n${note}`, parse_mode: "HTML" }).catch(() => undefined);
   signal.addEventListener("abort", () => void done("⌨️ Answered in the terminal."), { once: true });
 
   let picked: Choice | null = null;
@@ -146,8 +179,10 @@ async function terminalAnswer(question: string, choices: Choice[], signal: Abort
 /** Asks in the terminal and on Telegram at once; the first answer wins and closes the other. */
 export async function ask(question: string, choices: Choice[]): Promise<Answer> {
   const stop = new AbortController();
+  // Connect first, so a Telegram notice never lands in the middle of the terminal prompt.
+  const useTelegram = await telegramReady();
   const racers = [terminalAnswer(question, choices, stop.signal)];
-  if (await telegramReady()) {
+  if (useTelegram) {
     racers.push(
       telegramAnswer(question, choices, stop.signal).catch((e) => {
         if (stop.signal.aborted) throw e;
