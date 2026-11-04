@@ -81,7 +81,7 @@ mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" \
 npm run deploy:prod
 ```
 
-Mandatory git: runs only on `main` with everything committed and pushed (same commit as origin/main; fails on uncommitted, unpushed or behind; never `.env` / key files). Order: git check → api inline check → typecheck → vitest → git check again → version prompt → `vercel --prod` → stamp `system_settings.app_version` → tag `v<version>` + push the tag. `--allow-dirty` lets uncommitted files ship (the other git checks still apply). Tests show a live progress bar on a terminal (`scripts/vitestProgressReporter.ts`); once tests have started, any abort (failure, Ctrl+C, error) purges test data, and a failed purge stops the deploy.
+Git: runs only on `main`, never behind origin, never with `.env` / key files. Uncommitted or unpushed work is asked about first: commit + push with the suggested message (rule-based from the changed files) or my own, "I'll handle it in the terminal" (waits until main is clean and pushed), or abort. Order: git → api inline check → typecheck → vitest (live progress bar) → strict git re-check → version (suggested patch / minor / custom / type it / abort) → `vercel --prod` → stamp `system_settings.app_version` → tag `v<version>`. `--allow-dirty` ships uncommitted files. Questions also go to Telegram when `TELEGRAM_BOT_TOKEN` is set (`scripts/deployAsk.ts`; first answer wins, terminal or Telegram; only the saved `TELEGRAM_CHAT_ID` can answer), plus started / live / aborted messages. Once tests have started, any abort purges test data, and a failed purge stops the deploy.
 
 ### Staff notify
 

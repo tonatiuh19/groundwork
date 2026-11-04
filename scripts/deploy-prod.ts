@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "child_process";
 import { createInterface } from "readline/promises";
 import mysql from "mysql2/promise";
 import { checkApiIndexInline } from "./check-api-inline";
+import { ask, notify } from "./deployAsk";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -136,6 +137,145 @@ async function assertGitReady(allowDirty: boolean): Promise<void> {
   if (behind > 0) throw new Error(`main is ${behind} commit(s) behind origin/main. Pull first (git pull --rebase), then deploy.`);
   const ahead = Number(await git(["rev-list", "--count", "origin/main..HEAD"])) || 0;
   if (ahead > 0) throw new Error(`main has ${ahead} commit(s) not pushed to origin. Run git push origin main, then deploy.`);
+}
+
+/** Rule-based suggestion from the changed files: type + main areas, e.g. "feat: city, events, deploy (+12 files)". */
+function suggestCommitMessage(porcelain: string): string {
+  const lines = porcelain.split("\n").filter(Boolean);
+  const files = statusFiles(porcelain);
+  const added = lines.filter((l) => l.startsWith("??") || l[0] === "A").map((l) => l.slice(3));
+  const isDoc = (f: string) => /\.(md|mdc)$/.test(f);
+  const isTest = (f: string) => /\.(test|spec)\.tsx?$/.test(f);
+  const type = files.every(isDoc)
+    ? "docs"
+    : files.every((f) => isTest(f) || isDoc(f))
+      ? "test"
+      : added.some((f) => /^(client\/(pages|components)|database\/migrations)\//.test(f)) || files.includes("api/index.ts")
+        ? "feat"
+        : files.every((f) => /^(scripts|\.cursor|\.claude)\/|^package(-lock)?\.json$|\.config\.ts$/.test(f) || isDoc(f))
+          ? "chore"
+          : "fix";
+  const area = (f: string) => {
+    if (f.startsWith("client/locales/")) return null;
+    if (isTest(f) || isDoc(f)) return null;
+    const m = f.match(/^client\/(?:pages|components)\/(?:admin\/|portal\/)?([^/.]+)/);
+    if (m) return m[1].replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+    if (f.startsWith("database/")) return "database";
+    if (f.startsWith("scripts/")) return "deploy scripts";
+    if (f === "api/index.ts" || f === "api/swagger.yaml") return "api";
+    return f.split("/")[0].replace(/^\./, "");
+  };
+  const counts = new Map<string, number>();
+  for (const f of files) {
+    const a = area(f);
+    if (a) counts.set(a, (counts.get(a) || 0) + 1);
+  }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([a]) => a);
+  const extra = files.length > 1 ? ` (+${files.length} files)` : "";
+  return `${type}: ${top.length ? top.join(", ") : "update"}${extra}`;
+}
+
+/**
+ * Before the checks: main must match origin/main. Uncommitted or unpushed work is not an error any more:
+ * commit + push with the suggested or a custom message, wait while I handle it myself, or abort.
+ */
+async function resolveGit(allowDirty: boolean): Promise<void> {
+  while (true) {
+    const branch = await git(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (branch !== "main") throw new Error(`Deploys run from main only (you are on "${branch}"). Merge into main first.`);
+    await runCommand("git", ["fetch", "--quiet", "origin", "main"]);
+    const behind = Number(await git(["rev-list", "--count", "HEAD..origin/main"])) || 0;
+    if (behind > 0) throw new Error(`main is ${behind} commit(s) behind origin/main. Pull first (git pull --rebase), then deploy.`);
+    const porcelain = await captureCommand("git", ["status", "--porcelain"]);
+    const files = statusFiles(porcelain);
+    const secrets = files.filter((f) => SECRET_FILE.test(f));
+    if (secrets.length) throw new Error(`These look like secrets and must never be committed or uploaded: ${secrets.join(", ")}. Add them to .gitignore first.`);
+    const dirty = files.length > 0 && !allowDirty;
+    const ahead = Number(await git(["rev-list", "--count", "origin/main..HEAD"])) || 0;
+    if (!dirty && !ahead) {
+      if (files.length) console.log(`\n⚠️  --allow-dirty: ${files.length} uncommitted change(s) will ship without being committed.`);
+      return;
+    }
+
+    const suggested = dirty ? suggestCommitMessage(porcelain) : "";
+    const what = dirty
+      ? `${files.length} uncommitted change(s)${ahead ? ` and ${ahead} unpushed commit(s)` : ""} on main`
+      : `${ahead} commit(s) on main not pushed to origin`;
+    console.log(`\n📝 ${what}.`);
+    const a = await ask(`${what}. Deploys only ship what is on origin/main.`, [
+      ...(dirty
+        ? [
+            { key: "suggested", label: `Commit + push: "${suggested}"` },
+            { key: "custom", label: "Commit + push with my own message", text: "Commit message:" },
+          ]
+        : [{ key: "push", label: `Push ${ahead} commit(s) to origin/main` }]),
+      { key: "manual", label: "I'll handle it in the terminal (wait for me)" },
+      { key: "abort", label: "Abort the deploy" },
+    ]);
+    if (a.key === "abort") throw new Error("Deploy cancelled.");
+    if (a.key === "manual") {
+      await waitForCleanMain();
+      continue;
+    }
+    if (dirty) {
+      const message = a.key === "custom" && a.text ? a.text : suggested;
+      await runCommand("git", ["add", "-A"]);
+      await runCommand("git", ["commit", "--quiet", "-m", message]);
+      console.log(`✅ Committed: ${message}`);
+    }
+    await runCommand("git", ["push", "origin", "main"]);
+    console.log("✅ Pushed to origin/main.");
+  }
+}
+
+/** "I'll handle it": re-check every 5s until main is clean and pushed (Enter re-checks now). */
+async function waitForCleanMain(): Promise<void> {
+  console.log("\n⏳ Waiting for you: commit and push to main in another terminal tab. Press Enter here to re-check now, or Ctrl+C to abort.");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const enter = () => rl.question("").then(() => undefined);
+  try {
+    let pending = enter();
+    while (true) {
+      const clean = !(await captureCommand("git", ["status", "--porcelain"])).trim();
+      await runCommand("git", ["fetch", "--quiet", "origin", "main"]).catch(() => undefined);
+      const ahead = Number(await git(["rev-list", "--count", "origin/main..HEAD"]).catch(() => "1")) || 0;
+      if (clean && !ahead) {
+        console.log("✅ main is clean and pushed. Continuing...");
+        return;
+      }
+      const tick = await Promise.race([pending.then(() => "enter"), new Promise((r) => setTimeout(() => r("tick"), 5000))]);
+      if (tick === "enter") pending = enter();
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+const bump = (v: string, part: "patch" | "minor" | "major") => {
+  const m = v.match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return part === "major" ? `${maj + 1}.0.0` : part === "minor" ? `${maj}.${min + 1}.0` : `${maj}.${min}.${pat + 1}`;
+};
+
+/** Suggested patch / minor, a custom one, or typed by me in the terminal. */
+async function chooseVersion(current: string | null): Promise<string> {
+  const cur = current?.trim() || "";
+  console.log(`\n🏷️  Current production version: ${cur || "not set"}`);
+  const patch = bump(cur, "patch");
+  const minor = bump(cur, "minor");
+  const a = await ask(`Release version (now ${cur || "not set"})`, [
+    ...(patch ? [{ key: "patch", label: `${patch} (patch, suggested)` }] : []),
+    ...(minor ? [{ key: "minor", label: `${minor} (minor)` }] : []),
+    { key: "custom", label: "Custom version", text: "Version:" },
+    { key: "manual", label: "I'll type it in the terminal (wait for me)" },
+    { key: "abort", label: "Abort the deploy" },
+  ]);
+  if (a.key === "abort") throw new Error("Deploy cancelled.");
+  if (a.key === "patch" && patch) return patch;
+  if (a.key === "minor" && minor) return minor;
+  if (a.key === "custom" && a.text) return normalizeVersion(a.text);
+  return promptForVersion(current);
 }
 
 /** After the deploy is live: tag the release. A failure only warns (the site is already up). */
@@ -353,7 +493,8 @@ async function main() {
       )
     : filteredArgs;
 
-  await assertGitReady(allowDirty);
+  await resolveGit(allowDirty);
+  await notify(`🧪 <b>Groundwork deploy</b>: checks started on <code>${(await git(["rev-parse", "--short", "HEAD"])).slice(0, 12)}</code>.`);
 
   if (!skipChecks) {
     await runPreDeployChecks();
@@ -371,7 +512,7 @@ async function main() {
   const currentVersion = await readAppVersion();
   const deployVersion = explicitVersion
     ? normalizeVersion(explicitVersion)
-    : await promptForVersion(currentVersion);
+    : await chooseVersion(currentVersion);
 
   if (!deployVersion) {
     throw new Error("Deploy version cannot be empty.");
@@ -409,6 +550,7 @@ async function main() {
     `\n🎉 Production deploy succeeded! app_version updated to ${deployVersion}.`,
   );
   await tagRelease(deployVersion);
+  await notify(`🎉 <b>Groundwork ${deployVersion} is live.</b>`);
 }
 
 main().catch((error) => {
@@ -416,5 +558,6 @@ main().catch((error) => {
     `\n❌ Deploy aborted: ${error instanceof Error ? error.message : String(error)}`,
   );
   if (testsStarted && !purged && !interrupted) purgeTestData("Deploy aborted");
-  process.exit(1);
+  const msg = (error instanceof Error ? error.message : String(error)).replace(/[<>&]/g, "");
+  void notify(`❌ <b>Groundwork deploy aborted</b>\n${msg.slice(0, 500)}`).finally(() => process.exit(1));
 });
