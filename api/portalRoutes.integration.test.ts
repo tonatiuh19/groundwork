@@ -706,6 +706,8 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
   });
 
   // Many API steps on the shared DB (~40s alone), too close to the default 45s under a full run.
+  // Every legal / illegal pair is unit tested (portalHelpers.test.ts → assertMilestoneTransition).
+  // Here only what needs the API: no partial write on a 409, and the legal path records events.
   it("milestone state machine via the API: illegal jumps 409 with no partial write; legal path records events", async () => {
     const patch = (body: object) =>
       as(superCookie).patch(`/api/admin/projects/${projectId}`).send(body);
@@ -718,23 +720,13 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
       (await as(superCookie).get(`/api/admin/projects/${projectId}`)).body
         .project.contractor_id,
     ).toBeNull();
-    expect((await patch({ milestone: "closed" })).status).toBe(409);
 
     // same-milestone patch is a no-op (no event)
-    expect((await patch({ milestone: "lead", notes: "hello" })).status).toBe(
-      200,
-    );
+    expect((await patch({ milestone: "lead", notes: "hello" })).status).toBe(200);
 
     expect((await patch({ milestone: "financing" })).status).toBe(200);
-    expect((await patch({ milestone: "closed" })).status).toBe(409);
     expect(
-      (
-        await patch({
-          milestone: "contracted",
-          contractor_id: ctrId,
-          contractor_cost_cents: 5_000_000,
-        })
-      ).status,
+      (await patch({ milestone: "contracted", contractor_id: ctrId, contractor_cost_cents: 5_000_000 })).status,
     ).toBe(200);
     expect((await patch({ milestone: "in_build" })).status).toBe(200);
     expect((await patch({ milestone: "closed" })).status).toBe(200);
@@ -743,24 +735,13 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
     const reopen = await patch({ milestone: "lead" });
     expect(reopen.status).toBe(409);
     expect(reopen.body.error).toBe("errors.invalidTransition");
-    expect((await patch({ milestone: "cancelled" })).status).toBe(409);
 
-    // closed → in_build (re-open one step) → cancelled → (closed illegal) → lead
+    // Back to lead (via cancelled): later tests expect the project where it started.
     expect((await patch({ milestone: "in_build" })).status).toBe(200);
     expect((await patch({ milestone: "cancelled" })).status).toBe(200);
-    expect((await patch({ milestone: "closed" })).status).toBe(409);
     const back = await patch({ milestone: "lead" });
     expect(back.status).toBe(200);
-    expect(back.body.events.map((e: any) => e.to_milestone)).toEqual([
-      "lead",
-      "financing",
-      "contracted",
-      "in_build",
-      "closed",
-      "in_build",
-      "cancelled",
-      "lead",
-    ]);
+    expect(back.body.events.map((e: any) => e.to_milestone)).toEqual(["lead", "financing", "contracted", "in_build", "closed", "in_build", "cancelled", "lead"]);
   }, 120_000);
 
   it("concurrent milestone moves from the same state: exactly one wins", async () => {
@@ -1023,24 +1004,7 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
 
   // ── Photos: allow-list + Vercel Blob upload ────────────────────────────────
 
-  it("photo URL allow-list also honours PHOTO_URL_ALLOWED_HOSTS", async () => {
-    const post = (url: string) =>
-      as(ctrCookie)
-        .post(`/api/contractor/projects/${projectId}/photos`)
-        .send({ storage_url: url });
-    expect((await post("https://cdn.photos.test/a.jpg")).body.error).toBe(
-      "validation.photoUrl",
-    );
-    process.env.PHOTO_URL_ALLOWED_HOSTS = "cdn.photos.test";
-    try {
-      expect((await post("https://cdn.photos.test/a.jpg")).status).toBe(201);
-      expect(
-        (await post("https://cdn.photos.test.evil.io/a.jpg")).body.error,
-      ).toBe("validation.photoUrl");
-    } finally {
-      delete process.env.PHOTO_URL_ALLOWED_HOSTS;
-    }
-  });
+  // PHOTO_URL_ALLOWED_HOSTS rules: unit tested in portalHelpers.test.ts (isAllowedPhotoUrl).
 
   it("photo upload: storage gate, type sniffing, size cap, ownership, blob call", async () => {
     const up = (
@@ -1163,7 +1127,8 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
     );
 
     const photos = await as(ctrCookie).get("/api/contractor/photos");
-    expect(photos.body.photos.length).toBeGreaterThanOrEqual(3);
+    // The two uploads above (the allow-list case moved to portalHelpers.test.ts no longer adds one).
+    expect(photos.body.photos.length).toBeGreaterThanOrEqual(2);
   });
 
   it("admin self profile: patch fields + avatar blob upload", async () => {

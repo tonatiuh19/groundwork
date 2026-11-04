@@ -4112,6 +4112,26 @@ async function retireAffiliateSlug(
 }
 
 /**
+ * Settings are read on almost every request (one project edit read them 25 times), each a full round trip
+ * to TiDB. Keep each value for 30s in this instance; every write path calls `forgetSetting`, so a change
+ * made here is seen at once and other Vercel instances catch up within 30s.
+ */
+const SETTING_TTL_MS = 30_000;
+const settingCache = new Map<string, { value: string | null; at: number }>();
+function forgetSetting(key?: string) {
+  if (key) settingCache.delete(key);
+  else settingCache.clear();
+}
+async function readSetting(key: string, db: Pool | PoolConnection = pool): Promise<string | null> {
+  const hit = settingCache.get(key);
+  if (hit && Date.now() - hit.at < SETTING_TTL_MS) return hit.value;
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1`, [key]);
+  const value = rows[0]?.setting_value != null ? String(rows[0].setting_value) : null;
+  settingCache.set(key, { value, at: Date.now() });
+  return value;
+}
+
+/**
  * Pass the transaction's `conn` when called inside `withTx`: grabbing a second
  * pooled connection while holding one can exhaust the pool and deadlock every
  * request on the instance under concurrency.
@@ -4122,11 +4142,7 @@ async function getSettingInt(
   db: Pool | PoolConnection = pool,
 ): Promise<number> {
   try {
-    const [rows] = await db.execute<RowDataPacket[]>(
-      `SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1`,
-      [key],
-    );
-    const n = Number(rows[0]?.setting_value);
+    const n = Number(await readSetting(key, db));
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   } catch {
     return fallback;
@@ -18353,6 +18369,7 @@ function registerAdminRoutes(app: Express) {
            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
           [key, String(value)],
         );
+        forgetSetting(key);
       }
       res.json({ ok: true });
     }),
@@ -23086,11 +23103,7 @@ function takePendingRecording(callSid: string): PendingRecording | null {
 }
 
 async function getSystemSettingValue(key: string): Promise<string | null> {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1`,
-    [key],
-  );
-  return rows[0]?.setting_value != null ? String(rows[0].setting_value) : null;
+  return readSetting(key);
 }
 
 async function upsertSystemSetting(key: string, value: string): Promise<void> {
@@ -23100,6 +23113,7 @@ async function upsertSystemSetting(key: string, value: string): Promise<void> {
      ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
     [key, value],
   );
+  forgetSetting(key);
 }
 
 let cachedTwimlAppSid: string | null =
@@ -36324,6 +36338,7 @@ async function activateAffiliateOnboardingOnce(): Promise<void> {
     const [pending] = await pool.query<RowDataPacket[]>(`SELECT id FROM affiliates WHERE status = 'pending' AND email NOT LIKE '%@example.com' AND email NOT LIKE '%@example.test'`);
     for (const a of pending) await enrollInFlow(Number(f.id), "affiliate", Number(a.id), null);
     await pool.execute(`INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('affiliate_onboarding_v2_at', ?, 'Affiliate onboarding v2 switched on')`, [new Date().toISOString()]);
+    forgetSetting("affiliate_onboarding_v2_at");
   } catch (e: any) {
     console.error("[flows] affiliate onboarding activation:", e?.message ?? e);
   }
@@ -39718,6 +39733,7 @@ async function scorecardStartWeek(now: Date): Promise<string> {
     `INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('scorecard_start_week', ?, 'Scorecards: first week scored (set on first run)')`,
     [scWeekStart(now)],
   );
+  forgetSetting("scorecard_start_week");
   return (await getSystemSettingValue("scorecard_start_week")) || scWeekStart(now);
 }
 
