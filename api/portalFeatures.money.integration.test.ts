@@ -569,304 +569,322 @@ describe("portal features: projects, commissions, draws (integration)", () => {
     ).toBe("errors.commissionPaidLocked");
   });
 
-  it("splits commissions for sub closer + parent; voids parent when inactive; guards sub invite", async () => {
-    const parentCode = crypto.randomBytes(4).toString("hex").toUpperCase();
-    const parentId = await insertId(
-      `INSERT INTO affiliates (email, first_name, last_name, status, referral_code)
-       VALUES (?, 'Pam', 'Parent', 'active', ?)`,
-      [em("parent"), parentCode],
-    );
-    const parentCookie = await makeSession("affiliate", parentId);
+  // One flow split in 4 steps (same order, shared state) so each stays well under the per-test timeout
+  // on the shared remote TiDB. Steps depend on the previous ones: run the whole describe.
+  describe("commission split: sub closer + parent", () => {
+    let parentId = 0;
+    let parentCookie = "";
+    let subId = 0;
+    let subCookie = "";
+    let splitPublicId = "";
+    let sq = 0;
+    let closerAfter: any = null;
+    let parentAfter: any = null;
 
-    // Top-level can invite; the sub starts pending until Groundwork approves.
-    const invite = await as(parentCookie)
-      .post("/api/affiliate/team")
-      .send({
-        first_name: "Sam",
-        last_name: "Sub",
-        email: em("sub"),
-        phone: ph("0100"),
-        preferred_language: "es",
+    it("commission split 1/4: top-level invites a pending sub; self-parent pointer ignored; subs recruit; sponsor cycles refused", async () => {
+      const parentCode = crypto.randomBytes(4).toString("hex").toUpperCase();
+      parentId = await insertId(
+        `INSERT INTO affiliates (email, first_name, last_name, status, referral_code)
+         VALUES (?, 'Pam', 'Parent', 'active', ?)`,
+        [em("parent"), parentCode],
+      );
+      parentCookie = await makeSession("affiliate", parentId);
+
+      // Top-level can invite; the sub starts pending until Groundwork approves.
+      const invite = await as(parentCookie)
+        .post("/api/affiliate/team")
+        .send({
+          first_name: "Sam",
+          last_name: "Sub",
+          email: em("sub"),
+          phone: ph("0100"),
+          preferred_language: "es",
+        });
+      expect(invite.status).toBe(201);
+      subId = Number(invite.body.affiliate_id);
+      expect(subId).toBeGreaterThan(0);
+      const [[subRow]] = (await db.query(
+        `SELECT status, parent_affiliate_id, preferred_language FROM affiliates WHERE id = ?`,
+        [subId],
+      )) as any;
+      expect(subRow.status).toBe("pending");
+      expect(Number(subRow.parent_affiliate_id)).toBe(parentId);
+      expect(subRow.preferred_language).toBe("es");
+      expect((await as(superCookie).patch(`/api/admin/affiliates/${subId}`).send({ status: "active" })).status).toBe(200);
+
+      // Self-parent corrupt pointer is ignored → treated as direct (no parent split).
+      await db.execute(
+        `UPDATE affiliates SET parent_affiliate_id = id WHERE id = ?`,
+        [parentId],
+      );
+      const selfReg = await as(parentCookie)
+        .post("/api/affiliate/clients")
+        .send({
+          first_name: "Self",
+          last_name: "Parent",
+          email: em("self-parent-client"),
+          phone: ph("0188"),
+          property_address: "2 Self St",
+          homeowner_consent: true,
+          preferred_language: "en",
+          adu_plan_id: planId,
+        });
+      expect(selfReg.status).toBe(201);
+      const [[selfProj]] = (await db.query(
+        `SELECT closer_affiliate_id, parent_affiliate_id FROM projects WHERE public_id = ?`,
+        [selfReg.body.project_public_id],
+      )) as any;
+      expect(Number(selfProj.closer_affiliate_id)).toBe(parentId);
+      expect(selfProj.parent_affiliate_id).toBeNull();
+      await db.execute(
+        `UPDATE affiliates SET parent_affiliate_id = NULL WHERE id = ?`,
+        [parentId],
+      );
+
+      subCookie = await makeSession("affiliate", subId);
+      // Agreement §9: subs may recruit too; their recruit's Senior Sponsor is the top parent.
+      expect((await as(subCookie).get("/api/affiliate/team")).status).toBe(200);
+      const nested = await as(subCookie)
+        .post("/api/affiliate/team")
+        .send({
+          first_name: "Nia",
+          last_name: "Nested",
+          email: em("nested"),
+          phone: ph("0101"),
+        });
+      expect(nested.status).toBe(201);
+      const nestedId = Number(nested.body.affiliate_id);
+      const [[nestedRow]] = (await db.query(`SELECT parent_affiliate_id FROM affiliates WHERE id = ?`, [nestedId])) as any;
+      expect(Number(nestedRow.parent_affiliate_id)).toBe(subId);
+      // Admin sponsor edits refuse cycles (top parent cannot report to its own recruit).
+      const cycle = await as(superCookie).patch(`/api/admin/affiliates/${parentId}`).send({ parent_affiliate_id: nestedId });
+      expect(cycle.body.error).toBe("errors.sponsorCycle");
+    }, 120_000);
+
+    it("commission split 2/4: sub's client snapshots closer + parent (70/30); inactive parent voids its share, reactivating restores it", async () => {
+      // Sub registers a client → project snapshots closer + parent.
+      const reg = await as(subCookie)
+        .post("/api/affiliate/clients")
+        .send({
+          first_name: "Split",
+          last_name: "Home",
+          email: em("split-client"),
+          phone: ph("0199"),
+          property_address: "1 Split St",
+          homeowner_consent: true,
+          preferred_language: "en",
+          adu_plan_id: planId,
+        });
+      expect(reg.status).toBe(201);
+      splitPublicId = String(reg.body.project_public_id);
+      const [[proj]] = (await db.query(
+        `SELECT id, sq_ft, closer_affiliate_id, parent_affiliate_id, affiliate_id
+         FROM projects WHERE public_id = ?`,
+        [splitPublicId],
+      )) as any;
+      expect(Number(proj.closer_affiliate_id)).toBe(subId);
+      expect(Number(proj.parent_affiliate_id)).toBe(parentId);
+      sq = Number(proj.sq_ft || 550);
+
+      await as(superCookie).patch(`/api/admin/projects/${splitPublicId}`).send({
+        contractor_id: ctrId,
+        milestone: "contracted",
+        sale_price_cents: 30_000_000,
+        contractor_cost_cents: 20_000_000,
       });
-    expect(invite.status).toBe(201);
-    const subId = Number(invite.body.affiliate_id);
-    expect(subId).toBeGreaterThan(0);
-    const [[subRow]] = (await db.query(
-      `SELECT status, parent_affiliate_id, preferred_language FROM affiliates WHERE id = ?`,
-      [subId],
-    )) as any;
-    expect(subRow.status).toBe("pending");
-    expect(Number(subRow.parent_affiliate_id)).toBe(parentId);
-    expect(subRow.preferred_language).toBe("es");
-    expect((await as(superCookie).patch(`/api/admin/affiliates/${subId}`).send({ status: "active" })).status).toBe(200);
+      const fin = await as(superCookie)
+        .patch(`/api/admin/projects/${splitPublicId}`)
+        .send({
+          loan_status: "finalized",
+          loan_lender_type: "external",
+          loan_lender_name: "Split Bank",
+        });
+      expect(fin.status).toBe(200);
+      expect(fin.body.commissions).toHaveLength(2);
+      const byRole = Object.fromEntries(
+        fin.body.commissions.map((c: any) => [c.role, c]),
+      );
+      expect(byRole.closer.amount_cents).toBe(sq * 700);
+      expect(byRole.parent.amount_cents).toBe(sq * 300);
+      expect(fin.body.project.affiliate_commission_cents).toBe(sq * 1000);
 
-    // Self-parent corrupt pointer is ignored → treated as direct (no parent split).
-    await db.execute(
-      `UPDATE affiliates SET parent_affiliate_id = id WHERE id = ?`,
-      [parentId],
-    );
-    const selfReg = await as(parentCookie)
-      .post("/api/affiliate/clients")
-      .send({
-        first_name: "Self",
-        last_name: "Parent",
-        email: em("self-parent-client"),
-        phone: ph("0188"),
-        property_address: "2 Self St",
-        homeowner_consent: true,
-        preferred_language: "en",
-        adu_plan_id: planId,
+      // Deactivating parent voids unpaid parent share immediately.
+      expect(
+        (
+          await as(superCookie)
+            .patch(`/api/admin/affiliates/${parentId}`)
+            .send({ status: "inactive" })
+        ).status,
+      ).toBe(200);
+      const afterInactive = await as(financeCookie).get(
+        `/api/admin/projects/${splitPublicId}`,
+      );
+      const parentVoid = afterInactive.body.commissions.find(
+        (c: any) => c.role === "parent",
+      );
+      expect(parentVoid.status).toBe("void");
+      expect(afterInactive.body.project.affiliate_commission_cents).toBe(
+        sq * 700,
+      );
+
+      // Reactivate restores parent share on finalized deal.
+      expect(
+        (
+          await as(superCookie)
+            .patch(`/api/admin/affiliates/${parentId}`)
+            .send({ status: "active" })
+        ).status,
+      ).toBe(200);
+      const afterActive = await as(financeCookie).get(
+        `/api/admin/projects/${splitPublicId}`,
+      );
+      const parentLive = afterActive.body.commissions.find(
+        (c: any) => c.role === "parent",
+      );
+      expect(parentLive.status).toBe("pending");
+      expect(parentLive.amount_cents).toBe(sq * 300);
+    }, 120_000);
+
+    it("commission split 3/4: unpaid amounts keep the frozen rate after a Settings change; a per-row edit doesn't re-split", async () => {
+      // Rate freeze: live Settings change must not rewrite unpaid amounts.
+      await withSystemSettingsLock(db, async () => {
+        const settingsBefore = (await as(superCookie).get("/api/admin/settings"))
+          .body.settings;
+        try {
+          expect(
+            (
+              await as(superCookie)
+                .put("/api/admin/settings")
+                .send({
+                  ...settingsBefore,
+                  commission_closer_cents_per_sqft: 999,
+                  commission_parent_cents_per_sqft: 1,
+                })
+            ).status,
+          ).toBe(200);
+          const newSq = sq + 10;
+          expect(
+            (
+              await as(superCookie)
+                .patch(`/api/admin/projects/${splitPublicId}`)
+                .send({ sq_ft: newSq })
+            ).status,
+          ).toBe(200);
+          const frozen = await as(financeCookie).get(
+            `/api/admin/projects/${splitPublicId}`,
+          );
+          expect(frozen.body.project.commission_rate_closer_cents_per_sqft).toBe(
+            700,
+          );
+          expect(frozen.body.project.commission_rate_parent_cents_per_sqft).toBe(
+            300,
+          );
+          expect(
+            frozen.body.commissions.find((c: any) => c.role === "closer")
+              .amount_cents,
+          ).toBe(newSq * 700);
+          expect(
+            frozen.body.commissions.find((c: any) => c.role === "parent")
+              .amount_cents,
+          ).toBe(newSq * 300);
+          // restore sq for later asserts
+          expect(
+            (
+              await as(superCookie)
+                .patch(`/api/admin/projects/${splitPublicId}`)
+                .send({ sq_ft: sq })
+            ).status,
+          ).toBe(200);
+        } finally {
+          await as(superCookie).put("/api/admin/settings").send(settingsBefore);
+        }
       });
-    expect(selfReg.status).toBe(201);
-    const [[selfProj]] = (await db.query(
-      `SELECT closer_affiliate_id, parent_affiliate_id FROM projects WHERE public_id = ?`,
-      [selfReg.body.project_public_id],
-    )) as any;
-    expect(Number(selfProj.closer_affiliate_id)).toBe(parentId);
-    expect(selfProj.parent_affiliate_id).toBeNull();
-    await db.execute(
-      `UPDATE affiliates SET parent_affiliate_id = NULL WHERE id = ?`,
-      [parentId],
-    );
 
-    const subCookie = await makeSession("affiliate", subId);
-    // Agreement §9: subs may recruit too; their recruit's Senior Sponsor is the top parent.
-    expect((await as(subCookie).get("/api/affiliate/team")).status).toBe(200);
-    const nested = await as(subCookie)
-      .post("/api/affiliate/team")
-      .send({
-        first_name: "Nia",
-        last_name: "Nested",
-        email: em("nested"),
-        phone: ph("0101"),
-      });
-    expect(nested.status).toBe(201);
-    const nestedId = Number(nested.body.affiliate_id);
-    const [[nestedRow]] = (await db.query(`SELECT parent_affiliate_id FROM affiliates WHERE id = ?`, [nestedId])) as any;
-    expect(Number(nestedRow.parent_affiliate_id)).toBe(subId);
-    // Admin sponsor edits refuse cycles (top parent cannot report to its own recruit).
-    const cycle = await as(superCookie).patch(`/api/admin/affiliates/${parentId}`).send({ parent_affiliate_id: nestedId });
-    expect(cycle.body.error).toBe("errors.sponsorCycle");
+      // Per-row amount edit on split must not re-split 70/30 of that share.
+      const restored = await as(financeCookie).get(
+        `/api/admin/projects/${splitPublicId}`,
+      );
+      const closerRow = restored.body.commissions.find(
+        (c: any) => c.role === "closer",
+      );
+      const parentRow = restored.body.commissions.find(
+        (c: any) => c.role === "parent",
+      );
+      const closerEdit = await as(financeCookie)
+        .patch(`/api/admin/commissions/${closerRow.id}`)
+        .send({ amount_cents: closerRow.amount_cents + 1000 });
+      expect(closerEdit.status).toBe(200);
+      const afterEdit = await as(financeCookie).get(
+        `/api/admin/projects/${splitPublicId}`,
+      );
+      closerAfter = afterEdit.body.commissions.find(
+        (c: any) => c.role === "closer",
+      );
+      parentAfter = afterEdit.body.commissions.find(
+        (c: any) => c.role === "parent",
+      );
+      expect(closerAfter.amount_cents).toBe(closerRow.amount_cents + 1000);
+      expect(parentAfter.amount_cents).toBe(parentRow.amount_cents);
+      expect(afterEdit.body.project.affiliate_commission_cents).toBe(
+        closerAfter.amount_cents + parentAfter.amount_cents,
+      );
+    }, 120_000);
 
-    // Sub registers a client → project snapshots closer + parent.
-    const reg = await as(subCookie)
-      .post("/api/affiliate/clients")
-      .send({
-        first_name: "Split",
-        last_name: "Home",
-        email: em("split-client"),
-        phone: ph("0199"),
-        property_address: "1 Split St",
-        homeowner_consent: true,
-        preferred_language: "en",
-        adu_plan_id: planId,
-      });
-    expect(reg.status).toBe(201);
-    const splitPublicId = String(reg.body.project_public_id);
-    const [[proj]] = (await db.query(
-      `SELECT id, sq_ft, closer_affiliate_id, parent_affiliate_id, affiliate_id
-       FROM projects WHERE public_id = ?`,
-      [splitPublicId],
-    )) as any;
-    expect(Number(proj.closer_affiliate_id)).toBe(subId);
-    expect(Number(proj.parent_affiliate_id)).toBe(parentId);
-    const sq = Number(proj.sq_ft || 550);
-
-    await as(superCookie).patch(`/api/admin/projects/${splitPublicId}`).send({
-      contractor_id: ctrId,
-      milestone: "contracted",
-      sale_price_cents: 30_000_000,
-      contractor_cost_cents: 20_000_000,
-    });
-    const fin = await as(superCookie)
-      .patch(`/api/admin/projects/${splitPublicId}`)
-      .send({
-        loan_status: "finalized",
-        loan_lender_type: "external",
-        loan_lender_name: "Split Bank",
-      });
-    expect(fin.status).toBe(200);
-    expect(fin.body.commissions).toHaveLength(2);
-    const byRole = Object.fromEntries(
-      fin.body.commissions.map((c: any) => [c.role, c]),
-    );
-    expect(byRole.closer.amount_cents).toBe(sq * 700);
-    expect(byRole.parent.amount_cents).toBe(sq * 300);
-    expect(fin.body.project.affiliate_commission_cents).toBe(sq * 1000);
-
-    // Deactivating parent voids unpaid parent share immediately.
-    expect(
-      (
-        await as(superCookie)
-          .patch(`/api/admin/affiliates/${parentId}`)
-          .send({ status: "inactive" })
-      ).status,
-    ).toBe(200);
-    const afterInactive = await as(financeCookie).get(
-      `/api/admin/projects/${splitPublicId}`,
-    );
-    const parentVoid = afterInactive.body.commissions.find(
-      (c: any) => c.role === "parent",
-    );
-    expect(parentVoid.status).toBe("void");
-    expect(afterInactive.body.project.affiliate_commission_cents).toBe(
-      sq * 700,
-    );
-
-    // Reactivate restores parent share on finalized deal.
-    expect(
-      (
-        await as(superCookie)
-          .patch(`/api/admin/affiliates/${parentId}`)
-          .send({ status: "active" })
-      ).status,
-    ).toBe(200);
-    const afterActive = await as(financeCookie).get(
-      `/api/admin/projects/${splitPublicId}`,
-    );
-    const parentLive = afterActive.body.commissions.find(
-      (c: any) => c.role === "parent",
-    );
-    expect(parentLive.status).toBe("pending");
-    expect(parentLive.amount_cents).toBe(sq * 300);
-
-    // Rate freeze: live Settings change must not rewrite unpaid amounts.
-    await withSystemSettingsLock(db, async () => {
-      const settingsBefore = (await as(superCookie).get("/api/admin/settings"))
-        .body.settings;
-      try {
-        expect(
-          (
-            await as(superCookie)
-              .put("/api/admin/settings")
-              .send({
-                ...settingsBefore,
-                commission_closer_cents_per_sqft: 999,
-                commission_parent_cents_per_sqft: 1,
-              })
-          ).status,
-        ).toBe(200);
-        const newSq = sq + 10;
-        expect(
-          (
-            await as(superCookie)
-              .patch(`/api/admin/projects/${splitPublicId}`)
-              .send({ sq_ft: newSq })
-          ).status,
-        ).toBe(200);
-        const frozen = await as(financeCookie).get(
-          `/api/admin/projects/${splitPublicId}`,
-        );
-        expect(frozen.body.project.commission_rate_closer_cents_per_sqft).toBe(
-          700,
-        );
-        expect(frozen.body.project.commission_rate_parent_cents_per_sqft).toBe(
-          300,
-        );
-        expect(
-          frozen.body.commissions.find((c: any) => c.role === "closer")
-            .amount_cents,
-        ).toBe(newSq * 700);
-        expect(
-          frozen.body.commissions.find((c: any) => c.role === "parent")
-            .amount_cents,
-        ).toBe(newSq * 300);
-        // restore sq for later asserts
-        expect(
-          (
-            await as(superCookie)
-              .patch(`/api/admin/projects/${splitPublicId}`)
-              .send({ sq_ft: sq })
-          ).status,
-        ).toBe(200);
-      } finally {
-        await as(superCookie).put("/api/admin/settings").send(settingsBefore);
-      }
-    });
-
-    // Per-row amount edit on split must not re-split 70/30 of that share.
-    const restored = await as(financeCookie).get(
-      `/api/admin/projects/${splitPublicId}`,
-    );
-    const closerRow = restored.body.commissions.find(
-      (c: any) => c.role === "closer",
-    );
-    const parentRow = restored.body.commissions.find(
-      (c: any) => c.role === "parent",
-    );
-    const closerEdit = await as(financeCookie)
-      .patch(`/api/admin/commissions/${closerRow.id}`)
-      .send({ amount_cents: closerRow.amount_cents + 1000 });
-    expect(closerEdit.status).toBe(200);
-    const afterEdit = await as(financeCookie).get(
-      `/api/admin/projects/${splitPublicId}`,
-    );
-    const closerAfter = afterEdit.body.commissions.find(
-      (c: any) => c.role === "closer",
-    );
-    const parentAfter = afterEdit.body.commissions.find(
-      (c: any) => c.role === "parent",
-    );
-    expect(closerAfter.amount_cents).toBe(closerRow.amount_cents + 1000);
-    expect(parentAfter.amount_cents).toBe(parentRow.amount_cents);
-    expect(afterEdit.body.project.affiliate_commission_cents).toBe(
-      closerAfter.amount_cents + parentAfter.amount_cents,
-    );
-
-    await markOnboarded(subId);
-    await markOnboarded(parentId);
-    // Partial pay: pay closer → parent still payable; amount edits locked; paid_at only when both paid.
-    const closerId = closerAfter.id;
-    const parentIdRow = parentAfter.id;
-    expect(
-      (
-        await as(financeCookie)
-          .patch(`/api/admin/commissions/${closerId}`)
-          .send({ status: "approved" })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await as(financeCookie)
-          .patch(`/api/admin/commissions/${closerId}`)
-          .send({ status: "paid" })
-      ).status,
-    ).toBe(200);
-    const midPay = await as(financeCookie).get(
-      `/api/admin/projects/${splitPublicId}`,
-    );
-    expect(midPay.body.project.commission_paid_at).toBeNull();
-    expect(
-      (
-        await as(financeCookie)
-          .patch(`/api/admin/commissions/${parentIdRow}`)
-          .send({ amount_cents: 1 })
-      ).body.error,
-    ).toBe("errors.commissionPaidLocked");
-    expect(
-      (
-        await as(financeCookie)
-          .patch(`/api/admin/commissions/${parentIdRow}`)
-          .send({ status: "approved" })
-      ).status,
-    ).toBe(200);
-    __testClearEmailDryRuns();
-    expect(
-      (
-        await as(financeCookie)
-          .patch(`/api/admin/commissions/${parentIdRow}`)
-          .send({ status: "paid" })
-      ).status,
-    ).toBe(200);
-    expect(__testGetEmailDryRuns().some((m) => m.to === em("parent"))).toBe(
-      true,
-    );
-    const allPaid = await as(financeCookie).get(
-      `/api/admin/projects/${splitPublicId}`,
-    );
-    expect(allPaid.body.project.commission_paid_at).toBeTruthy();
-    // ~17 multi-query requests against the shared remote TiDB (~55s locally).
-  }, 120_000);
+    it("commission split 4/4: paying the closer leaves the parent payable and locked; paid_at only once both are paid", async () => {
+      await markOnboarded(subId);
+      await markOnboarded(parentId);
+      // Partial pay: pay closer → parent still payable; amount edits locked; paid_at only when both paid.
+      const closerId = closerAfter.id;
+      const parentIdRow = parentAfter.id;
+      expect(
+        (
+          await as(financeCookie)
+            .patch(`/api/admin/commissions/${closerId}`)
+            .send({ status: "approved" })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await as(financeCookie)
+            .patch(`/api/admin/commissions/${closerId}`)
+            .send({ status: "paid" })
+        ).status,
+      ).toBe(200);
+      const midPay = await as(financeCookie).get(
+        `/api/admin/projects/${splitPublicId}`,
+      );
+      expect(midPay.body.project.commission_paid_at).toBeNull();
+      expect(
+        (
+          await as(financeCookie)
+            .patch(`/api/admin/commissions/${parentIdRow}`)
+            .send({ amount_cents: 1 })
+        ).body.error,
+      ).toBe("errors.commissionPaidLocked");
+      expect(
+        (
+          await as(financeCookie)
+            .patch(`/api/admin/commissions/${parentIdRow}`)
+            .send({ status: "approved" })
+        ).status,
+      ).toBe(200);
+      __testClearEmailDryRuns();
+      expect(
+        (
+          await as(financeCookie)
+            .patch(`/api/admin/commissions/${parentIdRow}`)
+            .send({ status: "paid" })
+        ).status,
+      ).toBe(200);
+      expect(__testGetEmailDryRuns().some((m) => m.to === em("parent"))).toBe(
+        true,
+      );
+      const allPaid = await as(financeCookie).get(
+        `/api/admin/projects/${splitPublicId}`,
+      );
+      expect(allPaid.body.project.commission_paid_at).toBeTruthy();
+    }, 120_000);
+  });
 
   it("contractor draws: budget guard, submit, admin review", async () => {
     // other contractors cannot reach the project
