@@ -102,7 +102,7 @@ describe.runIf(hasDb)("reminder flows: seeds, builder, consent + STOP, replies, 
     await request(app).patch(`/api/admin/flows/${flowId}/active`).set("Cookie", cookies.super).send({ active: true }).expect(200);
   });
 
-  it("a signup enters the flow: email with a tracked link, text only with consent, opt-outs honored", async () => {
+  it("a signup enters the flow: email with a tracked link and a text (with consent), click tracked", async () => {
     __testClearEmailDryRuns();
     __testClearSmsDryRuns();
     const yes = await signup("yes", ph(10), true);
@@ -119,16 +119,21 @@ describe.runIf(hasDb)("reminder flows: seeds, builder, consent + STOP, replies, 
     expect(String(click.headers.location)).toContain("/affiliate/");
     expect((await events(run.id)).some((e) => e.event === "clicked")).toBe(true);
 
-    const no = await signup("no", ph(11), false);
-    expect((await events((await runFor(no)).id)).find((e) => e.step_key === "sms_1")).toMatchObject({ event: "skipped", detail: { reason: "no text consent" } });
-
-    await db.execute(`INSERT INTO sms_opt_outs (phone_last10, keyword) VALUES (?, 'STOP')`, [ph(12).slice(-10)]);
-    const stop = await signup("stop", ph(12), true);
-    expect((await events((await runFor(stop)).id)).find((e) => e.step_key === "sms_1")).toMatchObject({ event: "skipped", detail: { reason: "opted out" } });
-
     // Person timeline on the record page.
     const tl = await request(app).get(`/api/admin/flows-for/affiliate/${yes}`).set("Cookie", cookies.agent).expect(200);
     expect(tl.body.runs[0].events.map((e: any) => e.event)).toEqual(expect.arrayContaining(["entered", "sent", "clicked"]));
+  });
+
+  // Separate tests: each public signup is ~50 queries on the shared remote DB.
+  it("a signup without text consent gets the email but the text step is skipped", async () => {
+    const no = await signup("no", ph(11), false);
+    expect((await events((await runFor(no)).id)).find((e) => e.step_key === "sms_1")).toMatchObject({ event: "skipped", detail: { reason: "no text consent" } });
+  });
+
+  it("a number that texted STOP never gets the flow's text", async () => {
+    await db.execute(`INSERT INTO sms_opt_outs (phone_last10, keyword) VALUES (?, 'STOP')`, [ph(12).slice(-10)]);
+    const stop = await signup("stop", ph(12), true);
+    expect((await events((await runFor(stop)).id)).find((e) => e.step_key === "sms_1")).toMatchObject({ event: "skipped", detail: { reason: "opted out" } });
   });
 
   it("wait for reply: a reply takes the Replied branch; silence closes the application and tells the team", async () => {
