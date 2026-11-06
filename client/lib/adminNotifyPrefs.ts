@@ -28,6 +28,7 @@ export const ADMIN_NOTIFY_EVENT_KEYS: AdminNotifyEventKey[] = [
   "milestone_changed",
   "commission_accrued",
   "contract_sent",
+  "city_partner",
   "inbound_sms",
   "inbound_email",
 ];

@@ -134,7 +134,13 @@ export default function AdminClients() {
   const schema = Yup.object({
     first_name: Yup.string().trim().required(t("validation.firstNameRequired")),
     last_name: Yup.string().trim().required(t("validation.lastNameRequired")),
-    email: Yup.string().trim().email(t("validation.emailInvalid")).required(t("validation.emailRequired")),
+    // Email or phone (at least one): phone-only homeowners get the portal invite by text.
+    email: Yup.string()
+      .trim()
+      .email(t("validation.emailInvalid"))
+      .test("email-or-phone", t("validation.emailOrPhoneOne"), function (v) {
+        return Boolean(String(v || "").trim()) || String(this.parent?.phone || "").replace(/\D/g, "").length >= 10;
+      }),
   });
 
   type NewClient = {
@@ -391,7 +397,7 @@ export default function AdminClients() {
             <div className="pf-form-grid">
               <TextField name="first_name" labelKey="form.firstName" />
               <TextField name="last_name" labelKey="form.lastName" />
-              <TextField name="email" labelKey="form.email" type="email" />
+              <TextField name="email" labelKey="form.emailOptional" type="email" />
               <TextField name="phone" labelKey="form.phone" type="tel" />
             </div>
             <TextField name="address_line1" labelKey="form.address" />

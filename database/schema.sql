@@ -743,7 +743,7 @@ CREATE TABLE IF NOT EXISTS `client_portal_invites` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `token` VARCHAR(64) NOT NULL,
   `client_id` INT UNSIGNED NOT NULL,
-  `email` VARCHAR(255) NOT NULL,
+  `email` VARCHAR(255) DEFAULT NULL COMMENT 'NULL = phone-only homeowner (invite sent by text)',
   `created_by_type` ENUM('system','admin','affiliate') NOT NULL DEFAULT 'system',
   `created_by_id` INT UNSIGNED DEFAULT NULL,
   `expires_at` DATETIME NOT NULL,
@@ -1573,7 +1573,7 @@ CREATE TABLE IF NOT EXISTS `affiliate_assistant_messages` (
 CREATE TABLE IF NOT EXISTS `appointments` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `title` VARCHAR(200) NOT NULL,
-  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','other') NOT NULL DEFAULT 'consultation',
+  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','city_meeting','other') NOT NULL DEFAULT 'consultation',
   `starts_at` DATETIME NOT NULL COMMENT 'UTC',
   `ends_at` DATETIME NOT NULL COMMENT 'UTC',
   `timezone` VARCHAR(64) NOT NULL DEFAULT 'America/Los_Angeles',
@@ -1589,7 +1589,7 @@ CREATE TABLE IF NOT EXISTS `appointments` (
   `project_id` BIGINT UNSIGNED DEFAULT NULL,
   `owner_admin_id` INT UNSIGNED DEFAULT NULL,
   `status` ENUM('scheduled','cancelled','completed','no_show') NOT NULL DEFAULT 'scheduled',
-  `source` ENUM('staff','booking','outlook') NOT NULL DEFAULT 'staff',
+  `source` ENUM('staff','booking','outlook','city_partner') NOT NULL DEFAULT 'staff',
   `notify_homeowner` TINYINT(1) NOT NULL DEFAULT 1,
   `manage_token_hash` CHAR(64) DEFAULT NULL COMMENT 'Homeowner / booker cancel + reschedule link',
   `ics_uid` VARCHAR(120) NOT NULL,
@@ -1601,7 +1601,10 @@ CREATE TABLE IF NOT EXISTS `appointments` (
   `created_by_admin_id` INT UNSIGNED DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `city_id` INT UNSIGNED DEFAULT NULL COMMENT 'City meeting: service_cities',
+  `city_partner_id` INT UNSIGNED DEFAULT NULL COMMENT 'City meeting booked by this City Partner',
   PRIMARY KEY (`id`),
+  KEY `idx_appointments_city_partner` (`city_partner_id`, `starts_at`),
   UNIQUE KEY `uq_appointments_manage_token` (`manage_token_hash`),
   KEY `idx_appointments_starts` (`starts_at`),
   KEY `idx_appointments_owner_starts` (`owner_admin_id`, `starts_at`),
@@ -2463,6 +2466,25 @@ CREATE TABLE IF NOT EXISTS `city_activities` (
   KEY `idx_city_activities_city` (`city_id`, `occurred_on`),
   CONSTRAINT `fk_city_activities_city` FOREIGN KEY (`city_id`) REFERENCES `service_cities` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_city_activities_partner` FOREIGN KEY (`city_partner_id`) REFERENCES `city_partners` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- City Partners ask for a city; staff approve (adds + assigns it) or decline.
+CREATE TABLE IF NOT EXISTS `city_partner_city_requests` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `city_partner_id` INT UNSIGNED NOT NULL,
+  `city_name` VARCHAR(100) NOT NULL,
+  `county` VARCHAR(100) DEFAULT NULL,
+  `note` VARCHAR(500) DEFAULT NULL,
+  `status` ENUM('pending','approved','declined') NOT NULL DEFAULT 'pending',
+  `city_id` INT UNSIGNED DEFAULT NULL COMMENT 'City added / assigned on approve',
+  `decline_reason` VARCHAR(500) DEFAULT NULL,
+  `decided_by_admin_id` INT UNSIGNED DEFAULT NULL,
+  `decided_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_cp_city_requests_status` (`status`, `id`),
+  KEY `idx_cp_city_requests_partner` (`city_partner_id`, `id`),
+  CONSTRAINT `fk_cp_city_requests_partner` FOREIGN KEY (`city_partner_id`) REFERENCES `city_partners` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `city_partner_fees` (

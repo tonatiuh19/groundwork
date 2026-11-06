@@ -13,6 +13,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearPortalAuthError,
   fetchPortalMe,
+  isPhoneLoginId,
   requestPortalOtp,
   verifyPortalOtp,
 } from "@/store/slices/portalAuthSlice";
@@ -190,9 +191,13 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
               key="email-step"
               initialValues={{ email }}
               validationSchema={Yup.object({
+                // Email (code by email) or phone with at least 10 digits (code by text).
                 email: Yup.string()
-                  .email(t("validation.emailInvalid"))
-                  .required(t("validation.emailRequired")),
+                  .trim()
+                  .required(t("validation.emailOrPhoneRequired"))
+                  .test("email-or-phone", t("validation.emailOrPhone"), (v) =>
+                    !v ? false : v.includes("@") ? Yup.string().email().isValidSync(v) : v.replace(/\D/g, "").length >= 10,
+                  ),
               })}
               onSubmit={async (values) => {
                 const result = await dispatch(
@@ -207,8 +212,8 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
             >
               {({ errors, touched }) => (
                 <Form className="portal-login-form">
-                  <h2>{t("portalAuth.emailStep")}</h2>
-                  <p className="portal-login-hint">{t("portalAuth.emailHint")}</p>
+                  <h2>{t("portalAuth.emailOrPhoneStep")}</h2>
+                  <p className="portal-login-hint">{t("portalAuth.emailOrPhoneHint")}</p>
                   {actor === "affiliate" ||
                   actor === "client" ||
                   actor === "contractor" ? (
@@ -227,8 +232,8 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
                     </p>
                   ) : null}
                   <label>
-                    {t("form.email")}
-                    <Field name="email" type="email" autoComplete="email" />
+                    {t("portalAuth.emailOrPhone")}
+                    <Field name="email" type="text" inputMode="email" autoComplete="username" autoCapitalize="none" spellCheck={false} />
                     {touched.email && errors.email ? (
                       <span className="form-error">{errors.email}</span>
                     ) : null}
@@ -267,7 +272,7 @@ export default function PortalLoginPage({ actor, homePath }: Props) {
                 <Form className="portal-login-form">
                   <h2>{t("portalAuth.codeStep")}</h2>
                   <p className="portal-login-hint">
-                    {t("portalAuth.codeHint", { email })}
+                    {t(isPhoneLoginId(email) ? "portalAuth.codeHintPhone" : "portalAuth.codeHint", { email })}
                   </p>
                   <p className="portal-login-hint portal-login-hint--secondary">
                     {t("portalAuth.codeHintDetail")}

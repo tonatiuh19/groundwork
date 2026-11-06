@@ -40,6 +40,10 @@ function apiError(err: unknown): string {
   return "errors.server";
 }
 
+/** Sign-in id: an email (code by email) or a phone number (code by text). */
+export const isPhoneLoginId = (id: string) => !id.includes("@");
+const loginIdBody = (id: string) => (isPhoneLoginId(id) ? { phone: id.trim() } : { email: id.trim() });
+
 export const requestPortalOtp = createAsyncThunk(
   "portalAuth/requestOtp",
   async (
@@ -49,7 +53,7 @@ export const requestPortalOtp = createAsyncThunk(
     try {
       await axios.post(
         `/api/${args.actor}/auth/otp/request`,
-        { email: args.email },
+        loginIdBody(args.email),
         { withCredentials: true },
       );
       return { actor: args.actor, email: args.email };
@@ -68,7 +72,7 @@ export const verifyPortalOtp = createAsyncThunk(
     try {
       const { data } = await axios.post(
         `/api/${args.actor}/auth/otp/verify`,
-        { email: args.email, code: args.code },
+        { ...loginIdBody(args.email), code: args.code },
         { withCredentials: true },
       );
       return {

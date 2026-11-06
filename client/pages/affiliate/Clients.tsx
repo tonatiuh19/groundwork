@@ -25,6 +25,7 @@ import {
 import { useFormatters } from "@/lib/format";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
 import CityField from "@/components/CityField";
+import PhoneOnlyConsent, { phoneOnlyConsentTest } from "@/components/portal/PhoneOnlyConsent";
 
 export default function AffiliateClients() {
   const { t, i18n } = useTranslation();
@@ -44,8 +45,16 @@ export default function AffiliateClients() {
   const schema = Yup.object({
     first_name: Yup.string().trim().required(t("validation.firstNameRequired")),
     last_name: Yup.string().trim().required(t("validation.lastNameRequired")),
-    email: Yup.string().trim().email(t("validation.emailInvalid")).required(t("validation.emailRequired")),
-    phone: Yup.string().trim().min(10, t("validation.phoneMin")).required(t("validation.phoneRequired")),
+    // Optional: a phone-only homeowner gets the portal link by text (needs sms_consent).
+    email: Yup.string().trim().email(t("validation.emailInvalid")),
+    sms_consent: Yup.boolean().test("phone-only", t("validation.smsConsentNoEmail"), phoneOnlyConsentTest()),
+    // Email, phone or both: at least one.
+    phone: Yup.string()
+      .trim()
+      .test("phone-min", t("validation.phoneMin"), (v) => !v || v.replace(/\D/g, "").length >= 10)
+      .test("email-or-phone", t("validation.emailOrPhoneOne"), function (v) {
+        return Boolean(String(v || "").trim()) || Boolean(String(this.parent?.email || "").trim());
+      }),
     property_address: Yup.string().trim().min(5, t("validation.addressRequired")).required(t("validation.addressRequired")),
     homeowner_consent: Yup.boolean().oneOf([true], t("validation.homeownerConsent")),
   });
@@ -180,6 +189,7 @@ export default function AffiliateClients() {
               property_zip: "",
               adu_plan_id: "",
               homeowner_consent: false,
+              sms_consent: false,
             }}
             validationSchema={schema}
             onSubmit={async (v) => {
@@ -196,6 +206,7 @@ export default function AffiliateClients() {
                   adu_plan_id: v.adu_plan_id ? Number(v.adu_plan_id) : null,
                   preferred_language: i18n.language?.startsWith("es") ? "es" : "en",
                   homeowner_consent: v.homeowner_consent,
+                  sms_consent: v.sms_consent,
                 }),
               );
               if (registerAffiliateClient.fulfilled.match(result)) {
@@ -209,8 +220,8 @@ export default function AffiliateClients() {
               <div className="pf-form-grid">
                 <TextField name="first_name" labelKey="form.firstName" />
                 <TextField name="last_name" labelKey="form.lastName" />
-                <TextField name="email" labelKey="form.email" type="email" />
-                <TextField name="phone" labelKey="form.phone" type="tel" />
+                <TextField name="email" labelKey="form.emailOptional" type="email" />
+                <TextField name="phone" labelKey="form.phoneOptional" type="tel" />
               </div>
               <TextField name="property_address" labelKey="form.address" />
               <div className="pf-form-grid">
@@ -226,6 +237,7 @@ export default function AffiliateClients() {
                 ]}
               />
               <CheckField name="homeowner_consent" labelKey="aff.homeownerConsent" />
+              <PhoneOnlyConsent />
               <SubmitButton busy={registering} labelKey="aff.registerClient" />
             </Form>
           </Formik>

@@ -191,7 +191,8 @@ export async function cleanupPortalFixturesByPrefix(
   };
 
   const adminIds = await select(`SELECT id FROM admins WHERE ${byEmail()}`, emailLikes);
-  const clientIds = await select(`SELECT id FROM clients WHERE ${byEmail()}`, emailLikes);
+  // Phone-only homeowners have no email: their signature is the run prefix in the first name.
+  const clientIds = await select(`SELECT id FROM clients WHERE ${byEmail()} OR (email IS NULL AND first_name LIKE ?)`, [...emailLikes, `${escLike(p)}%`]);
   const contactIds = await select(
     `SELECT id FROM contacts WHERE ${byEmail()} OR created_by_admin_id IN (?)`,
     [...emailLikes, inList(adminIds)],
@@ -383,6 +384,7 @@ export async function findTestFixturePrefixes(pool: Pool): Promise<Map<string, n
     SELECT email AS v FROM admins WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT email FROM affiliates WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT email FROM clients WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
+    UNION SELECT first_name FROM clients WHERE email IS NULL AND first_name REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT email FROM contractors WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT email FROM leads WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT email FROM contacts WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'

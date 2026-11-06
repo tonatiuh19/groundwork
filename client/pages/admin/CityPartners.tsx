@@ -4,7 +4,7 @@ import { Eye, MapPin, Send, Trash2, UserPlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { CityPartnerFee, CityPartnerListItem } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { clearCityError, clearInvitePreview, createCityPartner, deleteCityPartner, fetchAllCityFees, fetchCityPartners, resendCityPartnerInvite, previewCityInvite, updateCityFee, updateCityPartner } from "@/store/slices/cityPartnerSlice";
+import { fetchCityRequests, clearCityError, clearInvitePreview, createCityPartner, deleteCityPartner, fetchAllCityFees, fetchCityPartners, resendCityPartnerInvite, previewCityInvite, updateCityFee, updateCityPartner } from "@/store/slices/cityPartnerSlice";
 import { fetchAdminCities } from "@/store/slices/citiesSlice";
 import { BusyButton, DataTable, ErrorNote, FilterSelect, HeaderAction, ListPager, Modal, PageHeader, SearchBox, SegmentedTabs } from "@/components/portal/kit";
 import { MultiSearchPicker } from "@/components/portal/SearchPickers";
@@ -14,6 +14,7 @@ import CityCreateModal from "@/components/admin/CityCreateModal";
 import { centsToMoney } from "@/components/city/CityBits";
 import { useAdminCan } from "@/hooks/useAdminCan";
 import { useFormatters } from "@/lib/format";
+import { CityRequestsAdmin } from "@/components/city/CityPartnerRequests";
 
 const PAGE = 25;
 const FEE_NEXT: Record<string, string[]> = { pending: ["approved", "void"], approved: ["paid", "void"], paid: ["refund_due"], refund_due: ["refunded"], void: ["pending"], refunded: [] };
@@ -187,7 +188,11 @@ export default function CityPartners() {
   const cities = useAppSelector((s) => s.cities.adminList);
   const canManage = useAdminCan("approvals");
   const canSeeFees = useAdminCan("finance.read");
-  const [tab, setTab] = useState<"partners" | "fees">("partners");
+  const [tab, setTab] = useState<"partners" | "fees" | "requests">(() => (new URLSearchParams(window.location.search).get("tab") === "requests" ? "requests" : "partners"));
+  const pendingRequests = useAppSelector((s) => s.cityPartner.pendingRequests);
+  useEffect(() => {
+    if (canManage) void dispatch(fetchCityRequests({ status: "pending" }));
+  }, [dispatch, canManage]);
   const blank = { first_name: "", last_name: "", email: "", phone: "", company: "", preferred_language: "en", fee: "2.00", city_ids: [] as number[] };
   const [open, setOpen] = useState(false);
   const [f, setF] = useState(blank);
@@ -218,18 +223,19 @@ export default function CityPartners() {
   return (
     <div className="portal-page">
       <PageHeader titleKey="cityPartner.adminTitle" leadKey="cityPartner.adminLead" actions={canManage ? <HeaderAction labelKey="cityPartner.invite" icon={UserPlus} onClick={() => setOpen(true)} /> : null} />
-      {canSeeFees ? (
-        <SegmentedTabs<"partners" | "fees">
+      {canSeeFees || canManage ? (
+        <SegmentedTabs<"partners" | "fees" | "requests">
           value={tab}
           onChange={setTab}
           ariaLabel={t("cityPartner.adminTitle")}
           options={[
             { value: "partners", labelKey: "cityPartner.tabPartners" },
-            { value: "fees", labelKey: "cityPartner.fees" },
+            ...(canManage ? [{ value: "requests" as const, labelKey: "cityPartner.request.adminTitle", count: pendingRequests || null }] : []),
+            ...(canSeeFees ? [{ value: "fees" as const, labelKey: "cityPartner.fees" }] : []),
           ]}
         />
       ) : null}
-      {tab === "partners" ? <PartnersGrid /> : <FeesGrid />}
+      {tab === "partners" ? <PartnersGrid /> : tab === "requests" ? <CityRequestsAdmin /> : <FeesGrid />}
       <Modal open={open} titleKey="cityPartner.invite" onClose={() => { setOpen(false); setF(blank); dispatch(clearCityError()); }}>
         <div className="pf-form">
           <div className="pf-form-grid">

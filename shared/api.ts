@@ -33,6 +33,7 @@ export type AdminNotifyEventKey =
   | "milestone_changed"
   | "commission_accrued"
   | "contract_sent"
+  | "city_partner"
   | "inbound_sms"
   | "inbound_email";
 
@@ -1292,6 +1293,7 @@ export interface PublicAffiliateByCodeResponse {
 export interface EnrollRequest {
   first_name: string;
   last_name: string;
+  /** Optional: phone-only homeowners get the portal link by text (needs sms_consent). */
   email: string;
   phone: string;
   property_address: string;
@@ -1304,6 +1306,8 @@ export interface EnrollRequest {
   soft_pull_consent?: boolean;
   homeowner_consent: boolean;
   referral_code?: string | null;
+  /** Required when email is blank. */
+  sms_consent?: boolean;
 }
 
 export type EnrollOutcome =
@@ -1527,6 +1531,7 @@ export interface AffiliateCommissionRow {
 export interface RegisterClientRequest {
   first_name: string;
   last_name: string;
+  /** Optional: phone-only homeowners get the portal link by text (needs sms_consent). */
   email: string;
   phone: string;
   property_address: string;
@@ -1537,6 +1542,8 @@ export interface RegisterClientRequest {
   adu_plan_id?: number | null;
   preferred_language?: "en" | "es";
   homeowner_consent: boolean;
+  /** Required when email is blank. */
+  sms_consent?: boolean;
 }
 
 export interface AffiliateSignupRequest {
@@ -1947,7 +1954,7 @@ export interface AffiliateAgreementTemplateResponse {
 
 // ── Scheduler (appointments, lenders, booking links) ────────────────────────
 
-export const APPOINTMENT_KINDS = ["property_inspection", "site_visit", "lender_meeting", "consultation", "call", "other"] as const;
+export const APPOINTMENT_KINDS = ["property_inspection", "site_visit", "lender_meeting", "consultation", "call", "city_meeting", "other"] as const;
 export type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
 export const APPOINTMENT_LOCATION_TYPES = ["onsite", "office", "phone", "video"] as const;
 export type AppointmentLocationType = (typeof APPOINTMENT_LOCATION_TYPES)[number];
@@ -1984,7 +1991,7 @@ export interface Appointment {
   /** Internal (staff only). */
   notes?: string | null;
   status: AppointmentStatus;
-  source: "staff" | "booking" | "outlook";
+  source: "staff" | "booking" | "outlook" | "city_partner";
   notify_homeowner: boolean;
   client_id: number | null;
   client_name: string | null;
@@ -2355,7 +2362,7 @@ export interface LastEmail {
 }
 
 // ─── Staff notification routing (Settings → Team notifications) ───
-export type NotifyArea = "leads" | "clients" | "contractors" | "affiliates" | "projects" | "system";
+export type NotifyArea = "leads" | "clients" | "contractors" | "affiliates" | "city_partners" | "projects" | "system";
 export interface NotifyRoutingArea {
   area: NotifyArea;
   events: AdminNotifyEventKey[];
@@ -3093,4 +3100,34 @@ export interface ProjectTracking {
   targets: { milestone: string; due_on: string; reached_at: string | null }[];
   last_status_review_at: string | null;
   last_homeowner_update_at: string | null;
+}
+
+/** A City Partner asking for a city (`/api/city/city-requests`, `/api/admin/city-requests`). */
+export interface CityRequest {
+  id: number;
+  city_name: string;
+  county: string | null;
+  note: string | null;
+  status: "pending" | "approved" | "declined";
+  city_id: number | null;
+  decline_reason: string | null;
+  decided_at: string | null;
+  created_at: string;
+  /** Admin list only. */
+  partner?: { id: number; name: string; company: string | null };
+}
+
+/** A meeting a City Partner booked on a city, inviting Groundwork staff (`/api/city/meetings`). */
+export interface CityMeeting {
+  id: number;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  location_type: string;
+  location: string | null;
+  status: string;
+  city_id: number;
+  city_name: string | null;
+  staff: string[];
 }

@@ -9,8 +9,9 @@ import { ACTIVITY_TYPES, CITY_LEVELS, CITY_STAGES, FollowUpBadge, JOURNEY, journ
 import CityPrint, { type CityPrintKind } from "@/components/city/CityPrint";
 import { Celebrate, JourneyTracker, KitSkeleton } from "@/components/partnerKit/PartnerKit";
 import { useFormatters } from "@/lib/format";
+import { CityMeetingsPanel } from "@/components/city/CityPartnerRequests";
 
-type Tab = "pipeline" | "activity" | "intel";
+type Tab = "pipeline" | "activity" | "intel" | "meetings";
 const today = () => new Date().toISOString().slice(0, 10);
 
 function PipelineForm({ scope, d }: { scope: CityScope; d: CityDetail }) {
@@ -376,6 +377,8 @@ export default function CityDetailView({ scope, id }: { scope: CityScope; id: nu
           { value: "pipeline", labelKey: "cityPartner.tabPipeline" },
           { value: "activity", labelKey: "cityPartner.tabActivity", count: d.activities.length || null },
           { value: "intel", labelKey: "cityPartner.tabIntel" },
+          // Partners book meetings here and invite Groundwork staff (lands on their calendar).
+          ...(scope === "city" ? [{ value: "meetings" as const, labelKey: "cityPartner.tabMeetings" }] : []),
         ]}
       />
       <section className="pf-card">
@@ -386,6 +389,7 @@ export default function CityDetailView({ scope, id }: { scope: CityScope; id: nu
         {tab === "intel" ? (
 <IntelPanel scope={scope} d={d} />
         ) : null}
+        {tab === "meetings" && scope === "city" ? <CityMeetingsPanel cityId={d.city.id} cityName={d.city.name} /> : null}
       </section>
       {print ? <CityPrint kind={print} detail={d} onClose={() => setPrint(null)} /> : null}
     </div>

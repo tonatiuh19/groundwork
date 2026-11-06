@@ -12,6 +12,7 @@ import { FollowUpBadge, centsToMoney, monthShort } from "@/components/city/CityB
 import { CityFeed, QuickLog } from "@/components/city/CityFeed";
 import { EarningsChart, JourneyTracker, KitEmpty, KitSkeleton, PartnerHero } from "@/components/partnerKit/PartnerKit";
 import { useFormatters } from "@/lib/format";
+import { CityRequestPanel } from "@/components/city/CityPartnerRequests";
 
 export function CityLogin() {
   return <PortalLoginPage actor="city" homePath="/city" />;
@@ -86,6 +87,7 @@ export function CityCities() {
   return (
     <div className="portal-page">
       <PageHeader titleKey="cityPartner.navCities" leadKey="cityPartner.citiesLead" />
+      <CityRequestPanel />
       <CityPipelineBoard scope="city" linkBase="/city/cities" />
     </div>
   );

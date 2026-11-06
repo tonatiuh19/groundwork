@@ -135,7 +135,9 @@
     "language": "Preferred language",
     "noteEvent": "By registering, you agree to be contacted about this event. No credit check is needed to RSVP.",
     "smsFollowUpConsent": "I agree to receive texts from Groundwork about my application and next steps. Message and data rates may apply. Reply STOP to opt out.",
-    "spamHint": "Don't see our email? Check your spam or junk folder."
+    "spamHint": "Don't see our email? Check your spam or junk folder.",
+    "emailOptional": "Email (optional)",
+    "phoneOptional": "Phone (optional)"
   },
   "footer": {
     "tagline": "Build more from home.",
@@ -283,7 +285,12 @@
     "cityActivitySummary": "Write what happened.",
     "cityPartnerCompany": "Enter the LLC's legal name. It's printed in the agreement.",
     "confirmNameMismatch": "The name you typed doesn't match.",
-    "cityPartnerRate": "Enter a rate from $0.00 to $100.00 (up to 2 decimals) and the LLC name."
+    "cityPartnerRate": "Enter a rate from $0.00 to $100.00 (up to 2 decimals) and the LLC name.",
+    "pickStaff": "Pick at least one person from Groundwork.",
+    "emailOrPhone": "Enter a valid email or a phone number with at least 10 digits.",
+    "emailOrPhoneRequired": "Enter your email or mobile number.",
+    "emailOrPhoneOne": "Add an email, a phone number, or both.",
+    "smsConsentNoEmail": "Without an email, the homeowner must agree to receive texts."
   },
   "errors": {
     "submitFailed": "We couldn't submit your request.",
@@ -434,7 +441,12 @@
     "cityArchivedTarget": "You can't merge into an archived city. Restore it first.",
     "cityRateLocked": "The rate is locked because the partner already signed.",
     "cityCompanyLocked": "The LLC name is locked because the partner already signed.",
-    "viewOnly": "You're viewing as this partner, read-only. Nothing can be changed here."
+    "viewOnly": "You're viewing as this partner, read-only. Nothing can be changed here.",
+    "cityRequestPending": "You already asked for this city. It's waiting for review.",
+    "cityAlreadyYours": "This city is already on your list.",
+    "cityRequestDecided": "This request was already answered.",
+    "phoneShared": "More than one account uses this number. Sign in with your email instead.",
+    "otpSmsUnavailable": "We can't text a code to this number right now. Sign in with your email instead."
   },
   "getCreditReport": {
     "metaTitle": "Free credit report · No score impact",
@@ -756,7 +768,11 @@
     "more": "More",
     "quickNav": "Main sections",
     "cityTitle": "City Partner sign in",
-    "cityLead": "Invite-only portal for partners who open cities to Groundwork's ADU program."
+    "cityLead": "Invite-only portal for partners who open cities to Groundwork's ADU program.",
+    "emailOrPhoneStep": "Sign in with email or phone",
+    "emailOrPhoneHint": "Enter the email or mobile number on your account. We'll send a 6-digit code by email or text. No password needed.",
+    "emailOrPhone": "Email or mobile number",
+    "codeHintPhone": "If an account uses {{email}}, we texted a one-time code."
   },
   "portalNav": {
     "adminTitle": "Admin",
@@ -1281,7 +1297,8 @@
       "affiliate_onboarding": "Affiliate agreement / W-9 submitted",
       "line_needs_owner": "Phone line needs a new owner",
       "inbound_email": "Email from CRM people",
-      "scorecard_alert": "Scorecard alert"
+      "scorecard_alert": "Scorecard alert",
+      "city_partner": "City Partners (signed, W-9, city requests, meetings)"
     },
     "actionNoteHint": "Optional note sent with this status change",
     "profileNav": "Open your profile",
@@ -3100,6 +3117,7 @@
       "lender_meeting": "Lender meeting",
       "consultation": "Consultation",
       "call": "Call",
+      "city_meeting": "City meeting",
       "other": "Other"
     },
     "loc": {
@@ -3919,6 +3937,7 @@
       "clients": "Homeowners (clients)",
       "contractors": "Contractors",
       "affiliates": "Affiliates",
+      "city_partners": "City Partners",
       "projects": "Projects & money",
       "system": "System"
     }
@@ -5172,7 +5191,66 @@
     "allInPipeline": "Every city is already in the pipeline.",
     "viewAs": "View as {{name}}",
     "viewingAs": "Viewing as {{name}} · read-only (opened by {{admin}})",
-    "exitView": "Exit view"
+    "exitView": "Exit view",
+    "tabMeetings": "Meetings",
+    "request": {
+      "title": "Request a city",
+      "lead": "Working a city that isn't on your list? Ask Groundwork to add it.",
+      "open": "Request a city",
+      "sent": "Request sent. Groundwork will review it and let you know.",
+      "cityName": "City",
+      "county": "County",
+      "note": "Why this city?",
+      "notePlaceholder": "Who you know there, what's happening with ADUs, anything that helps.",
+      "send": "Send request",
+      "status_pending": "Waiting for review",
+      "status_approved": "Approved",
+      "status_declined": "Declined",
+      "adminTitle": "City requests",
+      "noneAdmin": "No requests here.",
+      "approve": "Approve",
+      "decline": "Decline",
+      "approveTitle": "Approve city request",
+      "approveLead": "Pick the city for {{city}} (or add it). It goes into the pipeline and is assigned to {{partner}}.",
+      "approveConfirm": "Approve and assign",
+      "declineTitle": "Decline city request",
+      "reason": "Reason",
+      "reasonHint": "The partner sees this reason in their portal and by email.",
+      "declineConfirm": "Decline request"
+    },
+    "meeting": {
+      "lead": "Book a meeting for this city and invite the Groundwork team. It goes on their calendar and they get the invite.",
+      "open": "Schedule a meeting",
+      "booked": "Meeting booked. The invite is on its way.",
+      "title": "Schedule a meeting",
+      "what": "What's the meeting?",
+      "whatPlaceholder": "{{city}} · City staff meeting",
+      "date": "Date",
+      "start": "Start",
+      "length": "Length",
+      "minutes": "{{count}} minutes",
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "tz": "Times are in Pacific time (America/Los_Angeles).",
+      "where": "Where",
+      "where_office": "Office",
+      "where_onsite": "In person",
+      "where_phone": "Phone",
+      "where_video": "Video",
+      "videoLink": "Video link",
+      "address": "Address",
+      "addressPlaceholder": "City Hall, {{city}}",
+      "invite": "Invite from Groundwork",
+      "inviteSearch": "Search the team",
+      "inviteHint": "The first person keeps it on their calendar. Everyone you pick gets the invite.",
+      "notes": "Notes for the team",
+      "notesPlaceholder": "Agenda, who's attending from the city, anything to prepare.",
+      "send": "Book and send invites",
+      "cancel": "Cancel meeting",
+      "cancelConfirm": "Cancel this meeting? Everyone invited is told.",
+      "none": "No meetings booked",
+      "noneText": "Schedule one and the Groundwork team gets it on their calendar."
+    }
   },
   "danger": {
     "typeToConfirm": "Type \"{{text}}\" to confirm",
@@ -5182,5 +5260,9 @@
     "title": "Email preview",
     "subject": "Subject",
     "notSent": "This is a preview. Nothing has been sent."
+  },
+  "phoneOnly": {
+    "hint": "No email? We'll text the portal link and updates to this phone instead.",
+    "consent": "The homeowner agrees to receive texts from Groundwork about their project. Message and data rates may apply. Reply STOP to opt out."
   }
 }

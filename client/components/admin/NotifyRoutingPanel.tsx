@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Briefcase, FolderKanban, Handshake, HardHat, Inbox, RotateCcw, Settings2, Users, type LucideIcon } from "lucide-react";
+import { Briefcase, FolderKanban, Handshake, HardHat, Inbox, MapPinned, RotateCcw, Settings2, Users, type LucideIcon } from "lucide-react";
 import type { NotifyArea, NotifyRoutingArea } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchNotifyRouting, saveNotifyRouting } from "@/store/slices/notifyRoutingSlice";
@@ -14,6 +14,7 @@ const AREA_ICON: Record<NotifyArea, LucideIcon> = {
   clients: Users,
   contractors: HardHat,
   affiliates: Handshake,
+  city_partners: MapPinned,
   projects: FolderKanban,
   system: Settings2,
 };
@@ -98,7 +99,7 @@ function AreaCard({
         onToggle={(id) => setIds(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id])}
         placeholder={t("notifyRouting.search")}
       />
-      {area.area !== "leads" && area.area !== "system" ? (
+      {area.area !== "leads" && area.area !== "system" && area.area !== "city_partners" ? (
         <label className="gw-check">
           <input type="checkbox" checked={owner} onChange={(e) => setOwner(e.target.checked)} />
           <span>{t("notifyRouting.includeOwner")}</span>

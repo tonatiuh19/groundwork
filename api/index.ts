@@ -1181,6 +1181,7 @@ const ADMIN_NOTIFY_EVENT_KEYS: AdminNotifyEventKey[] = [
   "milestone_changed",
   "commission_accrued",
   "contract_sent",
+  "city_partner",
   "inbound_sms",
   "inbound_email",
 ];
@@ -1347,8 +1348,8 @@ async function listActiveTeamAdmins(): Promise<TeamAdminRecipient[]> {
 
 // ── Notification routing: who gets which area (Settings → Team notifications) ──
 
-type NotifyArea = "leads" | "clients" | "contractors" | "affiliates" | "projects" | "system";
-const NOTIFY_AREAS: NotifyArea[] = ["leads", "clients", "contractors", "affiliates", "projects", "system"];
+type NotifyArea = "leads" | "clients" | "contractors" | "affiliates" | "city_partners" | "projects" | "system";
+const NOTIFY_AREAS: NotifyArea[] = ["leads", "clients", "contractors", "affiliates", "city_partners", "projects", "system"];
 /** Event → area. inbound_sms / inbound_email are personal (line / mailbox owner) and never routed. */
 const NOTIFY_EVENT_AREA: Partial<Record<AdminNotifyEventKey, NotifyArea>> = {
   lead_submitted: "leads",
@@ -1370,6 +1371,7 @@ const NOTIFY_EVENT_AREA: Partial<Record<AdminNotifyEventKey, NotifyArea>> = {
   draw_submitted: "projects",
   commission_accrued: "projects",
   contract_sent: "projects",
+  city_partner: "city_partners",
   line_needs_owner: "system",
   duplicate_blocked: "system",
 };
@@ -2415,18 +2417,20 @@ async function upsertStandardLead(
   exec: Pool | PoolConnection = pool,
 ): Promise<{ id: number; merged: boolean }> {
   const email = normalizeEmail(input.email);
+  // Phone-only homeowners: match by phone only; leads keep '' as "no email".
+  const emailKey = email || null;
   const phone10 = normalizePhoneLast10(input.phone);
   const [found] = await exec.execute<RowDataPacket[]>(
     `SELECT id FROM leads
      WHERE event_id IS NULL AND status <> 'spam'
        AND (email = ? ${phone10 ? `OR ${phone10Sql("phone")} = ?` : ""})
      ORDER BY (email = ?) DESC, id DESC LIMIT 1`,
-    phone10 ? [email, phone10, email] : [email, email],
+    phone10 ? [emailKey, phone10, emailKey] : [emailKey, emailKey],
   );
   const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
   const entry = [
     `[${stamp} UTC] Resubmitted via ${input.source}`,
-    `${input.full_name} · ${email} · ${input.phone}`,
+    `${input.full_name} · ${email || "no email"} · ${input.phone}`,
     input.property_address ? `Address: ${input.property_address}` : null,
     input.notes,
   ]
@@ -2441,6 +2445,7 @@ async function upsertStandardLead(
          notes = LEFT(CONCAT_WS('\\n', NULLIF(notes, ''), ?), 60000),
          first_name = COALESCE(NULLIF(first_name, ''), ?),
          last_name = COALESCE(NULLIF(last_name, ''), ?),
+         email = IF(email = '' AND ? <> '', ?, email),
          property_address = COALESCE(NULLIF(property_address, ''), ?),
          soft_pull_consent = GREATEST(soft_pull_consent, ?),
          sms_marketing_consent = GREATEST(sms_marketing_consent, ?),
@@ -2452,6 +2457,8 @@ async function upsertStandardLead(
         entry,
         input.first_name || null,
         input.last_name || null,
+        email,
+        email,
         input.property_address,
         input.soft_pull_consent ? 1 : 0,
         input.sms_marketing_consent ? 1 : 0,
@@ -4958,6 +4965,24 @@ export function tplCityPartnerFeePaid(d: { lang: Lang; amount_cents: number; cit
   });
 }
 
+/** City request answered: approved (the city is now on their list) or declined (with the reason). */
+export function tplCityPartnerRequestDecided(d: { lang: Lang; city_name: string; approved: boolean; reason?: string | null }) {
+  const l = d.lang;
+  return tplPartnerEmail({
+    lang: l,
+    subject: d.approved
+      ? tr(l, `City added: ${d.city_name} · Groundwork City Partner`, `Ciudad agregada: ${d.city_name} · Socio de Ciudad Groundwork`)
+      : tr(l, `About your city request: ${d.city_name}`, `Sobre tu solicitud de ciudad: ${d.city_name}`),
+    kicker: tr(l, "City request", "Solicitud de ciudad"),
+    headline: d.approved ? tr(l, `${d.city_name} is on your list`, `${d.city_name} está en tu lista`) : tr(l, `We can't add ${d.city_name} right now`, `No podemos agregar ${d.city_name} por ahora`),
+    intro: d.approved
+      ? tr(l, "Groundwork approved your request. You can start logging activity and track the city in your pipeline.", "Groundwork aprobó tu solicitud. Ya puedes registrar actividad y seguir la ciudad en tu pipeline.")
+      : tr(l, "Groundwork reviewed your request and isn't adding this city for now.", "Groundwork revisó tu solicitud y por ahora no agregará esta ciudad."),
+    facts: d.approved ? [[tr(l, "City", "Ciudad"), d.city_name]] : [[tr(l, "City", "Ciudad"), d.city_name], [tr(l, "Reason", "Motivo"), d.reason || "-"]],
+    cta: { url: `${APP_URL}/city/cities`, label: tr(l, "Open my cities", "Abrir mis ciudades") },
+  });
+}
+
 async function safeSend(to: string, tpl: { subject: string; html: string }) {
   try {
     await sendEmail({ to, subject: tpl.subject, html: tpl.html });
@@ -5366,7 +5391,7 @@ async function issueClientPortalInvite(
   },
   opts: {
     clientId: number;
-    email: string;
+    email: string | null;
     byType: "system" | "admin" | "affiliate";
     byId: number | null;
   },
@@ -5393,8 +5418,9 @@ async function issueClientPortalInvite(
   return token;
 }
 
+/** Portal invite by email, and by text when `phone` is given (always for phone-only homeowners). */
 async function sendClientPortalInviteEmail(opts: {
-  email: string;
+  email: string | null;
   firstName: string;
   lang: Lang;
   token: string;
@@ -5402,7 +5428,7 @@ async function sendClientPortalInviteEmail(opts: {
   /** Also text the invite link (staff-created clients). */
   phone?: string | null;
 }): Promise<void> {
-  if (opts.phone) {
+  if (opts.phone && !(await smsOptedOut(opts.phone))) {
     const from = await resolveCampaignSmsFrom().catch(() => null);
     if (from) {
       await sendSms({
@@ -5423,6 +5449,7 @@ async function sendClientPortalInviteEmail(opts: {
         ` Tu proyecto ${opts.publicId} ya está listo para seguir.`,
       )
     : "";
+  if (!opts.email) return;
   await safeSend(
     opts.email,
     tplPortalNotice({
@@ -5960,7 +5987,8 @@ async function recordMilestone(
 async function createClientWithProject(
   conn: PoolConnection,
   input: {
-    email: string;
+    /** null = phone-only homeowner. */
+    email: string | null;
     first_name: string;
     last_name: string;
     phone: string | null;
@@ -12327,11 +12355,14 @@ function registerFeatureRoutes(
       );
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email))
+      // Email, phone or both (at least one). Phone-only: the portal link goes by text, with consent.
+      if (email && !isValidEmail(email))
         throw new HttpError(400, "validation.emailInvalid");
-      if (phone.replace(/\D/g, "").length < 10) {
+      if (!email && !phone) throw new HttpError(400, "validation.emailOrPhoneOne");
+      if (phone && phone.replace(/\D/g, "").length < 10)
         throw new HttpError(400, "validation.phoneMin");
-      }
+      const textConsent = b.sms_consent === true || b.sms_consent === 1;
+      if (!email && !textConsent) throw new HttpError(400, "validation.smsConsentNoEmail");
       if (address.length < 5)
         throw new HttpError(400, "validation.addressRequired");
       if (!(b.homeowner_consent === true || b.homeowner_consent === 1)) {
@@ -12341,10 +12372,12 @@ function registerFeatureRoutes(
       const affiliateRef = await findActiveAffiliateByCode(b.referral_code);
       // Returning homeowner (same email): friendly outcome, never an error wall.
       // Not-yet-active homeowners get a fresh portal magic link.
-      const [dup] = await pool.execute<RowDataPacket[]>(
-        `SELECT id, status, first_name, preferred_language FROM clients WHERE email = ? LIMIT 1`,
-        [email],
-      );
+      const [dup] = email
+        ? await pool.execute<RowDataPacket[]>(
+            `SELECT id, status, first_name, preferred_language FROM clients WHERE email = ? LIMIT 1`,
+            [email],
+          )
+        : [[] as RowDataPacket[]];
       if (dup[0]) {
         const st = String(dup[0].status);
         if (st === "pending" || st === "prospect") {
@@ -12361,7 +12394,7 @@ function registerFeatureRoutes(
             });
           });
           await sendClientPortalInviteEmail({
-            email,
+            email: email || null,
             firstName: String(dup[0].first_name || first),
             lang: asLang(dup[0].preferred_language),
             token,
@@ -12421,10 +12454,10 @@ function registerFeatureRoutes(
           conn,
         );
         const out = await createClientWithProject(conn, {
-          email,
+          email: email || null,
           first_name: first,
           last_name: last,
-          phone,
+          phone: phone || null,
           lang,
           property_address: address,
           property_city: city,
@@ -12441,9 +12474,10 @@ function registerFeatureRoutes(
           `UPDATE leads SET client_id = ?, status = 'qualified' WHERE id = ?`,
           [out.clientId, leadId],
         );
+        if (!email && textConsent) await conn.execute(`UPDATE clients SET sms_marketing_consent = 1 WHERE id = ?`, [out.clientId]);
         const token = await issueClientPortalInvite(conn, {
           clientId: out.clientId,
-          email,
+          email: email || null,
           byType: "system",
           byId: null,
         });
@@ -12451,11 +12485,12 @@ function registerFeatureRoutes(
       });
 
       await sendClientPortalInviteEmail({
-        email,
+        email: email || null,
         firstName: first,
         lang,
         token: created.token,
         publicId: created.publicId,
+        phone: email ? null : phone,
       });
       await notifyStaff("client_created", (l) => ({
         subject: tr(
@@ -12805,29 +12840,35 @@ function registerFeatureRoutes(
       const lang = asLang(b.preferred_language);
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
-      if (!isValidEmail(email))
+      // Email, phone or both (at least one). Phone-only: the portal link goes by text, with consent.
+      if (email && !isValidEmail(email))
         throw new HttpError(400, "validation.emailInvalid");
-      if (phone.replace(/\D/g, "").length < 10)
+      if (!email && !phone) throw new HttpError(400, "validation.emailOrPhoneOne");
+      if (phone && phone.replace(/\D/g, "").length < 10)
         throw new HttpError(400, "validation.phoneMin");
+      const textConsent = b.sms_consent === true || b.sms_consent === 1;
+      if (!email && !textConsent) throw new HttpError(400, "validation.smsConsentNoEmail");
       if (address.length < 5)
         throw new HttpError(400, "validation.addressRequired");
       if (!(b.homeowner_consent === true || b.homeowner_consent === 1)) {
         throw new HttpError(400, "validation.homeownerConsent");
       }
-      const [dup] = await pool.execute<RowDataPacket[]>(
-        `SELECT id FROM clients WHERE email = ? LIMIT 1`,
-        [email],
-      );
-      if (dup.length) throw new HttpError(409, "errors.clientExists");
+      if (email) {
+        const [dup] = await pool.execute<RowDataPacket[]>(
+          `SELECT id FROM clients WHERE email = ? LIMIT 1`,
+          [email],
+        );
+        if (dup.length) throw new HttpError(409, "errors.clientExists");
+      }
       // One role per person; affiliates only learn the role that matched.
       await assertPersonAvailable({ email, phone, actor: "affiliate" });
 
       const created = await withTx((conn) =>
         createClientWithProject(conn, {
-          email,
+          email: email || null,
           first_name: first,
           last_name: last,
-          phone,
+          phone: phone || null,
           lang,
           property_address: address,
           property_city: city,
@@ -12841,18 +12882,20 @@ function registerFeatureRoutes(
           byId: user.id,
         }),
       );
+      if (textConsent) await pool.execute(`UPDATE clients SET sms_marketing_consent = 1 WHERE id = ?`, [created.clientId]);
       const inviteToken = await issueClientPortalInvite(pool, {
         clientId: created.clientId,
-        email,
+        email: email || null,
         byType: "affiliate",
         byId: user.id,
       });
       await sendClientPortalInviteEmail({
-        email,
+        email: email || null,
         firstName: first,
         lang,
         token: inviteToken,
         publicId: created.publicId,
+        phone: email ? null : phone,
       });
       await notifyStaff("affiliate_client_registered", (l) => ({
         subject: tr(
@@ -12874,7 +12917,7 @@ function registerFeatureRoutes(
         ],
         details: [
           [tr(l, "Client", "Cliente"), `${first} ${last}`],
-          ["Email", email],
+          ["Email", email || tr(l, "None (contact by phone)", "Ninguno (contactar por teléfono)")],
           [tr(l, "Phone", "Teléfono"), phone],
           [tr(l, "Property", "Propiedad"), address],
           [tr(l, "Project", "Proyecto"), created.publicId],
@@ -16693,8 +16736,11 @@ function registerAdminRoutes(app: Express) {
       const last = String(b.last_name || "")
         .trim()
         .slice(0, 100);
-      if (!isValidEmail(email))
+      // Email or phone (at least one): phone-only homeowners get the portal invite by text.
+      if (email && !isValidEmail(email))
         throw new HttpError(400, "validation.emailInvalid");
+      const phoneDigits = String(b.phone || "").replace(/\D/g, "");
+      if (!email && phoneDigits.length < 10) throw new HttpError(400, "validation.emailOrPhoneOne");
       if (!first) throw new HttpError(400, "validation.firstNameRequired");
       if (!last) throw new HttpError(400, "validation.lastNameRequired");
       const affiliateId = b.affiliate_id ? parseId(b.affiliate_id) : null;
@@ -16721,7 +16767,7 @@ function registerAdminRoutes(app: Express) {
             address_line1, city, city_id, zip, affiliate_id, assigned_admin_id)
          VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?, ?, ?, ?, ?)`,
         [
-          email,
+          email || null,
           first,
           last,
           b.phone ? String(b.phone).trim().slice(0, 40) : null,
@@ -16753,8 +16799,8 @@ function registerAdminRoutes(app: Express) {
         paragraphs: [
           tr(
             l,
-            `${first} ${last} (${email}) was added as a prospect.`,
-            `${first} ${last} (${email}) se agregó como prospecto.`,
+            `${first} ${last} (${email || String(b.phone || "")}) was added as a prospect.`,
+            `${first} ${last} (${email || String(b.phone || "")}) se agregó como prospecto.`,
           ),
         ],
         cta: {
@@ -16765,9 +16811,9 @@ function registerAdminRoutes(app: Express) {
       // Portal invite (email + text) unless staff unchecked it.
       let inviteSent = false;
       if (b.send_invite !== false) {
-        const token = await issueClientPortalInvite(pool, { clientId, email, byType: "admin", byId: user.id });
+        const token = await issueClientPortalInvite(pool, { clientId, email: email || null, byType: "admin", byId: user.id });
         await sendClientPortalInviteEmail({
-          email,
+          email: email || null,
           firstName: first,
           lang: asLang(b.preferred_language),
           token,
@@ -27789,6 +27835,7 @@ const APPOINTMENT_KINDS = [
   "lender_meeting",
   "consultation",
   "call",
+  "city_meeting",
   "other",
 ] as const;
 type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
@@ -27808,6 +27855,7 @@ const APPT_KIND_LABEL: Record<AppointmentKind, { en: string; es: string }> = {
   lender_meeting: { en: "Lender meeting", es: "Cita con el prestamista" },
   consultation: { en: "Consultation", es: "Consulta" },
   call: { en: "Call", es: "Llamada" },
+  city_meeting: { en: "City meeting", es: "Reunión con la ciudad" },
   other: { en: "Appointment", es: "Cita" },
 };
 const APPT_LOCATION_LABEL: Record<
@@ -28526,7 +28574,7 @@ export async function createAppointment(
   b: AppointmentInput,
   opts: {
     adminId: number | null;
-    source: "staff" | "booking";
+    source: "staff" | "booking" | "city_partner";
     attendees?: ApptAttendeeInput[];
   },
 ) {
@@ -37240,6 +37288,17 @@ async function finalizeConstructionAgreement(agreementId: number): Promise<void>
   if (!claim.affectedRows) return;
   await storeSignedConstructionAgreementPdf(agreementId).catch((e: any) => console.error("[agreement] signed PDF:", e?.message ?? e));
   const address = String(a.property_address || a.public_id);
+  // Phone-only signers get the same notice by text.
+  for (const s of signers.filter((x) => x.party !== "groundwork" && !x.email && x.phone)) {
+    if (await smsOptedOut(String(s.phone))) continue;
+    const from = await resolveCampaignSmsFrom().catch(() => null);
+    if (from)
+      await sendSms({
+        to: String(s.phone),
+        from,
+        body: tr(asLang(s.preferred_language), `Groundwork Capital Group: everyone signed the ADU construction agreement for ${address}. Open your signing link anytime to download your copy.`, `Groundwork Capital Group: todos firmaron el contrato de construcción de ADU para ${address}. Abra su enlace de firma cuando quiera para descargar su copia.`),
+      }).catch((e: any) => console.warn("[agreement] signed sms:", e?.message ?? e));
+  }
   for (const s of signers.filter((x) => x.party !== "groundwork" && x.email)) {
     const lang = asLang(s.preferred_language);
     const subject = tr(lang, `Signed: ADU construction agreement · ${address}`, `Firmado: contrato de construcción de ADU · ${address}`);
@@ -41250,7 +41309,7 @@ function buildApp(): Express {
         [id, t.version, r.fee_cents_per_sqft, body, sha256(body), signer, cpText(b.signer_title, 120) ?? null, clientIp(req), String(req.headers["user-agent"] || "").slice(0, 500) || null],
       );
       await cpLog(id, "signed", null, `rate ${r.fee_cents_per_sqft}`, null);
-      await notifyStaff("affiliate_onboarding", (l) => ({
+      await notifyStaff("city_partner", (l) => ({
         subject: tr(l, `City Partner signed: ${signer}`, `Socio de Ciudad firmó: ${signer}`),
         headline: tr(l, "Agreement ready to countersign", "Acuerdo listo para firmar por Groundwork"),
         paragraphs: [tr(l, `${signer} signed the City Partner agreement. Countersign it to start their fees.`, `${signer} firmó el acuerdo de Socio de Ciudad. Fírmalo para activar sus pagos.`)],
@@ -41310,7 +41369,7 @@ function buildApp(): Express {
         `INSERT INTO city_partner_w9s (city_partner_id, legal_name, business_name, tax_classification, tin_type, tin_last4, pdf_blob_pathname, signed_at, signed_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, legalName, String(b.business_name || "").trim().slice(0, 200) || null, cls, tinType, tin.slice(-4), pathname, signedAt, clientIp(req)],
       );
-      await notifyStaff("affiliate_onboarding", (l) => ({
+      await notifyStaff("city_partner", (l) => ({
         subject: tr(l, `City Partner W-9: ${legalName}`, `W-9 de Socio de Ciudad: ${legalName}`),
         headline: tr(l, "City Partner W-9 ready for review", "W-9 de Socio de Ciudad listo para revisión"),
         paragraphs: [tr(l, `${legalName} submitted a W-9 (${tinType.toUpperCase()} ending ${tin.slice(-4)}).`, `${legalName} envió un W-9 (${tinType.toUpperCase()} terminación ${tin.slice(-4)}).`)],
@@ -41459,6 +41518,234 @@ function buildApp(): Express {
   };
   app.get("/api/city/feed", cityPortal, route(async (req, res) => res.json({ ok: true, items: await cityFeed(portalUser(res).id, Math.min(100, Math.max(5, Number(req.query.limit) || 40))) })));
   app.get("/api/city/fees", cityPortal, route(async (_req, res) => res.json({ ok: true, items: await cpFees("f.city_partner_id = ?", [portalUser(res).id]) })));
+  // ── City requests: a partner asks for a city; staff approve (add + assign) or decline ──
+  const cityRequestRow = (r: RowDataPacket) => ({
+    id: Number(r.id),
+    city_name: String(r.city_name),
+    county: r.county == null ? null : String(r.county),
+    note: r.note == null ? null : String(r.note),
+    status: String(r.status) as "pending" | "approved" | "declined",
+    city_id: r.city_id == null ? null : Number(r.city_id),
+    decline_reason: r.decline_reason == null ? null : String(r.decline_reason),
+    decided_at: isoDate(r.decided_at),
+    created_at: isoDate(r.created_at)!,
+    partner: r.partner_name !== undefined ? { id: Number(r.city_partner_id), name: String(r.partner_name || "").trim(), company: r.company == null ? null : String(r.company) } : undefined,
+  });
+  app.get(
+    "/api/city/city-requests",
+    cityPortal,
+    route(async (_req, res) => {
+      const [rows] = await pool.query<RowDataPacket[]>(`SELECT * FROM city_partner_city_requests WHERE city_partner_id = ? ORDER BY id DESC LIMIT 50`, [portalUser(res).id]);
+      res.json({ ok: true, items: rows.map(cityRequestRow) });
+    }),
+  );
+  app.post(
+    "/api/city/city-requests",
+    cityPortal,
+    route(async (req, res) => {
+      const me = portalUser(res);
+      const name = String(req.body?.city_name || "").trim().replace(/\s+/g, " ").slice(0, 100);
+      if (name.length < 2) throw new HttpError(400, "validation.cityName");
+      const [[dup]] = (await pool.query<RowDataPacket[]>(
+        `SELECT id FROM city_partner_city_requests WHERE city_partner_id = ? AND status = 'pending' AND LOWER(city_name) = LOWER(?) LIMIT 1`,
+        [me.id, name],
+      )) as unknown as [RowDataPacket[]];
+      if (dup) throw new HttpError(409, "errors.cityRequestPending");
+      const [[mine]] = (await pool.query<RowDataPacket[]>(
+        `SELECT s.id FROM city_partner_cities cc JOIN service_cities s ON s.id = cc.city_id WHERE cc.city_partner_id = ? AND LOWER(s.name) = LOWER(?) LIMIT 1`,
+        [me.id, name],
+      )) as unknown as [RowDataPacket[]];
+      if (mine) throw new HttpError(409, "errors.cityAlreadyYours");
+      const [ins] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO city_partner_city_requests (city_partner_id, city_name, county, note) VALUES (?, ?, ?, ?)`,
+        [me.id, name, cpText(req.body?.county, 100) ?? null, cpText(req.body?.note, 500) ?? null],
+      );
+      const [[p]] = (await pool.query<RowDataPacket[]>(`SELECT first_name, last_name, company FROM city_partners WHERE id = ?`, [me.id])) as unknown as [RowDataPacket[]];
+      const who = String(p?.company || `${p?.first_name || ""} ${p?.last_name || ""}`).trim();
+      await notifyStaff("city_partner", (l) => ({
+        subject: tr(l, `City request: ${name} · ${who}`, `Solicitud de ciudad: ${name} · ${who}`),
+        headline: tr(l, `${who} asked for ${name}`, `${who} pidió ${name}`),
+        paragraphs: [tr(l, "Approve it to add the city to the pipeline and assign it to them, or decline with a reason.", "Apruébala para agregar la ciudad al pipeline y asignársela, o recházala con un motivo.")],
+        details: [
+          [tr(l, "City", "Ciudad"), name],
+          [tr(l, "County", "Condado"), String(req.body?.county || "-")],
+          [tr(l, "Note", "Nota"), String(req.body?.note || "-")],
+        ],
+        cta: { url: `${APP_URL}/admin/city-partners?tab=requests`, label: tr(l, "Review the request", "Revisar la solicitud") },
+      }));
+      const [[row]] = (await pool.query<RowDataPacket[]>(`SELECT * FROM city_partner_city_requests WHERE id = ?`, [ins.insertId])) as unknown as [RowDataPacket[]];
+      res.status(201).json({ ok: true, item: cityRequestRow(row) });
+    }),
+  );
+  app.get(
+    "/api/admin/city-requests",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const status = ["pending", "approved", "declined"].includes(String(req.query.status)) ? String(req.query.status) : "pending";
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT r.*, CONCAT_WS(' ', p.first_name, p.last_name) AS partner_name, p.company FROM city_partner_city_requests r JOIN city_partners p ON p.id = r.city_partner_id
+         WHERE r.status = ? ORDER BY r.id DESC LIMIT 100`,
+        [status],
+      );
+      const [[c]] = (await pool.query<RowDataPacket[]>(`SELECT COUNT(*) n FROM city_partner_city_requests WHERE status = 'pending'`)) as unknown as [RowDataPacket[]];
+      res.json({ ok: true, items: rows.map(cityRequestRow), pending: Number(c.n) });
+    }),
+  );
+  const decideCityRequest = async (id: number) => {
+    const [[r]] = (await pool.query<RowDataPacket[]>(
+      `SELECT r.*, p.email, p.preferred_language FROM city_partner_city_requests r JOIN city_partners p ON p.id = r.city_partner_id WHERE r.id = ?`,
+      [id],
+    )) as unknown as [RowDataPacket[]];
+    if (!r) throw new HttpError(404, "errors.notFound");
+    if (String(r.status) !== "pending") throw new HttpError(409, "errors.cityRequestDecided");
+    return r;
+  };
+  app.post(
+    "/api/admin/city-requests/:id/approve",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const admin = portalUser(res);
+      const r = await decideCityRequest(parseId(req.params.id));
+      // Staff pick the city (existing, or one they just created with the near-duplicate check).
+      const cityId = parseId(req.body?.city_id);
+      const [[c]] = (await pool.query<RowDataPacket[]>(`SELECT id, name FROM service_cities WHERE id = ? AND archived_at IS NULL`, [cityId])) as unknown as [RowDataPacket[]];
+      if (!c) throw new HttpError(400, "validation.invalidField");
+      await pool.execute(`UPDATE service_cities SET pipeline_stage = COALESCE(pipeline_stage, 'target'), county = COALESCE(county, ?) WHERE id = ?`, [r.county ?? null, cityId]);
+      await pool.execute(`INSERT IGNORE INTO city_partner_cities (city_partner_id, city_id) VALUES (?, ?)`, [r.city_partner_id, cityId]);
+      const [u] = await pool.execute<ResultSetHeader>(
+        `UPDATE city_partner_city_requests SET status = 'approved', city_id = ?, decided_by_admin_id = ?, decided_at = NOW() WHERE id = ? AND status = 'pending'`,
+        [cityId, admin.id, r.id],
+      );
+      if (!u.affectedRows) throw new HttpError(409, "errors.cityRequestDecided");
+      await cpLog(Number(r.city_partner_id), "cities", null, `+ ${c.name} (request approved)`, admin.id);
+      await safeSend(String(r.email), tplCityPartnerRequestDecided({ lang: asLang(r.preferred_language), city_name: String(c.name), approved: true }));
+      res.json({ ok: true });
+    }),
+  );
+  app.post(
+    "/api/admin/city-requests/:id/decline",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const admin = portalUser(res);
+      const r = await decideCityRequest(parseId(req.params.id));
+      const reason = String(req.body?.reason || "").trim().slice(0, 500);
+      if (reason.length < 3) throw new HttpError(400, "validation.reasonRequired");
+      const [u] = await pool.execute<ResultSetHeader>(
+        `UPDATE city_partner_city_requests SET status = 'declined', decline_reason = ?, decided_by_admin_id = ?, decided_at = NOW() WHERE id = ? AND status = 'pending'`,
+        [reason, admin.id, r.id],
+      );
+      if (!u.affectedRows) throw new HttpError(409, "errors.cityRequestDecided");
+      await safeSend(String(r.email), tplCityPartnerRequestDecided({ lang: asLang(r.preferred_language), city_name: String(r.city_name), approved: false, reason }));
+      res.json({ ok: true });
+    }),
+  );
+
+  // ── City meetings: partners book a meeting on a city and invite Groundwork staff (CRM appointment, Outlook sync) ──
+  app.get(
+    "/api/city/staff",
+    cityPortal,
+    route(async (req, res) => {
+      const [[p]] = (await pool.query<RowDataPacket[]>(`SELECT invited_by_admin_id FROM city_partners WHERE id = ?`, [portalUser(res).id])) as unknown as [RowDataPacket[]];
+      const testOnly = process.env.VITEST ? "AND (email LIKE '%@example.com' OR email LIKE '%@example.test')" : "AND email NOT LIKE '%@example.com' AND email NOT LIKE '%@example.test'";
+      const [rows] = await pool.query<RowDataPacket[]>(`SELECT id, first_name, last_name, role FROM admins WHERE status = 'active' ${testOnly} ORDER BY first_name, last_name`);
+      // Suggested: the partner's inviter, else the first super admin.
+      const suggested = p?.invited_by_admin_id && rows.some((r) => Number(r.id) === Number(p.invited_by_admin_id)) ? Number(p.invited_by_admin_id) : Number(rows.find((r) => r.role === "super_admin")?.id || rows[0]?.id || 0) || null;
+      res.json({ ok: true, staff: rows.map((r) => ({ id: Number(r.id), name: `${r.first_name} ${r.last_name}`.trim() })), suggested_id: suggested });
+    }),
+  );
+  const cityMeetingRow = (r: RowDataPacket) => ({
+    id: Number(r.id),
+    title: String(r.title),
+    starts_at: isoDate(r.starts_at)!,
+    ends_at: isoDate(r.ends_at)!,
+    timezone: String(r.timezone),
+    location_type: String(r.location_type),
+    location: r.location == null ? null : String(r.location),
+    status: String(r.status),
+    city_id: Number(r.city_id),
+    city_name: r.city_name == null ? null : String(r.city_name),
+    staff: String(r.staff_names || "").split("|").filter(Boolean),
+  });
+  app.get(
+    "/api/city/meetings",
+    cityPortal,
+    route(async (req, res) => {
+      const me = portalUser(res).id;
+      const cityId = req.query.city_id ? parseId(req.query.city_id) : null;
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT a.*, s.name AS city_name,
+           (SELECT GROUP_CONCAT(CONCAT_WS(' ', ad.first_name, ad.last_name) SEPARATOR '|') FROM appointment_attendees t JOIN admins ad ON ad.id = t.admin_id WHERE t.appointment_id = a.id AND t.kind = 'admin') AS staff_names
+         FROM appointments a LEFT JOIN service_cities s ON s.id = a.city_id
+         WHERE a.city_partner_id = ? ${cityId ? "AND a.city_id = ?" : ""} AND a.status <> 'cancelled' AND a.ends_at >= NOW() - INTERVAL 1 DAY
+         ORDER BY a.starts_at LIMIT 50`,
+        cityId ? [me, cityId] : [me],
+      );
+      res.json({ ok: true, items: rows.map(cityMeetingRow) });
+    }),
+  );
+  app.post(
+    "/api/city/meetings",
+    cityPortal,
+    route(async (req, res) => {
+      const me = portalUser(res);
+      const b = req.body || {};
+      const cityId = parseId(b.city_id);
+      if (!(await cpPartnerCities(me.id)).includes(cityId)) throw new HttpError(403, "errors.forbidden");
+      const ids = [...new Set((Array.isArray(b.admin_ids) ? b.admin_ids : []).map(Number).filter((n: number) => Number.isInteger(n) && n > 0))].slice(0, 5) as number[];
+      if (!ids.length) throw new HttpError(400, "validation.pickStaff");
+      const [staff] = await pool.query<RowDataPacket[]>(`SELECT id FROM admins WHERE status = 'active' AND id IN (?)`, [ids]);
+      if (staff.length !== ids.length) throw new HttpError(400, "validation.invalidField");
+      const [[city]] = (await pool.query<RowDataPacket[]>(`SELECT name FROM service_cities WHERE id = ?`, [cityId])) as unknown as [RowDataPacket[]];
+      const [[p]] = (await pool.query<RowDataPacket[]>(`SELECT first_name, last_name, email, phone, company, preferred_language FROM city_partners WHERE id = ?`, [me.id])) as unknown as [RowDataPacket[]];
+      const partnerName = `${p.first_name} ${p.last_name}`.trim();
+      const title = String(b.title || "").trim().slice(0, 200) || `${String(city.name)} · ${"City meeting"}`;
+      // Internal note for staff (English, staff-only screen).
+      const notes = `Booked by City Partner ${partnerName}${p.company ? ` (${p.company})` : ""} from the ${city.name} page.`;
+      // First picked staff member owns it (their Outlook calendar); everyone picked + the partner gets the invite.
+      const out = await createAppointment(
+        { ...b, kind: "city_meeting", title, owner_admin_id: ids[0], notes, notify_homeowner: false, client_id: undefined, lead_id: undefined, project_id: undefined },
+        {
+          adminId: null,
+          source: "city_partner",
+          attendees: [
+            ...ids.map((id) => ({ kind: "admin" as const, admin_id: id })),
+            { kind: "guest" as const, name: partnerName, email: String(p.email), phone: p.phone ? String(p.phone) : null, preferred_language: asLang(p.preferred_language) },
+          ],
+        },
+      );
+      await pool.execute(`UPDATE appointments SET city_id = ?, city_partner_id = ? WHERE id = ?`, [cityId, me.id, out.id]);
+      // Shows on the city's activity log and pipeline like any partner activity.
+      await pool.execute(
+        `INSERT INTO city_activities (city_id, city_partner_id, occurred_on, activity_type, summary, follow_up_on) VALUES (?, ?, ?, 'meeting', ?, ?)`,
+        [cityId, me.id, cpToday(), `Meeting scheduled: ${title} (${String(b.date)} ${String(b.start)})`.slice(0, 1000), String(b.date)],
+      );
+      for (const id of ids) {
+        await insertAdminInAppNotification({
+          adminId: id,
+          eventKey: "city_partner",
+          title: `${partnerName} invited you: ${title}`,
+          body: `City meeting in ${city.name}. It's on your calendar.`,
+          linkUrl: `/admin/calendar?appointment=${out.id}`,
+        }).catch(() => undefined);
+      }
+      const [[row]] = (await pool.query<RowDataPacket[]>(
+        `SELECT a.*, ? AS city_name, (SELECT GROUP_CONCAT(CONCAT_WS(' ', ad.first_name, ad.last_name) SEPARATOR '|') FROM appointment_attendees t JOIN admins ad ON ad.id = t.admin_id WHERE t.appointment_id = a.id AND t.kind = 'admin') AS staff_names FROM appointments a WHERE a.id = ?`,
+        [city.name, out.id],
+      )) as unknown as [RowDataPacket[]];
+      res.status(201).json({ ok: true, item: cityMeetingRow(row), conflicts: out.conflicts?.length ?? 0 });
+    }),
+  );
+  app.post(
+    "/api/city/meetings/:id/cancel",
+    cityPortal,
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      const [[a]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM appointments WHERE id = ? AND city_partner_id = ? AND status <> 'cancelled'`, [id, portalUser(res).id])) as unknown as [RowDataPacket[]];
+      if (!a) throw new HttpError(404, "errors.notFound");
+      await cancelAppointment(id, String(req.body?.reason || "Cancelled by the City Partner").slice(0, 500));
+      res.json({ ok: true });
+    }),
+  );
   app.get(
     "/api/city/overview",
     cityPortal,
@@ -42087,7 +42374,28 @@ function buildApp(): Express {
     }),
   );
 
-  // ── Portal auth (passwordless email OTP) ─────────────────────────────────
+  // ── Portal auth (passwordless OTP by email or text) ──────────────────────
+  /**
+   * Sign-in account by email, or by phone (last 10 digits). A phone shared by two sign-in-able accounts is
+   * refused (`errors.phoneShared`: use your email) so a code never opens the wrong account.
+   */
+  const findPortalLogin = async (actor: PortalActor, body: any): Promise<{ row: RowDataPacket | null; via: "email" | "sms"; to: string } | { error: string }> => {
+    const cfg = PORTAL_AUTH[actor];
+    if (body?.phone !== undefined && body?.phone !== null && String(body.phone).trim() !== "") {
+      const last10 = normalizePhoneLast10(String(body.phone));
+      if (!last10) return { error: "validation.phoneMin" };
+      const [rows] = await pool.execute<RowDataPacket[]>(`SELECT * FROM \`${cfg.table}\` WHERE ${phone10Sql("phone")} = ? ORDER BY id DESC LIMIT 5`, [last10]);
+      const live = rows.filter((r) => ["active", "prospect"].includes(String(r.status)));
+      if (live.length > 1) return { error: "errors.phoneShared" };
+      const row = live[0] || rows[0] || null;
+      return { row, via: "sms", to: row?.phone ? String(row.phone) : String(body.phone) };
+    }
+    const email = normalizeEmail(body?.email);
+    if (!email || !EMAIL_RE.test(email)) return { error: "validation.emailInvalid" };
+    const [rows] = await pool.execute<RowDataPacket[]>(`SELECT * FROM \`${cfg.table}\` WHERE email = ? LIMIT 1`, [email]);
+    return { row: rows[0] || null, via: "email", to: email };
+  };
+
   for (const actor of [
     "admin",
     "affiliate",
@@ -42099,16 +42407,11 @@ function buildApp(): Express {
 
     app.post(`${base}/otp/request`, otpLimiter, async (req, res) => {
       try {
-        const email = normalizeEmail(req.body?.email);
-        if (!email || !EMAIL_RE.test(email)) {
-          return res.status(400).json({ error: "validation.emailInvalid" });
-        }
+        const found = await findPortalLogin(actor, req.body);
+        if ("error" in found) return res.status(found.error === "errors.phoneShared" ? 409 : 400).json({ error: found.error });
         const cfg = PORTAL_AUTH[actor];
-        const [rows] = await pool.execute<RowDataPacket[]>(
-          `SELECT * FROM \`${cfg.table}\` WHERE email = ? LIMIT 1`,
-          [email],
-        );
-        const row = rows[0];
+        const { row, via } = found;
+        const email = found.to;
         if (!row) {
           // Anti-enumeration: same response as inactive/suspended
           return res.json({ ok: true, sent: true });
@@ -42136,26 +42439,50 @@ function buildApp(): Express {
         );
 
         const lang = row.preferred_language === "es" ? "es" : "en";
-        const mail = tplPortalOtp({
-          firstName: String(row.first_name || ""),
-          code,
-          actor,
-          lang,
-        });
         let delivered = false;
         let dryRun = false;
         let mailId: string | undefined;
-        try {
-          const mailResult = await sendEmail({
-            to: email,
-            subject: mail.subject,
-            html: mail.html,
+        if (via === "sms") {
+          // Text code: needs a sending line and a number that hasn't texted STOP.
+          const from = await resolveCampaignSmsFrom().catch(() => null);
+          if (!from || (await smsOptedOut(email))) {
+            await pool.execute(`UPDATE \`${cfg.otpTable}\` SET consumed_at = NOW() WHERE id = ?`, [otpInsert.insertId]);
+            return res.status(409).json({ error: "errors.otpSmsUnavailable" });
+          }
+          try {
+            // manual: sign-in codes are never stored in the person's message history.
+            const out = await sendSms({
+              to: email,
+              from,
+              manual: true,
+              body: tr(lang, `Groundwork: your sign-in code is ${code}. It expires in ${OTP_TTL_MIN} minutes. Don't share it with anyone.`, `Groundwork: tu código para entrar es ${code}. Vence en ${OTP_TTL_MIN} minutos. No lo compartas con nadie.`),
+            });
+            delivered = true;
+            dryRun = String(out?.sid || "").startsWith("dry-run-");
+          } catch (e: any) {
+            console.error(`[${actor}.auth] otp text threw:`, e?.message ?? e);
+          }
+        } else {
+          const mail = tplPortalOtp({
+            firstName: String(row.first_name || ""),
+            code,
+            actor,
+            lang,
           });
-          delivered = mailResult.ok;
-          dryRun = Boolean(mailResult.dryRun);
-          mailId = mailResult.id;
-        } catch (e: any) {
-          console.error(`[${actor}.auth] otp email threw:`, e?.message ?? e);
+          try {
+            // manual: sign-in codes are never stored in the person's message history.
+            const mailResult = await sendEmail({
+              to: email,
+              subject: mail.subject,
+              html: mail.html,
+              manual: true,
+            });
+            delivered = mailResult.ok;
+            dryRun = Boolean(mailResult.dryRun);
+            mailId = mailResult.id;
+          } catch (e: any) {
+            console.error(`[${actor}.auth] otp email threw:`, e?.message ?? e);
+          }
         }
         if (!delivered) {
           // Never claim "sent" when delivery failed: burn the code and tell the user.
@@ -42168,7 +42495,7 @@ function buildApp(): Express {
         if (dryRun) {
           // Dry-run (no RESEND_API_KEY, NOTIFY_EMAILS=false, or VITEST) — surface code in server log.
           console.info(
-            `[${actor}.auth] OTP dry-run (emails not delivered) → ${email}: ${code}`,
+            `[${actor}.auth] OTP dry-run (${via === "sms" ? "texts" : "emails"} not delivered) → ${email}: ${code}`,
           );
         } else {
           console.info(
@@ -42185,17 +42512,13 @@ function buildApp(): Express {
 
     app.post(`${base}/otp/verify`, otpLimiter, async (req, res) => {
       try {
-        const email = normalizeEmail(req.body?.email);
         const code = String(req.body?.code || "").trim();
-        if (!email || !EMAIL_RE.test(email) || !/^\d{6}$/.test(code)) {
+        const found = await findPortalLogin(actor, req.body);
+        if ("error" in found || !/^\d{6}$/.test(code)) {
           return res.status(400).json({ error: "validation.otpInvalid" });
         }
         const cfg = PORTAL_AUTH[actor];
-        const [rows] = await pool.execute<RowDataPacket[]>(
-          `SELECT * FROM \`${cfg.table}\` WHERE email = ? LIMIT 1`,
-          [email],
-        );
-        const row = rows[0];
+        const row = found.row;
         if (!row || !["active", "prospect"].includes(String(row.status))) {
           // Same answer as a wrong code: no account-state enumeration.
           return res.status(401).json({ error: "errors.authInvalid" });

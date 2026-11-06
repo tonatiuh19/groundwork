@@ -135,7 +135,9 @@
     "language": "Idioma preferido",
     "noteEvent": "Al registrarte, aceptas que te contactemos sobre este evento. No se requiere revisión de crédito para reservar.",
     "smsFollowUpConsent": "Acepto recibir mensajes de texto de Groundwork sobre mi solicitud y los siguientes pasos. Pueden aplicar tarifas de mensajes y datos. Responda STOP para no recibir más mensajes.",
-    "spamHint": "¿No ve nuestro correo? Revise su carpeta de spam o correo no deseado."
+    "spamHint": "¿No ve nuestro correo? Revise su carpeta de spam o correo no deseado.",
+    "emailOptional": "Correo (opcional)",
+    "phoneOptional": "Teléfono (opcional)"
   },
   "footer": {
     "tagline": "Construye más desde casa.",
@@ -283,7 +285,12 @@
     "cityActivitySummary": "Escribe qué pasó.",
     "cityPartnerCompany": "Escribe el nombre legal de la LLC. Aparece en el acuerdo.",
     "confirmNameMismatch": "El nombre que escribiste no coincide.",
-    "cityPartnerRate": "Escribe una tarifa de $0.00 a $100.00 (hasta 2 decimales) y el nombre de la LLC."
+    "cityPartnerRate": "Escribe una tarifa de $0.00 a $100.00 (hasta 2 decimales) y el nombre de la LLC.",
+    "pickStaff": "Elige al menos una persona de Groundwork.",
+    "emailOrPhone": "Escribe un correo válido o un teléfono de al menos 10 dígitos.",
+    "emailOrPhoneRequired": "Escribe tu correo o celular.",
+    "emailOrPhoneOne": "Agrega un correo, un teléfono o ambos.",
+    "smsConsentNoEmail": "Sin correo, el propietario debe aceptar recibir mensajes de texto."
   },
   "errors": {
     "submitFailed": "No pudimos enviar tu solicitud.",
@@ -434,7 +441,12 @@
     "cityArchivedTarget": "No puedes combinar con una ciudad archivada. Restáurala primero.",
     "cityRateLocked": "La tarifa está bloqueada porque el socio ya firmó.",
     "cityCompanyLocked": "El nombre de la LLC está bloqueado porque el socio ya firmó.",
-    "viewOnly": "Estás viendo como este socio, solo lectura. Aquí no se puede cambiar nada."
+    "viewOnly": "Estás viendo como este socio, solo lectura. Aquí no se puede cambiar nada.",
+    "cityRequestPending": "Ya pediste esta ciudad. Está en revisión.",
+    "cityAlreadyYours": "Esta ciudad ya está en tu lista.",
+    "cityRequestDecided": "Esta solicitud ya fue respondida.",
+    "phoneShared": "Más de una cuenta usa este número. Entra con tu correo.",
+    "otpSmsUnavailable": "No podemos enviar un código a este número ahora. Entra con tu correo."
   },
   "getCreditReport": {
     "metaTitle": "Reporte de crédito gratis · Sin afectar su puntaje",
@@ -756,7 +768,11 @@
     "more": "Más",
     "quickNav": "Secciones principales",
     "cityTitle": "Acceso de Socios de Ciudad",
-    "cityLead": "Portal por invitación para socios que abren ciudades al programa ADU de Groundwork."
+    "cityLead": "Portal por invitación para socios que abren ciudades al programa ADU de Groundwork.",
+    "emailOrPhoneStep": "Entra con tu correo o teléfono",
+    "emailOrPhoneHint": "Escribe el correo o celular de tu cuenta. Te enviamos un código de 6 dígitos por correo o mensaje de texto. Sin contraseña.",
+    "emailOrPhone": "Correo o celular",
+    "codeHintPhone": "Si una cuenta usa {{email}}, te enviamos un código por mensaje de texto."
   },
   "portalNav": {
     "adminTitle": "Admin",
@@ -1281,7 +1297,8 @@
       "affiliate_onboarding": "Acuerdo / W-9 de afiliado enviado",
       "line_needs_owner": "Línea telefónica sin dueño",
       "inbound_email": "Correo de personas del CRM",
-      "scorecard_alert": "Alerta de scorecard"
+      "scorecard_alert": "Alerta de scorecard",
+      "city_partner": "Socios de Ciudad (firmas, W-9, solicitudes de ciudad, reuniones)"
     },
     "actionNoteHint": "Nota opcional que se envía con este cambio de estado",
     "profileNav": "Abrir tu perfil",
@@ -3100,6 +3117,7 @@
       "lender_meeting": "Cita con el prestamista",
       "consultation": "Consulta",
       "call": "Llamada",
+      "city_meeting": "Reunión con la ciudad",
       "other": "Otra"
     },
     "loc": {
@@ -3919,6 +3937,7 @@
       "clients": "Propietarios (clientes)",
       "contractors": "Contratistas",
       "affiliates": "Afiliados",
+      "city_partners": "Socios de Ciudad",
       "projects": "Proyectos y dinero",
       "system": "Sistema"
     }
@@ -5172,7 +5191,66 @@
     "allInPipeline": "Todas las ciudades ya están en el pipeline.",
     "viewAs": "Ver como {{name}}",
     "viewingAs": "Viendo como {{name}} · solo lectura (abierto por {{admin}})",
-    "exitView": "Salir de la vista"
+    "exitView": "Salir de la vista",
+    "tabMeetings": "Reuniones",
+    "request": {
+      "title": "Solicitar una ciudad",
+      "lead": "¿Trabajas una ciudad que no está en tu lista? Pide a Groundwork que la agregue.",
+      "open": "Solicitar una ciudad",
+      "sent": "Solicitud enviada. Groundwork la revisará y te avisará.",
+      "cityName": "Ciudad",
+      "county": "Condado",
+      "note": "¿Por qué esta ciudad?",
+      "notePlaceholder": "A quién conoces ahí, qué pasa con los ADU, lo que ayude.",
+      "send": "Enviar solicitud",
+      "status_pending": "En revisión",
+      "status_approved": "Aprobada",
+      "status_declined": "Rechazada",
+      "adminTitle": "Solicitudes de ciudad",
+      "noneAdmin": "No hay solicitudes aquí.",
+      "approve": "Aprobar",
+      "decline": "Rechazar",
+      "approveTitle": "Aprobar solicitud de ciudad",
+      "approveLead": "Elige la ciudad para {{city}} (o agrégala). Entra al pipeline y se asigna a {{partner}}.",
+      "approveConfirm": "Aprobar y asignar",
+      "declineTitle": "Rechazar solicitud de ciudad",
+      "reason": "Motivo",
+      "reasonHint": "El socio ve este motivo en su portal y por correo.",
+      "declineConfirm": "Rechazar solicitud"
+    },
+    "meeting": {
+      "lead": "Agenda una reunión para esta ciudad e invita al equipo de Groundwork. Queda en su calendario y reciben la invitación.",
+      "open": "Agendar una reunión",
+      "booked": "Reunión agendada. La invitación va en camino.",
+      "title": "Agendar una reunión",
+      "what": "¿De qué es la reunión?",
+      "whatPlaceholder": "{{city}} · Reunión con personal de la ciudad",
+      "date": "Fecha",
+      "start": "Inicio",
+      "length": "Duración",
+      "minutes": "{{count}} minutos",
+      "minutes_one": "{{count}} minuto",
+      "minutes_other": "{{count}} minutos",
+      "tz": "Los horarios están en hora del Pacífico (America/Los_Angeles).",
+      "where": "Dónde",
+      "where_office": "Oficina",
+      "where_onsite": "En persona",
+      "where_phone": "Teléfono",
+      "where_video": "Video",
+      "videoLink": "Enlace de video",
+      "address": "Dirección",
+      "addressPlaceholder": "Ayuntamiento, {{city}}",
+      "invite": "Invitar de Groundwork",
+      "inviteSearch": "Buscar en el equipo",
+      "inviteHint": "La primera persona la tiene en su calendario. Todos los que elijas reciben la invitación.",
+      "notes": "Notas para el equipo",
+      "notesPlaceholder": "Agenda, quién asiste por parte de la ciudad, qué preparar.",
+      "send": "Agendar y enviar invitaciones",
+      "cancel": "Cancelar reunión",
+      "cancelConfirm": "¿Cancelar esta reunión? Se avisa a todos los invitados.",
+      "none": "No hay reuniones agendadas",
+      "noneText": "Agenda una y el equipo de Groundwork la tendrá en su calendario."
+    }
   },
   "danger": {
     "typeToConfirm": "Escribe \"{{text}}\" para confirmar",
@@ -5182,5 +5260,9 @@
     "title": "Vista previa del correo",
     "subject": "Asunto",
     "notSent": "Esta es una vista previa. No se ha enviado nada."
+  },
+  "phoneOnly": {
+    "hint": "¿Sin correo? Enviaremos el enlace del portal y las novedades por mensaje de texto a este teléfono.",
+    "consent": "El propietario acepta recibir mensajes de texto de Groundwork sobre su proyecto. Pueden aplicar cargos de mensajes y datos. Responde STOP para cancelar."
   }
 }

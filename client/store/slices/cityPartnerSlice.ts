@@ -2,6 +2,8 @@ import { createSlice, isAnyOf } from "@reduxjs/toolkit";
 import type {
   CityDetail,
   CityKpis,
+  CityMeeting,
+  CityRequest,
   CityPartnerClient,
   CityPartnerDetail,
   CityPartnerFee,
@@ -63,6 +65,16 @@ export type FeeTotals = { status: string; count: number; amount_cents: number }[
 export const fetchAllCityFees = createApiThunk<{ items: CityPartnerFee[]; total: number; totals: FeeTotals }, FeeQuery>("cityPartner/allFees", "admin", async (params) => (await api.get("/admin/city-partner-fees", { params })).data);
 export const updateCityProfile = createApiThunk<{ partner: unknown }, { first_name: string; last_name: string; phone: string; preferred_language: string }>("cityPartner/profile", "city", async (body) => (await api.patch("/city/profile", body)).data);
 export const fetchCityFees = createApiThunk<{ items: CityPartnerFee[] }, void>("cityPartner/fees", "city", async () => (await api.get("/city/fees")).data);
+// City requests (partner asks, staff approve / decline) and partner-booked city meetings.
+export const fetchMyCityRequests = createApiThunk<{ items: CityRequest[] }, void>("cityPartner/myRequests", "city", async () => (await api.get("/city/city-requests")).data);
+export const requestCity = createApiThunk<{ item: CityRequest }, { city_name: string; county?: string; note?: string }>("cityPartner/requestCity", "city", async (body) => (await api.post("/city/city-requests", body)).data);
+export const fetchCityRequests = createApiThunk<{ items: CityRequest[]; pending: number }, { status: string }>("cityPartner/requests", "admin", async (params) => (await api.get("/admin/city-requests", { params })).data);
+export const approveCityRequest = createApiThunk<{ ok: true }, { id: number; city_id: number }>("cityPartner/approveRequest", "admin", async ({ id, city_id }) => (await api.post(`/admin/city-requests/${id}/approve`, { city_id })).data);
+export const declineCityRequest = createApiThunk<{ ok: true }, { id: number; reason: string }>("cityPartner/declineRequest", "admin", async ({ id, reason }) => (await api.post(`/admin/city-requests/${id}/decline`, { reason })).data);
+export const fetchCityStaff = createApiThunk<{ staff: { id: number; name: string }[]; suggested_id: number | null }, void>("cityPartner/staff", "city", async () => (await api.get("/city/staff")).data);
+export const fetchCityMeetings = createApiThunk<{ items: CityMeeting[] }, number | void>("cityPartner/meetings", "city", async (cityId) => (await api.get("/city/meetings", { params: cityId ? { city_id: cityId } : {} })).data);
+export const bookCityMeeting = createApiThunk<{ item: CityMeeting; conflicts: number }, Record<string, unknown>>("cityPartner/bookMeeting", "city", async (body) => (await api.post("/city/meetings", body)).data);
+export const cancelCityMeeting = createApiThunk<{ ok: true }, number>("cityPartner/cancelMeeting", "city", async (id) => (await api.post(`/city/meetings/${id}/cancel`, {})).data);
 
 type State = {
   list: (CityList & { total: number }) | null;
@@ -82,11 +94,17 @@ type State = {
   error: string | null;
   invitePreview: EmailPreview | null;
   previewing: boolean;
+  myRequests: CityRequest[];
+  requests: CityRequest[];
+  pendingRequests: number;
+  meetings: CityMeeting[];
+  staff: { id: number; name: string }[];
+  suggestedStaffId: number | null;
 };
-const initialState: State = { list: null, detail: null, partners: [], partnersTotal: 0, partner: null, overview: null, onboarding: null, clients: [], fees: [], allFees: [], feesTotal: 0, feeTotals: [], loading: false, saving: false, error: null, invitePreview: null, previewing: false };
+const initialState: State = { list: null, detail: null, partners: [], partnersTotal: 0, partner: null, overview: null, onboarding: null, clients: [], fees: [], allFees: [], feesTotal: 0, feeTotals: [], loading: false, saving: false, error: null, invitePreview: null, previewing: false, myRequests: [], requests: [], pendingRequests: 0, meetings: [], staff: [], suggestedStaffId: null };
 
 const reads = [fetchAllCityFees, fetchCityList, fetchCityDetail, fetchCityPartners, fetchCityPartner, fetchCityOverview, fetchCityOnboarding, fetchCityClients, fetchCityFees] as const;
-const writes = [updateCity, addCityActivity, deleteCityActivity, addPipelineCity, saveCityIntel, verifyCityIntel, addCityContact, deleteCityContact, createCityPartner, updateCityPartner, resendCityPartnerInvite, countersignCityAgreement, reviewCityW9, updateCityFee, setProjectFundsReceived, signCityAgreement, submitCityW9, updateCityProfile, deleteCityPartner] as const;
+const writes = [updateCity, addCityActivity, deleteCityActivity, addPipelineCity, saveCityIntel, verifyCityIntel, addCityContact, deleteCityContact, createCityPartner, updateCityPartner, resendCityPartnerInvite, countersignCityAgreement, reviewCityW9, updateCityFee, setProjectFundsReceived, signCityAgreement, submitCityW9, updateCityProfile, deleteCityPartner, requestCity, approveCityRequest, declineCityRequest, bookCityMeeting, cancelCityMeeting] as const;
 
 const slice = createSlice({
   name: "cityPartner",
@@ -121,6 +139,29 @@ const slice = createSlice({
       })
       .addCase(fetchCityFees.fulfilled, (s, a) => {
         s.fees = a.payload.items;
+      })
+      .addCase(fetchMyCityRequests.fulfilled, (s, a) => {
+        s.myRequests = a.payload.items;
+      })
+      .addCase(requestCity.fulfilled, (s, a) => {
+        s.myRequests = [a.payload.item, ...s.myRequests];
+      })
+      .addCase(fetchCityRequests.fulfilled, (s, a) => {
+        s.requests = a.payload.items;
+        s.pendingRequests = a.payload.pending;
+      })
+      .addCase(fetchCityStaff.fulfilled, (s, a) => {
+        s.staff = a.payload.staff;
+        s.suggestedStaffId = a.payload.suggested_id;
+      })
+      .addCase(fetchCityMeetings.fulfilled, (s, a) => {
+        s.meetings = a.payload.items;
+      })
+      .addCase(bookCityMeeting.fulfilled, (s, a) => {
+        s.meetings = [...s.meetings, a.payload.item].sort((x, y) => x.starts_at.localeCompare(y.starts_at));
+      })
+      .addCase(cancelCityMeeting.fulfilled, (s, a) => {
+        s.meetings = s.meetings.filter((m) => m.id !== a.meta.arg);
       })
       .addCase(fetchAllCityFees.fulfilled, (s, a) => {
         s.allFees = a.payload.items;

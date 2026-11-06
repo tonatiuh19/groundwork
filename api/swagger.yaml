@@ -12,7 +12,7 @@ paths:
     post:
       summary: Request admin email OTP
       tags: [portal-auth]
-      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account. Body { email } or { phone } (any format, last 10 digits): a phone gets the 6-digit code by text (sending line, honors STOP: 409 errors.otpSmsUnavailable); a number shared by two live accounts answers 409 errors.phoneShared (use email). Codes are never stored in the person's message history."
       responses:
         "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
         "400": { description: validation.emailInvalid }
@@ -23,7 +23,7 @@ paths:
     post:
       summary: Verify admin OTP (sets gw_admin_sid)
       tags: [portal-auth]
-      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid. Body { email, code } or { phone, code }."
       responses:
         "200": { description: Authenticated }
         "400": { description: validation.otpInvalid }
@@ -50,7 +50,7 @@ paths:
     post:
       summary: Request affiliate OTP
       tags: [portal-auth]
-      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account. Body { email } or { phone } (any format, last 10 digits): a phone gets the 6-digit code by text (sending line, honors STOP: 409 errors.otpSmsUnavailable); a number shared by two live accounts answers 409 errors.phoneShared (use email). Codes are never stored in the person's message history."
       responses:
         "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
         "400": { description: validation.emailInvalid }
@@ -61,7 +61,7 @@ paths:
     post:
       summary: Verify affiliate OTP (sets gw_affiliate_sid)
       tags: [portal-auth]
-      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid. Body { email, code } or { phone, code }."
       responses:
         "200": { description: Authenticated }
         "400": { description: validation.otpInvalid }
@@ -82,7 +82,7 @@ paths:
     post:
       summary: Request contractor OTP
       tags: [portal-auth]
-      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account. Body { email } or { phone } (any format, last 10 digits): a phone gets the 6-digit code by text (sending line, honors STOP: 409 errors.otpSmsUnavailable); a number shared by two live accounts answers 409 errors.phoneShared (use email). Codes are never stored in the person's message history."
       responses:
         "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
         "400": { description: validation.emailInvalid }
@@ -93,7 +93,7 @@ paths:
     post:
       summary: Verify contractor OTP (sets gw_contractor_sid)
       tags: [portal-auth]
-      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid. Body { email, code } or { phone, code }."
       responses:
         "200": { description: Authenticated }
         "400": { description: validation.otpInvalid }
@@ -114,7 +114,7 @@ paths:
     post:
       summary: Request homeowner OTP
       tags: [portal-auth]
-      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account. Body { email } or { phone } (any format, last 10 digits): a phone gets the 6-digit code by text (sending line, honors STOP: 409 errors.otpSmsUnavailable); a number shared by two live accounts answers 409 errors.phoneShared (use email). Codes are never stored in the person's message history."
       responses:
         "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
         "400": { description: validation.emailInvalid }
@@ -125,7 +125,7 @@ paths:
     post:
       summary: Verify homeowner OTP (sets gw_client_sid)
       tags: [portal-auth]
-      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid. Body { email, code } or { phone, code }."
       responses:
         "200": { description: Authenticated }
         "400": { description: validation.otpInvalid }
@@ -711,6 +711,77 @@ paths:
       description: "approvals. Body: first_name, company, city_ids, fee_cents_per_sqft, preferred_language."
       responses:
         "200": { description: "{ ok, subject, html }" }
+  /api/city/city-requests:
+    get:
+      summary: "My city requests (City Partner)"
+      tags: [portal-city]
+      responses:
+        "200": { description: "OK { items: CityRequest[] }" }
+    post:
+      summary: "Ask Groundwork to add a city (City Partner)"
+      tags: [portal-city]
+      description: "Body { city_name (2-100), county?, note? }. Alerts staff (event city_partner, area city_partners). 409 errors.cityRequestPending (same name already pending) / errors.cityAlreadyYours."
+      responses:
+        "201": { description: "OK { item: CityRequest }" }
+        "400": { description: validation.cityName }
+        "409": { description: "errors.cityRequestPending | errors.cityAlreadyYours" }
+  /api/admin/city-requests:
+    get:
+      summary: "City requests by status (pending default) + pending count"
+      tags: [portal-admin]
+      description: "Requires approvals. Query status=pending|approved|declined."
+      responses:
+        "200": { description: "OK { items: CityRequest[] (with partner), pending }" }
+  /api/admin/city-requests/{id}/approve:
+    post:
+      summary: "Approve: the picked city joins the pipeline (Target) and is assigned to the partner; partner emailed"
+      tags: [portal-admin]
+      description: "Requires approvals. Body { city_id } (existing city or one just created with the near-duplicate check). Logged in city_partner_changes."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "409": { description: errors.cityRequestDecided }
+  /api/admin/city-requests/{id}/decline:
+    post:
+      summary: "Decline with a reason (shown to the partner and emailed)"
+      tags: [portal-admin]
+      description: "Requires approvals. Body { reason } (min 3 chars)."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "400": { description: validation.reasonRequired }
+        "409": { description: errors.cityRequestDecided }
+  /api/city/staff:
+    get:
+      summary: "Active Groundwork staff a City Partner can invite, plus the suggested one (inviter, else a super admin)"
+      tags: [portal-city]
+      responses:
+        "200": { description: "OK { staff: [{ id, name }], suggested_id }" }
+  /api/city/meetings:
+    get:
+      summary: "My upcoming city meetings (query city_id optional)"
+      tags: [portal-city]
+      responses:
+        "200": { description: "OK { items: CityMeeting[] }" }
+    post:
+      summary: "Book a city meeting and invite Groundwork staff"
+      tags: [portal-city]
+      description: "City must be assigned to the partner (else 403). Body { city_id, date YYYY-MM-DD, start HH:MM, duration_minutes, timezone?, location_type, location?, video_url?, title?, description?, admin_ids[1-5] }. Creates a CRM appointment (kind city_meeting, source city_partner): first staff member owns it (their Outlook calendar when connected), every picked staff member and the partner get the invite email; staff get a bell; a 'meeting' activity is logged on the city."
+      responses:
+        "201": { description: "OK { item: CityMeeting, conflicts }" }
+        "400": { description: "validation.pickStaff | validation.appointmentTime" }
+        "403": { description: "Not your city, or a read-only View as session (errors.viewOnly)" }
+  /api/city/meetings/{id}/cancel:
+    post:
+      summary: "Cancel a meeting I booked (everyone invited is told; Outlook updated)"
+      tags: [portal-city]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "404": { description: errors.notFound }
   /api/admin/city-partners/{id}/view-as:
     post:
       summary: "View as partner: open a read-only session in the partner portal (super admin)"
@@ -893,7 +964,7 @@ paths:
     post:
       summary: Request City Partner OTP
       tags: [portal-auth]
-      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account."
+      description: "Answers 200 {ok, sent} for unknown emails and for inactive/suspended accounts (no enumeration for those). Pending accounts answer 403 errors.authPending and invited accounts answer 403 errors.authInvited so the login form can show a legend. Answers 502 errors.otpSendFailed (code invalidated) if the email provider fails for an active account. Body { email } or { phone } (any format, last 10 digits): a phone gets the 6-digit code by text (sending line, honors STOP: 409 errors.otpSmsUnavailable); a number shared by two live accounts answers 409 errors.phoneShared (use email). Codes are never stored in the person's message history."
       responses:
         "200": { description: "OTP sent (or silently withheld for unknown/inactive)" }
         "400": { description: validation.emailInvalid }
@@ -904,7 +975,7 @@ paths:
     post:
       summary: Verify City Partner OTP (sets gw_City Partner_sid)
       tags: [portal-auth]
-      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid."
+      description: "Wrong code, unknown email and non-active accounts all answer 401 errors.authInvalid. Body { email, code } or { phone, code }."
       responses:
         "200": { description: Authenticated }
         "400": { description: validation.otpInvalid }
@@ -1477,6 +1548,7 @@ paths:
         "429": { description: "errors.tooMany" }
   /api/public/enroll:
     post:
+      description: "Email, phone or both (at least one; 400 validation.emailOrPhoneOne). Without an email, sms_consent must be true and the portal link goes by text."
       summary: "Public homeowner enroll — creates prospect client + lead-milestone project, optional soft-pull, emails 5-day magic-link invite."
       tags: [portal-public]
       requestBody:
@@ -1702,7 +1774,7 @@ paths:
     post:
       summary: "Register a homeowner (creates client + project). homeowner_consent must be true"
       tags: [portal-affiliate]
-      description: "Requires the gw_affiliate_sid session cookie."
+      description: "Requires the gw_affiliate_sid session cookie. Email, phone or both (at least one; 400 validation.emailOrPhoneOne). Without an email, sms_consent must be true (400 validation.smsConsentNoEmail) and the portal link goes by text; the client is saved with no email and text consent."
       requestBody:
         required: true
         content:
@@ -2731,7 +2803,7 @@ paths:
     post:
       summary: "Create a client and project"
       tags: [portal-admin]
-      description: "POST also sends the portal invite by email + text unless body send_invite=false (response invite_sent). Requires gw_admin_sid and permission `people.write`."
+      description: "POST also sends the portal invite by email + text unless body send_invite=false (response invite_sent). Requires gw_admin_sid and permission `people.write`. Email or phone (at least one; 400 validation.emailOrPhoneOne): phone-only homeowners get the portal invite by text."
       requestBody:
         required: true
         content:

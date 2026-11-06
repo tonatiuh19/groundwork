@@ -24,6 +24,7 @@ import { resetEnrollForm, submitEnroll } from "@/store/slices/enrollSlice";
 import { CheckField, SelectField, TextField } from "@/components/portal/kit";
 import { translateApiError } from "@/lib/api";
 import CityField from "@/components/CityField";
+import PhoneOnlyConsent, { phoneOnlyConsentTest } from "@/components/portal/PhoneOnlyConsent";
 
 export const ENROLL_STEP_COUNT = 4;
 
@@ -33,14 +34,15 @@ function makeSchema(t: TFunction, step: number) {
   const base = {
     first_name: Yup.string().trim().required(t("validation.firstNameRequired")),
     last_name: Yup.string().trim().required(t("validation.lastNameRequired")),
-    email: Yup.string()
-      .trim()
-      .email(t("validation.emailInvalid"))
-      .required(t("validation.emailRequired")),
+    // Optional: without an email the portal link goes by text (sms_consent on the last step).
+    email: Yup.string().trim().email(t("validation.emailInvalid")),
+    // Email, phone or both: at least one.
     phone: Yup.string()
       .trim()
-      .min(10, t("validation.phoneMin"))
-      .required(t("validation.phoneRequired")),
+      .test("phone-min", t("validation.phoneMin"), (v) => !v || v.replace(/\D/g, "").length >= 10)
+      .test("email-or-phone", t("validation.emailOrPhoneOne"), function (v) {
+        return Boolean(String(v || "").trim()) || Boolean(String(this.parent?.email || "").trim());
+      }),
     property_address: Yup.string()
       .trim()
       .min(5, t("validation.addressRequired"))
@@ -51,6 +53,7 @@ function makeSchema(t: TFunction, step: number) {
     preferred_language: Yup.string().oneOf(["en", "es"]).required(),
     soft_pull_consent: Yup.boolean(),
     homeowner_consent: Yup.boolean().oneOf([true], t("validation.homeownerConsent")),
+    sms_consent: Yup.boolean().test("phone-only", t("validation.smsConsentNoEmail"), phoneOnlyConsentTest()),
   };
   if (step === 0) {
     return Yup.object({
@@ -76,6 +79,7 @@ function makeSchema(t: TFunction, step: number) {
   return Yup.object({
     soft_pull_consent: base.soft_pull_consent,
     homeowner_consent: base.homeowner_consent,
+    sms_consent: base.sms_consent,
   });
 }
 
@@ -249,6 +253,7 @@ export default function EnrollWizard({
               preferred_language: prefill?.preferred_language || (i18n.language?.startsWith("es") ? "es" : "en"),
               soft_pull_consent: false,
               homeowner_consent: false,
+              sms_consent: false,
             }}
             validationSchema={schema}
             validateOnChange={false}
@@ -273,6 +278,7 @@ export default function EnrollWizard({
                   preferred_language: values.preferred_language as "en" | "es",
                   soft_pull_consent: values.soft_pull_consent || undefined,
                   homeowner_consent: values.homeowner_consent,
+                  sms_consent: values.sms_consent,
                   referral_code: referralCode || null,
                 }),
               );
@@ -304,6 +310,7 @@ export default function EnrollWizard({
                           : "en",
                         soft_pull_consent: true,
                         homeowner_consent: true,
+                        sms_consent: false,
                       });
                     }}
                   >
@@ -322,8 +329,8 @@ export default function EnrollWizard({
                       <TextField name="first_name" labelKey="form.firstName" />
                       <TextField name="last_name" labelKey="form.lastName" />
                     </div>
-                    <TextField name="email" labelKey="form.email" type="email" />
-                    <TextField name="phone" labelKey="form.phone" type="tel" />
+                    <TextField name="email" labelKey="form.emailOptional" type="email" />
+                    <TextField name="phone" labelKey="form.phoneOptional" type="tel" />
                   </div>
                 ) : null}
 
@@ -372,6 +379,7 @@ export default function EnrollWizard({
                       labelKey="enroll.softPullConsent"
                     />
                     <p className="enroll-consent-hint">{t("enroll.softPullHint")}</p>
+                    <PhoneOnlyConsent />
                   </div>
                 ) : null}
 

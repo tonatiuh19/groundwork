@@ -294,6 +294,56 @@ describe.runIf(hasDb)("City Partners (integration)", () => {
     expect((await request(app).get("/api/city/auth/me").set("Cookie", partner).expect(200)).body.user.view_as_admin ?? null).toBeNull();
   });
 
+  it("city requests: partner asks, duplicates refused, staff decline with a reason or approve (assigned + emailed)", async () => {
+    const ask = (city_name: string) => request(app).post("/api/city/city-requests").set("Cookie", partner).send({ city_name, county: "San Bernardino", note: "Met the planning director" });
+    const r1 = await ask(`${prefix}Upland`).expect(201);
+    expect(r1.body.item).toMatchObject({ status: "pending", city_name: `${prefix}Upland` });
+    expect((await ask(`${prefix}upland`).expect(409)).body.error).toBe("errors.cityRequestPending");
+    expect((await ask(`${prefix}Fontana`).expect(409)).body.error).toBe("errors.cityAlreadyYours");
+    const r2 = await ask(`${prefix}Ontario`).expect(201);
+    await request(app).get("/api/admin/city-requests").set("Cookie", agent).expect(403);
+    const list = await request(app).get("/api/admin/city-requests?status=pending").set("Cookie", admin).expect(200);
+    expect(list.body.items.map((x: any) => x.id)).toEqual(expect.arrayContaining([r1.body.item.id, r2.body.item.id]));
+    __testClearEmailDryRuns();
+    await request(app).post(`/api/admin/city-requests/${r2.body.item.id}/decline`).set("Cookie", admin).send({ reason: "" }).expect(400);
+    await request(app).post(`/api/admin/city-requests/${r2.body.item.id}/decline`).set("Cookie", admin).send({ reason: "Not in our area yet" }).expect(200);
+    await request(app).post(`/api/admin/city-requests/${r1.body.item.id}/approve`).set("Cookie", admin).send({ city_id: otherCity }).expect(200);
+    await request(app).post(`/api/admin/city-requests/${r1.body.item.id}/approve`).set("Cookie", admin).send({ city_id: otherCity }).expect(409);
+    const assigned = ((await db.query(`SELECT 1 FROM city_partner_cities WHERE city_partner_id = ? AND city_id = ?`, [partnerId, otherCity])) as any)[0];
+    expect(assigned.length).toBe(1);
+    const mails = __testGetEmailDryRuns().filter((m: any) => [].concat(m.to).includes(em("peter") as never)) as any[];
+    // Partner's language decides the copy (EN or ES).
+    expect(mails.map((m) => m.subject)).toEqual(expect.arrayContaining([expect.stringMatching(/City added|Ciudad agregada/), expect.stringMatching(/About your city request|Sobre tu solicitud/)]));
+    expect(mails.some((m) => String(m.html).includes("Not in our area yet"))).toBe(true);
+    for (const m of mails) expect(String(m.html)).not.toMatch(/ — /);
+    const mine = await request(app).get("/api/city/city-requests").set("Cookie", partner).expect(200);
+    expect(mine.body.items.map((x: any) => x.status).sort()).toEqual(["approved", "declined"]);
+  });
+
+  it("city meetings: partner books on an assigned city, staff are invited (owner first), logged on the city; cancel works", async () => {
+    const staff = await request(app).get("/api/city/staff").set("Cookie", partner).expect(200);
+    const adminRow = staff.body.staff.find((x: any) => x.name === "Cp Admin");
+    expect(adminRow).toBeTruthy();
+    const when = new Date(Date.now() + 9 * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+    const body = { city_id: openCity, title: `${prefix}City staff meeting`, date: when, start: "10:00", duration_minutes: 60, location_type: "office", location: "City Hall", admin_ids: [adminRow.id] };
+    await request(app).post("/api/city/meetings").set("Cookie", partner).send({ ...body, admin_ids: [] }).expect(400);
+    const notMine = ((await db.query(`SELECT id FROM service_cities WHERE id NOT IN (SELECT city_id FROM city_partner_cities WHERE city_partner_id = ?) LIMIT 1`, [partnerId])) as any)[0][0];
+    if (notMine) await request(app).post("/api/city/meetings").set("Cookie", partner).send({ ...body, city_id: notMine.id }).expect(403);
+    __testClearEmailDryRuns();
+    const booked = await request(app).post("/api/city/meetings").set("Cookie", partner).send(body).expect(201);
+    expect(booked.body.item).toMatchObject({ city_id: openCity, staff: ["Cp Admin"], status: "scheduled" });
+    const appt = ((await db.query(`SELECT kind, source, owner_admin_id, city_partner_id FROM appointments WHERE id = ?`, [booked.body.item.id])) as any)[0][0];
+    expect(appt).toMatchObject({ kind: "city_meeting", source: "city_partner", owner_admin_id: adminRow.id, city_partner_id: partnerId });
+    const invited = __testGetEmailDryRuns().map((m: any) => [].concat(m.to)).flat();
+    expect(invited).toEqual(expect.arrayContaining([em("admin"), em("peter")]));
+    const act = ((await db.query(`SELECT activity_type, follow_up_on FROM city_activities WHERE city_id = ? AND city_partner_id = ? AND activity_type = 'meeting' ORDER BY id DESC LIMIT 1`, [openCity, partnerId])) as any)[0][0];
+    expect(act).toBeTruthy();
+    const list = await request(app).get(`/api/city/meetings?city_id=${openCity}`).set("Cookie", partner).expect(200);
+    expect(list.body.items.some((m: any) => m.id === booked.body.item.id)).toBe(true);
+    await request(app).post(`/api/city/meetings/${booked.body.item.id}/cancel`).set("Cookie", partner).send({}).expect(200);
+    expect(((await db.query(`SELECT status FROM appointments WHERE id = ?`, [booked.body.item.id])) as any)[0][0].status).toBe("cancelled");
+  });
+
   it("an inactive partner is signed out and can't request a code", async () => {
     await request(app).patch(`/api/admin/city-partners/${partnerId}`).set("Cookie", admin).send({ status: "inactive" }).expect(200);
     expect((await request(app).get("/api/city/overview").set("Cookie", partner)).status).toBe(401);
