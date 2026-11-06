@@ -20935,10 +20935,38 @@ function tplAdminInboundSmsAlert(opts: {
   };
 }
 
+/**
+ * Who texted, for staff alerts: a name staff gave the number, else the person it belongs to (client,
+ * affiliate, contractor, contact, lead, staff) with their role, else the number itself.
+ */
+export async function inboundSenderLabel(from: string, lang: Lang, displayName?: string | null): Promise<string> {
+  if (displayName && displayName.trim()) return displayName.trim();
+  try {
+    const m = (await resolvePeopleByPhone([from])).get(normalizePhoneLast10(from) || "");
+    if (m?.name) {
+      const role = {
+        client: tr(lang, "Client", "Cliente"),
+        affiliate: tr(lang, "Affiliate", "Afiliado"),
+        contractor: tr(lang, "Contractor", "Contratista"),
+        contact: tr(lang, "Contact", "Contacto"),
+        lead: tr(lang, "Lead", "Prospecto"),
+        staff: tr(lang, "Staff", "Equipo"),
+      }[m.role as string];
+      return role ? `${m.name} (${role})` : m.name;
+    }
+  } catch (e: any) {
+    console.warn("[inbound_sms] sender lookup:", e?.message ?? e);
+  }
+  return from;
+}
+
 /** Alert SMS to personal cell + Resend email (not full relay). Badge = unread_count. */
 async function notifyAdminInboundSms(opts: {
   adminId: number;
   fromLabel: string;
+  /** Unmatched thread: look the number up (name + role in the admin's language) instead of showing it raw. */
+  senderPhone?: string | null;
+  senderDisplayName?: string | null;
   preview: string;
   linkUrl: string;
   providerMessageId?: string | null;
@@ -20973,6 +21001,7 @@ async function notifyAdminInboundSms(opts: {
     .trim()
     .toLowerCase();
   const adminLang = aRows[0].preferred_language === "es" ? "es" : "en";
+  if (opts.senderPhone) opts = { ...opts, fromLabel: await inboundSenderLabel(opts.senderPhone, adminLang, opts.senderDisplayName) };
   const emailTpl = tplAdminInboundSmsAlert({
     adminFirstName: String(aRows[0].first_name || "Team"),
     fromLabel: opts.fromLabel,
@@ -26856,9 +26885,13 @@ function registerTwilioWebhookRoutes(app: Express) {
           },
         });
         if (assigneeId) {
+          // Not a client or CRM contact, but often a known affiliate / contractor / lead: name them.
+          const [[u]] = (await pool.query<RowDataPacket[]>(`SELECT display_name FROM conversation_unknown_contacts WHERE id = ?`, [unknownId])) as unknown as [RowDataPacket[]];
           await notifyAdminInboundSms({
             adminId: assigneeId,
             fromLabel: from,
+            senderPhone: from,
+            senderDisplayName: u?.display_name ? String(u.display_name) : null,
             preview,
             linkUrl: `/admin/conversations?unknown=${unknownId}`,
             providerMessageId: sid || null,

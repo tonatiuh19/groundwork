@@ -2,7 +2,7 @@ import "dotenv/config";
 import crypto from "crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
-import { __testClearEmailDryRuns, __testClearSmsDryRuns, __testGetEmailDryRuns, __testGetSmsDryRuns, createServer } from "./index";
+import { __testClearEmailDryRuns, __testClearSmsDryRuns, __testGetEmailDryRuns, __testGetSmsDryRuns, createServer, inboundSenderLabel } from "./index";
 import { cleanupPortalFixturesByPrefix, createIntegrationTestPool } from "./testDbCleanup";
 
 const hasDb = Boolean(process.env.DB_HOST && process.env.DB_USER && process.env.DB_NAME);
@@ -37,6 +37,13 @@ describe.skipIf(!hasDb)("phone sign-in + phone-only homeowners (integration)", (
     } finally {
       await db.end();
     }
+  });
+
+  it("text alerts name who texted: a known affiliate's number shows their name and role, a staff-given name wins, unknown stays a number", async () => {
+    expect(await inboundSenderLabel(ph(1), "en")).toBe("Ana Phone (Affiliate)");
+    expect(await inboundSenderLabel(ph(1), "es")).toBe("Ana Phone (Afiliado)");
+    expect(await inboundSenderLabel(ph(1), "en", "Ana from the Rancho office")).toBe("Ana from the Rancho office");
+    expect(await inboundSenderLabel(ph(99), "en")).toBe(ph(99));
   });
 
   it("text code: request by phone texts the code (never logged), verify by phone signs in; a shared number is refused", async () => {

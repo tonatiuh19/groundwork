@@ -33,7 +33,7 @@ function mount(actor: "admin" | "affiliate" | "contractor" | "client" = "affilia
   );
 }
 
-const emailInput = () => screen.getByLabelText(i18n.t("form.email"));
+const emailInput = () => screen.getByLabelText(i18n.t("portalAuth.emailOrPhone"));
 const digitBox = (n = 1) =>
   screen.getByLabelText(
     i18n.t("portalAuth.digitOf", { current: n, total: 6 }),
@@ -84,17 +84,27 @@ describe("PortalLoginPage", () => {
   it("validates the email before calling the API", async () => {
     const post = vi.spyOn(axios, "post");
     mount();
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await user.type(emailInput(), "not-an-email");
     await user.click(screen.getByRole("button", { name: new RegExp(i18n.t("portalAuth.sendCode")) }));
-    expect(await screen.findByText(i18n.t("validation.emailInvalid"))).toBeInTheDocument();
+    expect(await screen.findByText(i18n.t("validation.emailOrPhone"))).toBeInTheDocument();
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("a phone number asks for a text code (sends { phone }) and says it was texted", async () => {
+    const post = vi.spyOn(axios, "post").mockResolvedValueOnce({ data: { ok: true, sent: true } } as never);
+    mount();
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
+    await user.type(emailInput(), "(555) 555-0148");
+    await user.click(screen.getByRole("button", { name: new RegExp(i18n.t("portalAuth.sendCode")) }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(expect.stringContaining("/auth/otp/request"), { phone: "(555) 555-0148" }, expect.anything()));
+    expect(await screen.findByText(i18n.t("portalAuth.codeHintPhone", { email: "(555) 555-0148" }))).toBeInTheDocument();
   });
 
   it("requests a code for the right portal and advances to the code step", async () => {
     const post = vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true, sent: true } });
     mount("contractor");
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await reachCodeStep("  ctr@example.com ");
     expect(post).toHaveBeenCalledWith(
       "/api/contractor/auth/otp/request",
@@ -110,7 +120,7 @@ describe("PortalLoginPage", () => {
   it("shows affiliate no-account guidance on the code step without claiming a definite send", async () => {
     vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true, sent: true } });
     mount("affiliate");
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await reachCodeStep("teamdc@encoremortgage.org");
     expect(
       screen.getByText(
@@ -129,7 +139,7 @@ describe("PortalLoginPage", () => {
   it("shows a pending-approval legend and stays on email when the affiliate is pending", async () => {
     vi.spyOn(axios, "post").mockRejectedValue(axiosError(403, "errors.authPending"));
     mount("affiliate");
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     expect(screen.getByText(i18n.t("portalAuth.pendingLegend"))).toBeInTheDocument();
     await user.type(emailInput(), "tonatiuh.gom@gmail.com");
     await user.click(screen.getByRole("button", { name: new RegExp(i18n.t("portalAuth.sendCode")) }));
@@ -142,7 +152,7 @@ describe("PortalLoginPage", () => {
   it("shows a translated error and stays on the email step when delivery fails (502)", async () => {
     vi.spyOn(axios, "post").mockRejectedValue(axiosError(502, "errors.otpSendFailed"));
     mount();
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await user.type(emailInput(), "pat@example.com");
     await user.click(screen.getByRole("button", { name: new RegExp(i18n.t("portalAuth.sendCode")) }));
     expect(await screen.findByRole("alert")).toHaveTextContent(i18n.t("errors.otpSendFailed"));
@@ -154,7 +164,7 @@ describe("PortalLoginPage", () => {
     await i18n.changeLanguage("es");
     vi.spyOn(axios, "post").mockRejectedValue(axiosError(429, "errors.tooMany"));
     mount();
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await user.type(emailInput(), "pat@example.com");
     await user.click(screen.getByRole("button", { name: new RegExp(i18n.t("portalAuth.sendCode")) }));
     expect(await screen.findByRole("alert")).toHaveTextContent(i18n.t("errors.tooMany"));
@@ -164,7 +174,7 @@ describe("PortalLoginPage", () => {
   it("keeps verify disabled until six digits, then rejects a wrong code", async () => {
     const post = vi.spyOn(axios, "post").mockResolvedValueOnce({ data: { ok: true, sent: true } });
     mount();
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await reachCodeStep();
     await user.type(digitBox(1), "12ab");
     expect(verifyBtn()).toBeDisabled();
@@ -201,7 +211,7 @@ describe("PortalLoginPage", () => {
         },
       });
     mount();
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await reachCodeStep();
     digitBox(1).focus();
     await user.paste("424242");
@@ -234,7 +244,7 @@ describe("PortalLoginPage", () => {
         },
       });
     mount();
-    await screen.findByLabelText(i18n.t("form.email"));
+    await screen.findByLabelText(i18n.t("portalAuth.emailOrPhone"));
     await reachCodeStep();
     await user.type(digitBox(1), "424242");
     await waitFor(() => expect(screen.getByText("HOME:affiliate")).toBeInTheDocument());

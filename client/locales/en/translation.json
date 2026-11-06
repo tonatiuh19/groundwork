@@ -732,7 +732,7 @@
     "clientTitle": "Homeowner portal",
     "clientLead": "Follow your ADU project from financing to keys.",
     "pointSecure": "Independent portal sessions",
-    "pointOtp": "Email one-time codes only",
+    "pointOtp": "Email or text one-time codes only",
     "pointSession": "No shared passwords across portals",
     "emailStep": "Sign in with email",
     "emailHint": "If this email has an active portal account, we’ll send a 6-digit code. No password needed.",

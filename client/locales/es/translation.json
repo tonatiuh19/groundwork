@@ -732,7 +732,7 @@
     "clientTitle": "Portal del propietario",
     "clientLead": "Sigue tu proyecto ADU del financiamiento a las llaves.",
     "pointSecure": "Sesiones independientes por portal",
-    "pointOtp": "Solo códigos de un solo uso por correo",
+    "pointOtp": "Solo códigos de un solo uso por correo o mensaje de texto",
     "pointSession": "Sin contraseñas compartidas entre portales",
     "emailStep": "Entra con tu correo",
     "emailHint": "Si este correo tiene una cuenta activa en el portal, te enviaremos un código de 6 dígitos. Sin contraseña.",

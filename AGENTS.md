@@ -94,6 +94,10 @@ Staff notify events are **routed by area** (Settings → Team notifications → 
 - Every portal signs in by email **or phone** (`findPortalLogin`): a phone gets the 6-digit code by text (campaign line, STOP honored → `errors.otpSmsUnavailable`); a number shared by two live accounts → `errors.phoneShared`. Sign-in codes (email or text) are sent with `manual: true` so they never appear in a person's message history.
 - Homeowner forms (affiliate add client, admin new client, public enroll) take email, phone or both, at least one (`validation.emailOrPhoneOne`). Homeowners can be saved without an email: `clients.email` NULL, `client_portal_invites.email` NULL, leads keep `''`. Affiliate / enroll need `sms_consent` when there's no email (`PhoneOnlyConsent`); the invite, appointment notices and agreement links go by text. Test fixtures for phone-only clients carry the run prefix in `first_name` (cleanup matches it).
 
+### Inbound text alerts
+
+- Staff alerts for a text name the sender: client / CRM contact threads use their name; unmatched numbers go through `inboundSenderLabel` (staff-given `display_name`, else the person on that number via `resolvePeopleByPhone` with their role in the admin's language, else the number).
+
 ### Automatic messages
 
 - `sendEmail` / `sendSms` log every send to a CRM person (client / lead / affiliate / contractor / contact) in `automatic_messages` and in their Conversations thread (`metadata_json.automatic = true`). Staff-typed, campaign and staff-alert sends MUST pass `manual: true`. Phone threads for non-clients are only opened for `+1555` numbers under the notification sandbox.
