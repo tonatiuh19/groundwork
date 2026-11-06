@@ -20240,3 +20240,17 @@ button.sc-metric:hover {
   background: rgba(217, 164, 65, 0.1);
   border: 1px solid rgba(217, 164, 65, 0.35);
 }
+
+/* City Partner signing: business address block. */
+.gw-city-address {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.gw-city-address legend {
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}

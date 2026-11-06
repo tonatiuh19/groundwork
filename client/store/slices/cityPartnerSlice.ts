@@ -57,7 +57,7 @@ export const setProjectFundsReceived = createApiThunk<{ funds_received_on: strin
 
 export const fetchCityOverview = createApiThunk<CityPartnerOverview, void>("cityPartner/overview", "city", async () => (await api.get("/city/overview")).data);
 export const fetchCityOnboarding = createApiThunk<CityPartnerOnboarding, void>("cityPartner/onboarding", "city", async () => (await api.get("/city/onboarding")).data);
-export const signCityAgreement = createApiThunk<CityPartnerOnboarding, { signer_name: string; signer_title: string; consent: true; text_sha256: string }>("cityPartner/sign", "city", async (body) => (await api.post("/city/onboarding/agreement", body)).data);
+export const signCityAgreement = createApiThunk<CityPartnerOnboarding, { signer_name: string; signer_title: string; consent: true; text_sha256: string; address_line?: string; address_city?: string; address_zip?: string }>("cityPartner/sign", "city", async (body) => (await api.post("/city/onboarding/agreement", body)).data);
 export const submitCityW9 = createApiThunk<CityPartnerOnboarding, Record<string, unknown>>("cityPartner/w9", "city", async (body) => (await api.post("/city/onboarding/w9", body)).data);
 export const fetchCityClients = createApiThunk<{ clients: CityPartnerClient[] }, void>("cityPartner/clients", "city", async () => (await api.get("/city/clients")).data);
 export type FeeQuery = { status?: string; partner_id?: string; city_id?: string; due_from?: string; due_to?: string; limit: number; offset: number };

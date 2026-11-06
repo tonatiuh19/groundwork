@@ -2844,7 +2844,8 @@ export interface CityPartnerDetail {
 }
 export interface CityPartnerOnboarding {
   partner: CityPartner;
-  template: { version: number; body: string; sha256: string } | null;
+  /** needs_address: the agreement has a place for the business address (asked when signing). */
+  template: { version: number; body: string; sha256: string; needs_address?: boolean } | null;
   agreement: CityPartnerAgreementState | null;
   w9: CityPartnerW9State | null;
   blank_w9_url: string;

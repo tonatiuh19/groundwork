@@ -1091,7 +1091,7 @@ paths:
     post:
       summary: "E-sign the agreement"
       tags: [city-partner]
-      description: "City Partner session. Body { signer_name, signer_title?, consent: true, text_sha256 } where text_sha256 is template.sha256 from /api/city/onboarding. 409 errors.agreementChanged when staff changed the rate or LLC name meanwhile. Freezes text (SHA-256) and rate."
+      description: "City Partner session. Body { signer_name, signer_title?, consent: true, text_sha256 } where text_sha256 is template.sha256 from /api/city/onboarding. 409 errors.agreementChanged when staff changed the rate, LLC name or cities meanwhile (or the signing date rolled over). When template.needs_address is true, also address_line, address_city, address_zip (5-digit ZIP; 400 validation.addressRequired): the address is written into the frozen copy. 409 errors.agreementNotReady while the latest version has an unfilled term. Freezes text (SHA-256) and rate."
       responses:
         "200": { description: "{ ok, ... }" }
   /api/city/onboarding/w9:

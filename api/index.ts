@@ -27349,8 +27349,40 @@ export function streetOnly(address: unknown): string | null {
   const s = first.replace(/^\s*[#\d][\w-]*\s+/, "").replace(/\s+(apt|unit|ste|suite|#)\s*\S+$/i, "").trim();
   return s && !/^\d+$/.test(s) ? s.slice(0, 120) : null;
 }
-export function renderCityPartnerAgreement(body: string, legalName: string, feeCents: number): string {
-  return body.split("{{partner_legal_name}}").join(legalName).split("{{fee_per_sqft}}").join(`$${(feeCents / 100).toFixed(2)}`);
+/** Per-partner fields for templates v2+ (v1 only used the name and rate). */
+export type CityPartnerAgreementFields = {
+  /** "November 6, 2026": the day they sign (Pacific). */
+  effective_date?: string;
+  opened_cities?: string[];
+  pending_cities?: string[];
+  /** Signing screen; blank lines until they type it. */
+  contractor_address?: string | null;
+};
+
+const joinNames = (n: string[]) => (n.length <= 1 ? n.join("") : `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`);
+
+/** "Opened Cities as of signing: Fontana. Rancho Cucamonga becomes an Opened City once …" */
+export function cityPartnerOpenedClause(opened: string[], pending: string[]): string {
+  const first = `Opened Cities as of signing: ${opened.length ? joinNames(opened) : "none yet"}.`;
+  if (!pending.length) return first;
+  return `${first} ${joinNames(pending)} ${pending.length === 1 ? "becomes an Opened City" : "become Opened Cities"} once the Company's plans are pre-approved there.`;
+}
+
+/**
+ * Fills a City Partner agreement template. Any placeholder left unfilled (for example a term staff haven't
+ * decided yet) makes the agreement unsendable: 409 errors.agreementNotReady.
+ */
+export function renderCityPartnerAgreement(body: string, legalName: string, feeCents: number, f: CityPartnerAgreementFields = {}): string {
+  const values: Record<string, string> = {
+    partner_legal_name: legalName,
+    fee_per_sqft: `$${(feeCents / 100).toFixed(2)}`,
+  };
+  if (f.effective_date) values.effective_date = f.effective_date;
+  if (f.opened_cities || f.pending_cities) values.opened_cities_clause = cityPartnerOpenedClause(f.opened_cities || [], f.pending_cities || []);
+  if (f.contractor_address !== undefined) values.contractor_address = f.contractor_address?.trim() || "_______________________________\n\n_______________________________\n\n_____________________, California __________";
+  const out = body.replace(/{{(\w+)}}/g, (m, k: string) => (k in values ? values[k] : m));
+  if (/{{\w+}}/.test(out)) throw new HttpError(409, "errors.agreementNotReady");
+  return out;
 }
 
 /** Re-check fees for every funded project in these cities (countersign, coverage or Opened City changes). */
@@ -27374,11 +27406,13 @@ export async function syncCityPartnerFees(projectId: number): Promise<void> {
   const live = p.funds_received_on && p.milestone !== "cancelled" && Number(p.sq_ft) > 0 && p.city_id;
   if (!live) {
     // One round trip: this runs on every milestone / sq ft change, nearly always with no fees at all.
+    // Agreement v2+ ("once paid, a fee is never refunded"): paid fees stay paid. Only v1 partners owe a refund.
     await pool.execute(
-      `UPDATE city_partner_fees
-          SET note = IF(status = 'paid', note, 'Project cancelled or funds cleared'),
-              status = IF(status = 'paid', 'refund_due', 'void')
-        WHERE project_id = ? AND (status IN ('pending','approved') OR (status = 'paid' AND ?))`,
+      `UPDATE city_partner_fees f
+          SET f.note = IF(f.status = 'paid', f.note, 'Project cancelled or funds cleared'),
+              f.status = IF(f.status = 'paid', 'refund_due', 'void')
+        WHERE f.project_id = ? AND (f.status IN ('pending','approved') OR (f.status = 'paid' AND ? AND
+          (SELECT MAX(ag.template_version) FROM city_partner_agreements ag WHERE ag.city_partner_id = f.city_partner_id AND ag.countersigned_at IS NOT NULL AND ag.voided_at IS NULL) < 2))`,
       [projectId, p.milestone === "cancelled" ? 1 : 0],
     );
     return;
@@ -41302,16 +41336,31 @@ function buildApp(): Express {
     const [[t]] = (await pool.query<RowDataPacket[]>(`SELECT version, body FROM city_partner_agreement_templates WHERE approved_at IS NOT NULL ORDER BY version DESC LIMIT 1`)) as unknown as [RowDataPacket[]];
     return t || null;
   };
+  /** v2+ fields: today's date (Pacific), their opened / still-pending cities, and the address they type when signing. */
+  const cpAgreementFields = async (id: number, address?: string | null): Promise<CityPartnerAgreementFields> => {
+    const [cities] = await pool.query<RowDataPacket[]>(
+      `SELECT s.name, s.opened_on FROM city_partner_cities cc JOIN service_cities s ON s.id = cc.city_id WHERE cc.city_partner_id = ? AND s.archived_at IS NULL ORDER BY s.opened_on IS NULL, s.opened_on, s.name`,
+      [id],
+    );
+    return {
+      effective_date: new Date().toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", month: "long", day: "numeric", year: "numeric" }),
+      opened_cities: cities.filter((c) => c.opened_on).map((c) => String(c.name)),
+      pending_cities: cities.filter((c) => !c.opened_on).map((c) => String(c.name)),
+      contractor_address: address ?? null,
+    };
+  };
   const cpOnboardingPayload = async (id: number) => {
     const r = await cpLoad(id);
     const t = await cpTemplate();
     const legal = String(r.company || `${r.first_name} ${r.last_name}`).trim();
+    const fields = t ? await cpAgreementFields(id) : {};
     return {
       partner: cpRow(r),
       template: t
         ? (() => {
-            const body = renderCityPartnerAgreement(String(t.body), legal, Number(r.fee_cents_per_sqft));
-            return { version: Number(t.version), body, sha256: sha256(body) };
+            const body = renderCityPartnerAgreement(String(t.body), legal, Number(r.fee_cents_per_sqft), fields);
+            // The signing screen asks for the business address when the agreement has a place for it.
+            return { version: Number(t.version), body, sha256: sha256(body), needs_address: String(t.body).includes("{{contractor_address}}") };
           })()
         : null,
       ...(await cpOnboarding(id)),
@@ -41334,9 +41383,19 @@ function buildApp(): Express {
       const t = await cpTemplate();
       if (!t) throw new HttpError(409, "errors.agreementNotReady");
       const r = await cpLoad(id);
-      const body = renderCityPartnerAgreement(String(t.body), String(r.company || `${r.first_name} ${r.last_name}`).trim(), Number(r.fee_cents_per_sqft));
-      // Sign only the exact text on their screen: if staff changed the rate or name meanwhile, reload first.
-      if (String(b.text_sha256 || "") !== sha256(body)) throw new HttpError(409, "errors.agreementChanged");
+      const legal = String(r.company || `${r.first_name} ${r.last_name}`).trim();
+      const shown = renderCityPartnerAgreement(String(t.body), legal, Number(r.fee_cents_per_sqft), await cpAgreementFields(id));
+      // Sign only the exact text on their screen: if staff changed the rate, name or cities meanwhile (or the date rolled over), reload first.
+      if (String(b.text_sha256 || "") !== sha256(shown)) throw new HttpError(409, "errors.agreementChanged");
+      // Their business address goes into the signed copy (agreements that have a place for it).
+      let body = shown;
+      if (String(t.body).includes("{{contractor_address}}")) {
+        const street = String(b.address_line || "").trim().slice(0, 200);
+        const city = String(b.address_city || "").trim().slice(0, 100);
+        const zip = String(b.address_zip || "").trim().slice(0, 10);
+        if (street.length < 4 || city.length < 2 || !/^\d{5}(-\d{4})?$/.test(zip)) throw new HttpError(400, "validation.addressRequired");
+        body = renderCityPartnerAgreement(String(t.body), legal, Number(r.fee_cents_per_sqft), await cpAgreementFields(id, `${street}\n\n${city}, California ${zip}`));
+      }
       await pool.execute(
         `INSERT INTO city_partner_agreements (city_partner_id, template_version, fee_cents_per_sqft, body_rendered, body_sha256, signer_name, signer_title, signed_at, signed_ip, signed_user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?)`,
         [id, t.version, r.fee_cents_per_sqft, body, sha256(body), signer, cpText(b.signer_title, 120) ?? null, clientIp(req), String(req.headers["user-agent"] || "").slice(0, 500) || null],

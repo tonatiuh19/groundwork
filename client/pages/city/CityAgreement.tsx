@@ -17,6 +17,8 @@ export default function CityAgreement() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [consent, setConsent] = useState(false);
+  // Business address for agreements that have a place for it (frozen into the signed copy).
+  const [addr, setAddr] = useState({ line: "", city: "", zip: "" });
   const [changed, setChanged] = useState(false);
   useEffect(() => {
     void dispatch(fetchCityOnboarding());
@@ -42,6 +44,26 @@ export default function CityAgreement() {
           <input value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} />
         </label>
       </div>
+      {o.template.needs_address ? (
+        <fieldset className="gw-city-address">
+          <legend>{t("cityPartner.businessAddress")}</legend>
+          <label className="pf-field">
+            <span>{t("cityPartner.addressLine")}</span>
+            <input value={addr.line} maxLength={200} autoComplete="street-address" onChange={(e) => setAddr({ ...addr, line: e.target.value })} />
+          </label>
+          <div className="pf-form-grid">
+            <label className="pf-field">
+              <span>{t("cityPartner.addressCity")}</span>
+              <input value={addr.city} maxLength={100} autoComplete="address-level2" onChange={(e) => setAddr({ ...addr, city: e.target.value })} />
+            </label>
+            <label className="pf-field">
+              <span>{t("cityPartner.addressZip")}</span>
+              <input value={addr.zip} maxLength={10} inputMode="numeric" autoComplete="postal-code" onChange={(e) => setAddr({ ...addr, zip: e.target.value })} />
+            </label>
+          </div>
+          <p className="pf-hint">{t("cityPartner.addressHint")}</p>
+        </fieldset>
+      ) : null}
       <label className="gw-check">
         <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
         <span>{t("cityPartner.esignConsent")}</span>
@@ -53,9 +75,17 @@ export default function CityAgreement() {
           icon={FileSignature}
           label={t("cityPartner.sign")}
           busy={saving}
-          disabled={!consent || name.trim().length < 2}
+          disabled={!consent || name.trim().length < 2 || (Boolean(o.template.needs_address) && (addr.line.trim().length < 4 || addr.city.trim().length < 2 || !/^\d{5}(-\d{4})?$/.test(addr.zip.trim())))}
           onClick={async () => {
-            const r = await dispatch(signCityAgreement({ signer_name: name.trim(), signer_title: title.trim(), consent: true, text_sha256: o.template!.sha256 }));
+            const r = await dispatch(
+              signCityAgreement({
+                signer_name: name.trim(),
+                signer_title: title.trim(),
+                consent: true,
+                text_sha256: o.template!.sha256,
+                ...(o.template!.needs_address ? { address_line: addr.line.trim(), address_city: addr.city.trim(), address_zip: addr.zip.trim() } : {}),
+              }),
+            );
             // Text changed while reading: show the new version before they sign.
             if (signCityAgreement.rejected.match(r) && r.payload === "errors.agreementChanged") {
               setChanged(true);

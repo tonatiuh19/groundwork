@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cityFollowUp, cityIntelScore, cityNextStep, renderCityPartnerAgreement, streetOnly } from "./index";
+import { cityFollowUp, cityIntelScore, cityNextStep, cityPartnerOpenedClause, renderCityPartnerAgreement, streetOnly } from "./index";
 
 describe("City Partner rules (own logic, no outside AI)", () => {
   it("follow-ups match the spreadsheet", () => {
@@ -39,5 +39,21 @@ describe("City Partner rules (own logic, no outside AI)", () => {
   });
   it("fills the LLC name and the frozen rate into the agreement", () => {
     expect(renderCityPartnerAgreement("pay {{partner_legal_name}} {{fee_per_sqft}}; {{partner_legal_name}}", "Remedio LLC", 200)).toBe("pay Remedio LLC $2.00; Remedio LLC");
+  });
+
+  it("v2 agreement: per-partner date, cities and address; any unfilled field blocks sending", () => {
+    expect(cityPartnerOpenedClause(["Fontana"], ["Rancho Cucamonga"])).toBe("Opened Cities as of signing: Fontana. Rancho Cucamonga becomes an Opened City once the Company's plans are pre-approved there.");
+    expect(cityPartnerOpenedClause(["Fontana"], ["Rialto", "Upland", "Riverside"])).toBe("Opened Cities as of signing: Fontana. Rialto, Upland and Riverside become Opened Cities once the Company's plans are pre-approved there.");
+    expect(cityPartnerOpenedClause([], [])).toBe("Opened Cities as of signing: none yet.");
+    const body = "As of {{effective_date}}, {{partner_legal_name}} earns {{fee_per_sqft}}. {{opened_cities_clause}}\nADDRESS\n{{contractor_address}}";
+    const shown = renderCityPartnerAgreement(body, "Remedio LLC", 200, { effective_date: "November 6, 2026", opened_cities: ["Fontana"], pending_cities: ["Rialto"], contractor_address: null });
+    expect(shown).toContain("As of November 6, 2026, Remedio LLC earns $2.00. Opened Cities as of signing: Fontana. Rialto becomes");
+    expect(shown).toContain("_____________________, California __________");
+    const signed = renderCityPartnerAgreement(body, "Remedio LLC", 200, { effective_date: "November 6, 2026", opened_cities: ["Fontana"], pending_cities: ["Rialto"], contractor_address: "1 Main St\n\nFontana, California 92335" });
+    expect(signed).toContain("ADDRESS\n1 Main St");
+    // A term nobody filled in (e.g. the cancellation fee %) can never be shown or signed.
+    expect(() => renderCityPartnerAgreement("fee of {{cancellation_fee_pct}}%", "Remedio LLC", 200)).toThrow();
+    // v1 templates keep working with only name + rate.
+    expect(renderCityPartnerAgreement("pay {{partner_legal_name}} {{fee_per_sqft}}", "Remedio LLC", 250)).toBe("pay Remedio LLC $2.50");
   });
 });

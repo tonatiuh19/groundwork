@@ -5250,7 +5250,12 @@
       "cancelConfirm": "¿Cancelar esta reunión? Se avisa a todos los invitados.",
       "none": "No hay reuniones agendadas",
       "noneText": "Agenda una y el equipo de Groundwork la tendrá en su calendario."
-    }
+    },
+    "businessAddress": "Dirección del negocio (va en tu copia firmada)",
+    "addressLine": "Calle y número",
+    "addressCity": "Ciudad",
+    "addressZip": "Código postal",
+    "addressHint": "Dirección en California donde Groundwork puede enviar avisos según el acuerdo."
   },
   "danger": {
     "typeToConfirm": "Escribe \"{{text}}\" para confirmar",

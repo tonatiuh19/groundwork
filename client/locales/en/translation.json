@@ -5250,7 +5250,12 @@
       "cancelConfirm": "Cancel this meeting? Everyone invited is told.",
       "none": "No meetings booked",
       "noneText": "Schedule one and the Groundwork team gets it on their calendar."
-    }
+    },
+    "businessAddress": "Business address (goes on your signed copy)",
+    "addressLine": "Street address",
+    "addressCity": "City",
+    "addressZip": "ZIP code",
+    "addressHint": "California address where Groundwork can send notices under the agreement."
   },
   "danger": {
     "typeToConfirm": "Type \"{{text}}\" to confirm",
