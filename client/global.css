@@ -20796,3 +20796,65 @@ button.sc-metric:hover {
   line-height: 1.4;
   color: #9b2c2c;
 }
+
+/* ─── Phones: composer alignment + "grow while writing" ─── */
+@media (max-width: 900px) {
+  /* The counter sits under the bar without adding to its height, so + lines up with the bar. */
+  .gw-conv-page.is-thread-open .gw-conv-composer {
+    position: relative;
+    align-items: flex-end;
+    padding-bottom: calc(1.3rem + env(safe-area-inset-bottom));
+  }
+  .gw-conv-page.is-thread-open .gw-composer__footer {
+    position: absolute;
+    right: 1rem;
+    bottom: calc(0.2rem + env(safe-area-inset-bottom));
+    left: 1rem;
+    justify-content: flex-end;
+    padding: 0;
+    pointer-events: none;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__footer a,
+  .gw-conv-page.is-thread-open .gw-composer__footer button {
+    pointer-events: auto;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__extras {
+    /* Bar is ~2.9rem tall at rest: center the 2.6rem + on it, then follow its bottom as it grows. */
+    margin-bottom: 0.16rem;
+    transition: width 0.22s ease, margin 0.22s ease, opacity 0.18s ease, transform 0.22s ease, border-width 0.22s ease;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__row,
+  .gw-conv-page.is-thread-open .gw-composer__input {
+    transition: min-height 0.22s ease, border-radius 0.22s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  /* Writing (focused, or a draft in the box): the bar grows to ~4 lines and takes the whole width.
+     It stays open while there's text so tapping ✨ / Send never moves under the finger. */
+  .gw-conv-page.is-thread-open .gw-conv-composer:has(.gw-composer__input:focus),
+  .gw-conv-page.is-thread-open .gw-conv-composer:has(.gw-composer__input:not(:placeholder-shown)) {
+    --gw-writing: 1;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-conv-composer:has(.gw-composer__input:focus) .gw-conv-composer__extras,
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-conv-composer:has(.gw-composer__input:not(:placeholder-shown)) .gw-conv-composer__extras {
+    width: 0;
+    margin-right: -0.45rem;
+    border-width: 0;
+    opacity: 0;
+    transform: scale(0.6);
+    pointer-events: none;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer:has(.gw-composer__input:focus) .gw-composer__input,
+  .gw-conv-page.is-thread-open .gw-conv-composer:has(.gw-composer__input:not(:placeholder-shown)) .gw-composer__input {
+    min-height: 6rem;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer:has(.gw-composer__input:focus) .gw-composer__row,
+  .gw-conv-page.is-thread-open .gw-conv-composer:has(.gw-composer__input:not(:placeholder-shown)) .gw-composer__row {
+    border-radius: 1.15rem;
+  }
+}
+@media (max-width: 900px) and (prefers-reduced-motion: reduce) {
+  .gw-conv-page.is-thread-open .gw-conv-composer__extras,
+  .gw-conv-page.is-thread-open .gw-composer__row,
+  .gw-conv-page.is-thread-open .gw-composer__input {
+    transition: none;
+  }
+}
