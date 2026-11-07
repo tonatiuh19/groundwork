@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ImproveWithAiButton from "@/components/ai/ImproveWithAiButton";
 import { useSearchParams } from "react-router-dom";
 import { FileText, Pencil, Plus, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -47,6 +48,7 @@ function VarTextarea({ label, value, onChange, sms = true }: { label: string; va
       <span>{label}</span>
       <textarea ref={ref} rows={5} value={value} onChange={(e) => onChange(e.target.value)} />
       <div className="gw-tpl-vars">
+        <ImproveWithAiButton value={value} onChange={onChange} kind="template" />
         {CONVERSATION_TEMPLATE_VARS.map((v) => (
           <button key={v.key} type="button" className="gw-tpl-var" onClick={() => insert(v.key)}>
             {`{{${v.key}}}`}

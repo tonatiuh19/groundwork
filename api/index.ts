@@ -24598,6 +24598,17 @@ function registerConversationsRoutes(app: Express) {
     };
   }
 
+  // Improve with AI: any staff composer (Conversations, Mail, lead texts, templates). Returns the rewrite;
+  // nothing is sent or saved here, the person still reviews it and taps Send / Save.
+  app.post(
+    "/api/admin/ai/improve-text",
+    requireAdmin(),
+    route(async (req, res) => {
+      const kind = (AI_IMPROVE_KINDS as readonly string[]).includes(String(req.body?.kind)) ? (String(req.body.kind) as AiImproveKind) : "sms";
+      res.json({ ok: true, text: await aiImproveText(String(req.body?.text ?? ""), kind) });
+    }),
+  );
+
   app.get(
     "/api/admin/conversation-templates",
     requireAdmin(),
@@ -31127,6 +31138,89 @@ function assistantApi(): Pick<Anthropic, "beta"> {
 /** Test hook: swap the assistant client (Vitest never calls the real API). */
 export function __testSetAssistantApi(api: unknown): void {
   assistantClient = api as Pick<Anthropic, "beta"> | null;
+}
+
+// ── Improve with AI (staff composers): rewrite a draft, never invent facts ─────
+
+export const AI_IMPROVE_KINDS = ["sms", "email", "note", "template"] as const;
+export type AiImproveKind = (typeof AI_IMPROVE_KINDS)[number];
+
+/**
+ * Facts a rewrite must keep exactly: merge fields ({{first_name}}), links, emails, phone numbers,
+ * money and other numbers (dates, times, sq ft). The AI may reword around them, never add or drop one.
+ */
+export function aiFactTokens(text: string): string[] {
+  const plain = String(text || "").replace(/<[^>]+>/g, " ");
+  const out: string[] = [];
+  const take = (re: RegExp, norm: (m: string) => string = (m) => m) => {
+    for (const m of plain.match(re) || []) out.push(norm(m));
+  };
+  take(/\{\{\s*[a-z0-9_]+\s*\}\}/gi, (m) => m.replace(/\s+/g, "").toLowerCase());
+  take(/https?:\/\/[^\s<>"')]+/gi, (m) => m.replace(/[.,;:!?]+$/, ""));
+  take(/[\w.+-]+@[\w-]+\.[\w.-]+/g, (m) => m.toLowerCase());
+  // Numbers (prices, phones, dates, times, quantities) without their formatting: "$1,500" = "1500".
+  const noLinks = plain.replace(/https?:\/\/[^\s<>"')]+/gi, " ").replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, " ").replace(/\{\{[^}]*\}\}/g, " ");
+  for (const m of noLinks.match(/\d[\d,.:/-]*\d|\d/g) || []) out.push(`#${m.replace(/[^\d]/g, "")}`);
+  return out.sort();
+}
+
+/** True when the rewrite kept every fact token of the draft and added none. */
+export function aiRewriteKeepsFacts(before: string, after: string): boolean {
+  const a = aiFactTokens(before);
+  const b = aiFactTokens(after);
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+function aiImproveSystemPrompt(kind: AiImproveKind): string {
+  const where = {
+    sms: "a text message (SMS) a Groundwork Capital staff member is about to send to a homeowner, affiliate or partner. Keep it short: at most 320 characters unless the draft is longer. Plain text only, no markdown.",
+    email: "an email body a Groundwork Capital staff member is about to send. Return clean HTML using only <p>, <br>, <strong>, <em>, <ul>, <ol>, <li> and <a href> tags. No greeting line is added if the draft has none, and no signature (one is added automatically).",
+    note: "an internal staff note about a customer. Make it clear and complete, plain text only.",
+    template: "a reusable message template. Keep every {{placeholder}} exactly as written. Plain text only unless the draft is HTML.",
+  }[kind];
+  return [
+    `You improve the writing of ${where}`,
+    "Groundwork Capital helps California homeowners build ADUs (accessory dwelling units). Tone: warm, professional, clear, confident.",
+    "Rules (never break them):",
+    "1. Write in the same language as the draft (English or Spanish). Never translate.",
+    "2. Never add facts that are not in the draft: no new prices, numbers, dates, times, promises, offers, links, phone numbers or emails. Never remove the ones that are there, and keep them exactly as written.",
+    "3. Keep every {{placeholder}} exactly as written, character for character.",
+    "4. Keep the meaning and the intent. Fix grammar, spelling and flow; make it friendlier and easier to read. At most one emoji, only if it fits a friendly message.",
+    "5. Never use long dashes (—). Use a period or a comma instead.",
+    "6. Reply with the improved message only: no quotes, no explanation, no options.",
+  ].join("\n");
+}
+
+/** Rewrite one draft. Throws 400 / 422 / 503 with error keys the composer shows. */
+export async function aiImproveText(text: string, kind: AiImproveKind): Promise<string> {
+  const draft = String(text || "").trim();
+  if (draft.length < 3) throw new HttpError(400, "errors.aiTextTooShort");
+  if (draft.length > 8000) throw new HttpError(400, "errors.aiTextTooLong");
+  let out = "";
+  try {
+    const response = await assistantApi().beta.messages.create({
+      model: String(process.env.ANTHROPIC_REWRITE_MODEL || "").trim() || "claude-haiku-5-5",
+      max_tokens: 2000,
+      system: aiImproveSystemPrompt(kind),
+      messages: [{ role: "user", content: `Draft to improve:\n\n${draft}` }],
+    } as Anthropic.Beta.MessageCreateParamsNonStreaming);
+    if (response.stop_reason === "refusal") throw new HttpError(422, "errors.aiRewriteFailed");
+    out = response.content
+      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("")
+      .trim()
+      .replace(/^["“](.*)["”]$/s, "$1")
+      .replace(/\s*—\s*/g, ", ");
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    console.error("[ai-improve]", (e as Error)?.message ?? e);
+    throw new HttpError(503, "errors.aiUnavailable");
+  }
+  if (!out) throw new HttpError(422, "errors.aiRewriteFailed");
+  // The guard behind rule 2: a rewrite that changed a placeholder, link, number or price is never shown.
+  if (!aiRewriteKeepsFacts(draft, out)) throw new HttpError(422, "errors.aiChangedFacts");
+  return out;
 }
 
 const ASSISTANT_DAILY_LIMIT = 40;

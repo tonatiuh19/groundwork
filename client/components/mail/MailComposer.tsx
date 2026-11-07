@@ -7,6 +7,7 @@ import { clearMailErrors, discardMailDraft, saveMailDraft, sendMail } from "@/st
 import { BusyButton, ErrorNote } from "@/components/portal/kit";
 import { SideDrawer } from "@/components/portal/SideDrawer";
 import RichEditor from "./RichEditor";
+import ImproveWithAiButton from "@/components/ai/ImproveWithAiButton";
 import RecipientInput from "./RecipientInput";
 import { formatBytes } from "./mailFormat";
 import TemplatePicker from "./TemplatePicker";
@@ -238,6 +239,17 @@ export default function MailComposer({
             <button type="button" className="pf-btn pf-btn--sm" onClick={() => fileRef.current?.click()} disabled={sending}>
               <Paperclip size={14} aria-hidden /> {t("mail.attach")}
             </button>
+            <ImproveWithAiButton
+              value={html}
+              kind="email"
+              disabled={sending}
+              onChange={(next) => {
+                setInitialHtml(next);
+                setHtml(next);
+                setResetKey((k) => k + 1);
+                setDirty(true);
+              }}
+            />
             <TemplatePicker
               firstName={recipientName.split(" ")[0] || null}
               lastName={recipientName.split(" ").slice(1).join(" ") || null}

@@ -99,6 +99,10 @@ Staff notify events are **routed by area** (Settings → Team notifications → 
 
 - Staff alerts for a text name the sender: client / CRM contact threads use their name; unmatched numbers go through `inboundSenderLabel` (staff-given `display_name`, else the person on that number via `resolvePeopleByPhone` with their role in the admin's language, else the number).
 
+### Improve with AI (staff composers)
+
+- `POST /api/admin/ai/improve-text` (any staff) → `aiImproveText` (Claude via `assistantApi`, model `ANTHROPIC_REWRITE_MODEL` default `claude-haiku-5-5`): same language, never invents facts; `aiRewriteKeepsFacts` refuses any rewrite that adds / drops a `{{placeholder}}`, link, email or number (422 `errors.aiChangedFacts`). Nothing is sent or saved. UI: `ImproveWithAiButton` (rewrite in place + Undo) in every staff composer; new composers MUST use it. Tests fake Claude with `__testSetAssistantApi`.
+
 ### Automatic messages
 
 - `sendEmail` / `sendSms` log every send to a CRM person (client / lead / affiliate / contractor / contact) in `automatic_messages` and in their Conversations thread (`metadata_json.automatic = true`). Staff-typed, campaign and staff-alert sends MUST pass `manual: true`. Phone threads for non-clients are only opened for `+1555` numbers under the notification sandbox.

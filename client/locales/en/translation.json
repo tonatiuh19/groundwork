@@ -446,7 +446,12 @@
     "cityAlreadyYours": "This city is already on your list.",
     "cityRequestDecided": "This request was already answered.",
     "phoneShared": "More than one account uses this number. Sign in with your email instead.",
-    "otpSmsUnavailable": "We can't text a code to this number right now. Sign in with your email instead."
+    "otpSmsUnavailable": "We can't text a code to this number right now. Sign in with your email instead.",
+    "aiTextTooShort": "Write a few words first.",
+    "aiTextTooLong": "This draft is too long to improve.",
+    "aiRewriteFailed": "The AI could not improve this one. Try rewording it.",
+    "aiChangedFacts": "The AI changed a name, link or number, so we kept your text.",
+    "aiUnavailable": "Improve with AI is not available right now."
   },
   "getCreditReport": {
     "metaTitle": "Free credit report · No score impact",
@@ -1978,7 +1983,9 @@
     "keypadClear": "Clear",
     "keypadSeq": "Send several digits",
     "keypadSeqPh": "Extension, e.g. 123#",
-    "keypadSend": "Send"
+    "keypadSend": "Send",
+    "moreActions": "More actions",
+    "composerExtras": "Templates, quick replies and fields"
   },
   "contacts": {
     "lead": "Address book for people who are not clients yet. Convert them into the pipeline when ready.",
@@ -5284,5 +5291,14 @@
   "phoneOnly": {
     "hint": "No email? We'll text the portal link and updates to this phone instead.",
     "consent": "The homeowner agrees to receive texts from Groundwork about their project. Message and data rates may apply. Reply STOP to opt out."
+  },
+  "ai": {
+    "improve": "Improve with AI",
+    "improving": "Improving…",
+    "undo": "Undo",
+    "improveHint": "Rewrites your draft so it reads better. Same language, same names, links and numbers. Nothing is sent.",
+    "comingSoon": "Coming soon",
+    "comingSoonHint": "Improve with AI is almost ready. Soon it will polish your drafts with one tap.",
+    "soon": "Soon"
   }
 }

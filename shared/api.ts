@@ -3161,3 +3161,6 @@ export interface AffiliateEventRow {
   is_host: boolean;
   rsvps: AffiliateEventRsvp[];
 }
+
+/** Improve with AI: which composer the draft comes from (sets length, format and tone). */
+export type AiImproveKind = "sms" | "email" | "note" | "template";

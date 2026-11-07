@@ -37,6 +37,7 @@ import flowsReducer from "./slices/flowsSlice";
 import constructionAgreementReducer from "./slices/constructionAgreementSlice";
 import legalReducer from "./slices/legalSlice";
 import qrLinksReducer from "./slices/qrLinksSlice";
+import aiWriteReducer from "./slices/aiWriteSlice";
 import scorecardsReducer from "./slices/scorecardsSlice";
 import eventMediaReducer from "./slices/eventMediaSlice";
 import affiliateOnboardingReducer from "./slices/affiliateOnboardingSlice";
@@ -95,6 +96,7 @@ export const store = configureStore({
     constructionAgreement: constructionAgreementReducer,
     legal: legalReducer,
     qrLinks: qrLinksReducer,
+    aiWrite: aiWriteReducer,
     scorecards: scorecardsReducer,
     eventMedia: eventMediaReducer,
     affiliateOnboarding: affiliateOnboardingReducer,

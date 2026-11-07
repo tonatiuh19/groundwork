@@ -20316,3 +20316,411 @@ button.sc-metric:hover {
   gap: 0.3rem;
   overflow-wrap: anywhere;
 }
+
+/* ─── Improve with AI (any staff composer) ─── */
+.gw-ai-improve {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.gw-ai-improve__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #d9c9a3;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #fffaf0 0%, #f6ecd6 100%);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gw-ai-improve__btn svg {
+  color: #b07d1f;
+}
+.gw-ai-improve__btn:hover:not(:disabled) {
+  border-color: #b07d1f;
+}
+.gw-ai-improve__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.gw-ai-improve__btn.is-compact {
+  width: 2.25rem;
+  justify-content: center;
+  padding: 0;
+}
+.gw-ai-improve__btn.is-undo {
+  background: #fff;
+}
+.gw-ai-improve__err {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: #9b2c2c;
+}
+
+/* Composer extras toggle (+) only shows on phones. */
+.gw-conv-composer__extras,
+.gw-conv-thread-head__mobile {
+  display: none;
+}
+
+/* ─── Conversations on phones: chat-first, an open thread fills the screen ─── */
+@media (max-width: 900px) {
+  .gw-conv-page.is-thread-open .gw-conv-thread.is-open-mobile {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    height: 100dvh;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: #fff;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread-head {
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    padding: calc(0.5rem + env(safe-area-inset-top)) 0.6rem 0.5rem;
+    background: var(--ink);
+    color: #fff;
+    border-bottom: 0;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread-head h2 {
+    color: #fff;
+    font-size: 0.98rem;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread-head__copy p,
+  .gw-conv-page.is-thread-open .gw-conv-thread-head__copy .text-link {
+    color: rgba(255, 255, 255, 0.78);
+  }
+  .gw-conv-page.is-thread-open .gw-conv-back {
+    color: #fff;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    justify-content: center;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-back__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread-head__mobile {
+    display: inline-flex;
+    flex: none;
+    gap: 0.25rem;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread-head__mobile .pf-icon-btn {
+    width: 2.5rem;
+    height: 2.5rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread-head__mobile .pf-icon-btn.is-active {
+    background: rgba(255, 255, 255, 0.2);
+  }
+  /* Record actions + unknown-number tools live behind ⋯ */
+  .gw-conv-page.is-thread-open .gw-conv-thread-head__actions,
+  .gw-conv-page.is-thread-open .gw-conv-unknown-tools {
+    display: none;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread.is-more-open .gw-conv-thread-head__actions,
+  .gw-conv-page.is-thread-open .gw-conv-thread.is-more-open .gw-conv-unknown-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.6rem;
+    background: #fbf8f1;
+    border-bottom: 1px solid #e8dfc8;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread.is-more-open .gw-conv-thread-head {
+    flex-wrap: wrap;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread.is-more-open .gw-conv-thread-head__actions {
+    order: 10;
+    flex-basis: 100%;
+    margin: 0.4rem -0.6rem -0.5rem;
+    color: var(--ink);
+  }
+  .gw-conv-page.is-thread-open .gw-conv-messages {
+    padding: 0.75rem 0.65rem;
+  }
+  /* Composer pinned at the bottom: + extras, text box, AI, Send */
+  /* Header and composer keep their size; the messages take the rest and scroll. */
+  .gw-conv-page.is-thread-open .gw-conv-thread-head,
+  .gw-conv-page.is-thread-open .gw-conv-unknown-tools {
+    flex: none;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.45rem;
+    max-height: 70dvh;
+    overflow-y: auto;
+    padding: 0.5rem 0.55rem 0.6rem;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer > * {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__toggle {
+    display: none;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__extras {
+    display: inline-flex;
+    flex: none;
+    order: 99;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    margin-bottom: 1.4rem;
+    border: 1px solid #e8dfc8;
+    border-radius: 999px;
+    background: #fbf8f1;
+    color: var(--ink);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__extras.is-open {
+    transform: rotate(45deg);
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer .gw-composer {
+    flex: 1 1 0;
+    order: 99;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-conv-composer__from,
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-conv-suggestions,
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-composer__channels,
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-composer__quick-vars,
+  .gw-conv-page.is-thread-open .gw-conv-thread:not(.is-extras-open) .gw-composer__mms {
+    display: none;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.4rem;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__input {
+    min-height: 2.6rem;
+    max-height: 9rem;
+    border-radius: 1.2rem;
+    resize: none;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__actions {
+    flex-wrap: nowrap;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__send span,
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn:not(.is-undo) span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn {
+    width: 2.5rem;
+    padding: 0;
+    justify-content: center;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn.is-undo {
+    width: auto;
+    padding: 0 0.6rem;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__send {
+    width: 2.75rem;
+    height: 2.75rem;
+    padding: 0;
+    border-radius: 999px;
+    justify-content: center;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__footer {
+    font-size: 0.7rem;
+  }
+}
+@media (max-width: 375px) {
+  .gw-conv-page.is-thread-open .gw-composer__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+/* AI error as a small bubble above the button (never widens a tight composer row). */
+.gw-ai-improve {
+  position: relative;
+}
+.gw-composer__actions .gw-ai-improve__err {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.35rem);
+  width: min(16rem, 80vw);
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #e8c4c4;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(14, 42, 74, 0.12);
+  z-index: 5;
+}
+
+/* Improve with AI · not set up yet: calm shimmering "Coming soon" badge (no clicks, no errors). */
+.gw-ai-improve__btn.is-soon {
+  position: relative;
+  cursor: default;
+  overflow: hidden;
+  color: #8a6a2a;
+  border-style: dashed;
+  background: linear-gradient(110deg, #fbf6ea 0%, #fbf6ea 40%, #fff3d6 50%, #fbf6ea 60%, #fbf6ea 100%);
+  background-size: 250% 100%;
+  animation: gw-ai-soon 3.2s ease-in-out infinite;
+}
+.gw-ai-improve__btn.is-soon svg {
+  animation: gw-ai-twinkle 3.2s ease-in-out infinite;
+}
+.gw-ai-improve__soon {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+@keyframes gw-ai-soon {
+  0% { background-position: 100% 0; }
+  60%, 100% { background-position: -50% 0; }
+}
+@keyframes gw-ai-twinkle {
+  0%, 100% { transform: scale(1) rotate(0); opacity: 0.75; }
+  45% { transform: scale(1.18) rotate(12deg); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gw-ai-improve__btn.is-soon,
+  .gw-ai-improve__btn.is-soon svg {
+    animation: none;
+  }
+}
+
+/* ─── Phones: one composer bar (text, ✨ and Send live together in a single pill) ─── */
+@media (max-width: 900px) {
+  .gw-conv-page.is-thread-open .gw-conv-composer {
+    padding: 0.45rem 0.5rem calc(0.45rem + env(safe-area-inset-bottom));
+    background: rgba(255, 255, 255, 0.96);
+    border-top: 1px solid #efe6d2;
+    box-shadow: 0 -6px 18px rgba(14, 42, 74, 0.06);
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__extras {
+    width: 2.6rem;
+    height: 2.6rem;
+    margin-bottom: 1.15rem;
+    border-color: #e3d6b8;
+    background: #fff;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.15rem;
+    padding: 0.2rem 0.2rem 0.2rem 0.85rem;
+    border: 1px solid #e3d6b8;
+    border-radius: 1.45rem;
+    background: #fff;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__row:focus-within {
+    border-color: #c9a75d;
+    box-shadow: 0 0 0 3px rgba(201, 167, 93, 0.18);
+  }
+  .gw-conv-page.is-thread-open .gw-composer__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* Starts as one line and grows with the text (field-sizing where supported, scrolls after ~5 lines). */
+    height: 2.4rem;
+    min-height: 2.4rem;
+    max-height: 8.5rem;
+    field-sizing: content;
+    overflow-y: auto;
+    padding: 0.55rem 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    outline: none;
+    line-height: 1.35;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__actions {
+    flex: none;
+    gap: 0.15rem;
+    align-items: center;
+    padding-bottom: 0.05rem;
+  }
+  /* ✨ sits inside the pill as a quiet icon; Send is the gold circle at its end. */
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn {
+    width: 2.4rem;
+    height: 2.4rem;
+    min-height: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn:not(:disabled):not(.is-soon):active {
+    background: #fbf3e2;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn.is-undo {
+    width: auto;
+    padding: 0 0.55rem;
+    background: #fbf3e2;
+    font-size: 0.72rem;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn.is-soon {
+    overflow: visible;
+    border: 0;
+    animation: none;
+    background: transparent;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__btn.is-soon .gw-ai-improve__soon {
+    /* Undo the icon-only label hiding above: this tag is meant to be seen. */
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    line-height: 1.4;
+    font-size: 0 !important;
+    position: absolute;
+    top: -0.35rem;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #d9b25f, #b07d1f);
+    color: #fff;
+    font-size: 0.52rem;
+    font-weight: 800;
+    white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(176, 125, 31, 0.35);
+  }
+  .gw-conv-page.is-thread-open .gw-composer__send {
+    width: 2.4rem;
+    height: 2.4rem;
+    min-height: 0;
+    border: 0;
+    box-shadow: 0 3px 10px rgba(176, 125, 31, 0.3);
+  }
+  .gw-conv-page.is-thread-open .gw-composer__send:disabled {
+    box-shadow: none;
+    opacity: 0.45;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__footer {
+    padding: 0.15rem 0.6rem 0;
+    text-align: right;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__actions .gw-ai-improve__err {
+    right: -2.5rem;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Phones: the tag above ✨ says just "Soon" / "Pronto" (full text stays as the accessible name). */
+  .gw-conv-page.is-thread-open .gw-composer__ai .gw-ai-improve__soon::after {
+    content: attr(data-short);
+    font-size: 0.52rem;
+  }
+}

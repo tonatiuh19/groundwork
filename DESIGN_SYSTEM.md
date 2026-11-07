@@ -611,3 +611,17 @@ Weekly A to F scorecards for affiliates and contractors, admins only (super_admi
 - **Project tracking panel (`ProjectTrackingPanel`, also on Project detail):** weekly "Reviewed this week" / "Homeowner updated" buttons, plans (due vs delivered), city corrections (received vs resolved), stage target dates. Rows carry a left stripe: green on time, yellow open, red late.
 - Copy is staff-facing (EN + ES under `scorecards.*`); no long dashes.
 - **Touch:** every Scorecards control is at least 44px tall (buttons, inputs, selects, role pills, "Open record"); form fields have visible labels; row actions stay grouped (toggle + delete) when they wrap. Week squares use 11px+ text. Audited at 320, 360, 375, 414 and 768 (tablet) with no sideways scrolling; `npm run audit:mobile` now includes `/admin/scorecards`, a scorecard detail and `/admin/qr-codes`.
+
+## Improve with AI (staff composers)
+
+- `ImproveWithAiButton` (`client/components/ai/`): gold-tinted pill with a sparkle icon, "Improve with AI" / "Mejorar con IA". Tap rewrites the draft in place (spinner + "Improving…"), then turns into a white **Undo** pill while the box still holds the AI text; typing over it makes the new text the draft. Errors show as a small white bubble above the button (never widens the row). Nothing is ever sent; the person still taps Send / Save.
+- Where: Conversations composer (SMS and internal note), lead quick text, Mail compose (footer next to Attach; HTML body), Templates editor (next to the merge fields).
+- Not set up (no / invalid key, server 503): the button becomes a dashed, slowly shimmering **Coming soon** / **Muy pronto** badge (twinkling sparkle, no clicks, no error), remembered for the browser session. Reduced motion turns the shimmer off.
+- Rules (server): same language as the draft, never adds or drops placeholders, links, emails, numbers or prices (a rewrite that does is refused and the draft stays), no long dashes.
+
+## Conversations on phones (≤ 900px)
+
+- An open thread fills the screen like a chat app (fixed, above the tab bar, safe-area aware); the page header and list are hidden.
+- Navy header: back arrow (icon), name + phone / record link, round **Call** and **⋯** buttons. ⋯ opens a paper panel with the record actions (Assign to me, Open client, Close / Reopen) and, for unknown numbers, Link client / Create prospect / Dismiss.
+- Messages take the rest of the height. Composer pinned at the bottom: round **+** (rotates to ×) toggles the extras (from number, quick replies, SMS / note tabs and Templates, merge fields, attach photo); then one rounded composer bar: the text box with ✨ (quiet icon; tiny gold SOON tag while AI isn't set up) and the gold Send circle inside it; gold focus ring while typing. Character / segment count stays small under the box.
+- Desktop keeps the two-column layout unchanged.

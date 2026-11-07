@@ -15,6 +15,7 @@ import {
   type ConversationMergeContext,
 } from "@/lib/conversationTemplateVars";
 import { SMS_MAX_BODY_CHARS, smsSegmentInfo } from "@/lib/smsSegments";
+import ImproveWithAiButton from "@/components/ai/ImproveWithAiButton";
 
 type Channel = "sms" | "internal";
 
@@ -316,6 +317,13 @@ export function ConversationMessageComposer({
           }}
         />
         <div className="gw-composer__actions">
+          <ImproveWithAiButton
+            value={body}
+            onChange={onBodyChange}
+            kind={channel === "internal" ? "note" : "sms"}
+            disabled={disabled || sending}
+            className="gw-composer__ai"
+          />
           {channel === "sms" && onPickMedia ? (
             <>
               <input

@@ -15,6 +15,7 @@ import {
   X,
   Bot,
   Mail,
+  MoreHorizontal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -196,6 +197,13 @@ export default function AdminConversations() {
   const [threadFromId, setThreadFromId] = useState<number | null>(null);
   useEffect(() => setThreadFromId(null), [activeKind, activeId]);
   const [mobileThread, setMobileThread] = useState(false);
+  // Phones: the thread's record actions (⋯) and composer extras (+) stay folded so messages get the screen.
+  const [threadMoreOpen, setThreadMoreOpen] = useState(false);
+  const [composerExtrasOpen, setComposerExtrasOpen] = useState(false);
+  useEffect(() => {
+    setThreadMoreOpen(false);
+    setComposerExtrasOpen(false);
+  }, [activeId]);
   const [searchDraft, setSearchDraft] = useState(search);
   const debouncedSearch = useDebounce(searchDraft, 350);
   const [composerCollapsed, setComposerCollapsed] = useState(false);
@@ -693,7 +701,7 @@ export default function AdminConversations() {
     inboxPagination.page < inboxPagination.totalPages;
 
   return (
-    <div className="portal-page gw-conv-page">
+    <div className={cn("portal-page gw-conv-page", mobileThread && activeKind && activeId && "is-thread-open")}>
       <PageHeader
         titleKey="portalNav.conversations"
         leadKey="conversations.lead"
@@ -912,11 +920,12 @@ export default function AdminConversations() {
         </aside>
 
         <section
-          className={
-            mobileThread
-              ? "gw-conv-thread is-open-mobile"
-              : "gw-conv-thread"
-          }
+          className={cn(
+            "gw-conv-thread",
+            mobileThread && "is-open-mobile",
+            threadMoreOpen && "is-more-open",
+            composerExtrasOpen && "is-extras-open",
+          )}
         >
           {!activeKind || !activeId ? (
             <div className="gw-conv-thread-empty">
@@ -933,12 +942,14 @@ export default function AdminConversations() {
                   className="gw-conv-back"
                   onClick={() => {
                     setMobileThread(false);
+                    setThreadMoreOpen(false);
+                    setComposerExtrasOpen(false);
                     dispatch(selectConversationContact(null));
                     setSearchParams({}, { replace: true });
                   }}
                 >
                   <ArrowLeft className="w-4 h-4" />
-                  {t("conversations.backToList")}
+                  <span className="gw-conv-back__label">{t("conversations.backToList")}</span>
                 </button>
                 <div className="gw-conv-thread-head__copy min-w-0">
                   <h2 className="truncate">
@@ -963,6 +974,34 @@ export default function AdminConversations() {
                       </>
                     ) : null}
                   </p>
+                </div>
+                {/* Phones: Call + ⋯ only; the full action row and the unknown-number tools open from ⋯. */}
+                <div className="gw-conv-thread-head__mobile">
+                  {activeContact?.phone ? (
+                    <button
+                      type="button"
+                      className="pf-icon-btn"
+                      aria-label={t("conversations.call")}
+                      onClick={() =>
+                        openDialpadForCall(
+                          activeContact.phone!,
+                          activeKind === "client" ? activeId : undefined,
+                          activeContact.display_name,
+                        )
+                      }
+                    >
+                      <Phone size={18} aria-hidden />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={cn("pf-icon-btn", threadMoreOpen && "is-active")}
+                    aria-label={t("conversations.moreActions")}
+                    aria-expanded={threadMoreOpen}
+                    onClick={() => setThreadMoreOpen((v) => !v)}
+                  >
+                    <MoreHorizontal size={18} aria-hidden />
+                  </button>
                 </div>
                 <div className="gw-conv-thread-head__actions">
                   {activeKind === "client" && (
@@ -1192,6 +1231,15 @@ export default function AdminConversations() {
               >
                 <button
                   type="button"
+                  className={cn("gw-conv-composer__extras", composerExtrasOpen && "is-open")}
+                  aria-expanded={composerExtrasOpen}
+                  aria-label={t("conversations.composerExtras")}
+                  onClick={() => setComposerExtrasOpen((v) => !v)}
+                >
+                  <Plus size={18} aria-hidden />
+                </button>
+                <button
+                  type="button"
                   className="gw-conv-composer__toggle"
                   onClick={() => setComposerCollapsed((v) => !v)}
                 >
@@ -1205,7 +1253,7 @@ export default function AdminConversations() {
                 {!composerCollapsed && (
                   <>
                     {accessNumbers.length > 0 && (
-                      <label className="text-xs flex flex-wrap items-center gap-2 mb-2">
+                      <label className="text-xs flex flex-wrap items-center gap-2 mb-2 gw-conv-composer__from">
                         <span>{t("conversations.fromNumber")}</span>
                         <select
                           className="pf-input"

@@ -6,6 +6,7 @@ import type { AdminLead } from "@shared/api";
 import { useAppDispatch } from "@/store/hooks";
 import { startConversationOutbound } from "@/store/slices/conversationsSlice";
 import { BusyButton, ErrorNote, Modal } from "@/components/portal/kit";
+import ImproveWithAiButton from "@/components/ai/ImproveWithAiButton";
 
 const SMS_MAX = 1600;
 
@@ -63,6 +64,7 @@ export default function LeadQuickText({
                   placeholder={t("admin.leadTextPlaceholder", { name: first })}
                   onChange={(e) => setBody(e.target.value)}
                 />
+                <ImproveWithAiButton value={body} onChange={setBody} kind="sms" />
                 <small className="pf-hint">
                   {t("admin.leadTextHint")} · {body.length}/{SMS_MAX}
                 </small>

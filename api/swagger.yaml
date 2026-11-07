@@ -5580,6 +5580,17 @@ paths:
         "200": { description: PhoneLineSettings }
         "400": { description: "validation.ringNumberInvalid | validation.ringNumberLoop | validation.ringNumberLimit | validation.invalidField" }
         "403": { description: errors.forbidden }
+  /api/admin/ai/improve-text:
+    post:
+      summary: "Improve with AI: rewrite a staff draft (any staff composer). Nothing is sent or saved."
+      tags: [admin]
+      description: "Any staff session. Body { text (3-8000 chars), kind: sms|email|note|template }. Claude (ANTHROPIC_REWRITE_MODEL, default claude-haiku-5-5) rewrites in the draft's language and tone rules; email returns simple HTML. The rewrite must keep every {{placeholder}}, link, email and number of the draft and add none, else 422 errors.aiChangedFacts (the composer keeps the original). 400 errors.aiTextTooShort / errors.aiTextTooLong, 422 errors.aiRewriteFailed, 503 errors.aiUnavailable (no API key or API error)."
+      responses:
+        "200": { description: "{ ok, text }" }
+        "400": { description: "errors.aiTextTooShort | errors.aiTextTooLong" }
+        "401": { description: "errors.unauthorized" }
+        "422": { description: "errors.aiChangedFacts | errors.aiRewriteFailed" }
+        "503": { description: "errors.aiUnavailable" }
   /api/admin/conversation-templates:
     get:
       summary: List SMS conversation templates
