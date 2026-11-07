@@ -20858,3 +20858,157 @@ button.sc-metric:hover {
     transition: none;
   }
 }
+
+/* ─── Phones: the + tray (extras) is a full-width panel above the bar ───
+   The composer's own pieces join the outer layout so each tray row spans the width
+   and the bar (+ · text · ✨ · Send) always fits the screen. */
+@media (max-width: 900px) {
+  .gw-conv-page.is-thread-open .gw-conv-composer .gw-composer {
+    display: contents;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__from { order: 1; }
+  .gw-conv-page.is-thread-open .gw-conv-suggestions { order: 2; }
+  .gw-conv-page.is-thread-open .gw-composer__channels { order: 3; }
+  .gw-conv-page.is-thread-open .gw-composer__templates { order: 4; }
+  .gw-conv-page.is-thread-open .gw-composer__quick-vars,
+  .gw-conv-page.is-thread-open .gw-composer__var-suggest { order: 5; }
+  .gw-conv-page.is-thread-open .gw-composer__attach { order: 6; }
+  .gw-conv-page.is-thread-open .gw-conv-composer__extras { order: 90; }
+  .gw-conv-page.is-thread-open .gw-composer__row {
+    order: 91;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__channels,
+  .gw-conv-page.is-thread-open .gw-composer__templates,
+  .gw-conv-page.is-thread-open .gw-composer__quick-vars,
+  .gw-conv-page.is-thread-open .gw-composer__var-suggest,
+  .gw-conv-page.is-thread-open .gw-composer__attach {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  /* Tray look: warm paper behind the extras, white bar stays the focus. */
+  .gw-conv-page.is-thread-open .gw-conv-thread.is-extras-open .gw-conv-composer {
+    background: #fbf8f1;
+    gap: 0.5rem;
+    animation: gw-tray-in 0.2s ease-out;
+  }
+  @keyframes gw-tray-in {
+    from { transform: translateY(6px); opacity: 0.6; }
+    to { transform: none; opacity: 1; }
+  }
+
+  /* From number: one quiet line. */
+  .gw-conv-page.is-thread-open .gw-conv-composer__from {
+    flex-wrap: nowrap;
+    margin: 0;
+    font-size: 0.72rem;
+    color: #5c6570;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__from span {
+    flex: none;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-composer__from select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.3rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    text-overflow: ellipsis;
+  }
+
+  /* Quick replies and merge fields: one swipeable row of small chips. */
+  .gw-conv-page.is-thread-open .gw-conv-suggestions,
+  .gw-conv-page.is-thread-open .gw-composer__quick-vars,
+  .gw-conv-page.is-thread-open .gw-composer__var-suggest {
+    flex-wrap: nowrap;
+    gap: 0.4rem;
+    margin: 0;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 0.1rem;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-suggestions::-webkit-scrollbar,
+  .gw-conv-page.is-thread-open .gw-composer__quick-vars::-webkit-scrollbar,
+  .gw-conv-page.is-thread-open .gw-composer__var-suggest::-webkit-scrollbar {
+    display: none;
+  }
+  .gw-conv-page.is-thread-open .gw-conv-suggestions .gw-chip {
+    flex: none;
+    scroll-snap-align: start;
+    padding: 0.38rem 0.8rem;
+    border: 1px solid #e3d6b8;
+    background: #fff;
+    color: var(--ink);
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__quick-vars button,
+  .gw-conv-page.is-thread-open .gw-composer__var-suggest button {
+    flex: none;
+    border-radius: 999px;
+    padding: 0.28rem 0.65rem;
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+
+  /* SMS / Note as a small segmented toggle, Templates on the right. */
+  .gw-conv-page.is-thread-open .gw-composer__channels {
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ch,
+  .gw-conv-page.is-thread-open .gw-composer__tpl-btn {
+    flex: none;
+    border-radius: 999px;
+    padding: 0.32rem 0.75rem;
+    font-size: 0.74rem;
+    white-space: nowrap;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__ch.is-active {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: #fff;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__tpl-btn {
+    margin-left: auto;
+    background: #fff;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__templates {
+    max-height: 12rem;
+    border-radius: 0.9rem;
+    background: #fff;
+  }
+}
+@media (max-width: 900px) {
+  /* No scrollbar sliver in the bar; it still scrolls once a long text passes ~5 lines. */
+  .gw-conv-page.is-thread-open .gw-composer__input {
+    scrollbar-width: none;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__input::-webkit-scrollbar {
+    display: none;
+  }
+  /* Photo button (shown while the tray is open) matches ✨: a quiet round icon inside the bar. */
+  .gw-conv-page.is-thread-open .gw-composer__mms {
+    width: 2.4rem;
+    height: 2.4rem;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #8a6a2a;
+    justify-content: center;
+  }
+  .gw-conv-page.is-thread-open .gw-composer__mms:active {
+    background: #fbf3e2;
+  }
+}
