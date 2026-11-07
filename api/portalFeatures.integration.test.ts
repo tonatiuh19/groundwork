@@ -316,10 +316,8 @@ describe("portal features (integration)", () => {
     planId = Number(plan.id);
     planSqFt = Number(plan.sq_ft);
     planName = String(plan.name);
-    const [rate] = await db.query(
-      `SELECT setting_value FROM system_settings WHERE setting_key = 'commission_direct_cents_per_sqft'`,
-    );
-    directRate = Number((rate as any[])[0]?.setting_value || 1000);
+    // Tests read fixed settings (TEST_SETTING_DEFAULTS in api/index.ts), never the live ones.
+    directRate = 1000;
   });
 
   afterAll(async () => {

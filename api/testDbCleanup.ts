@@ -262,6 +262,8 @@ export async function cleanupPortalFixturesByPrefix(
     }
     // Test legal page versions (notes carry the prefix) and acceptances by fixture people (no FK).
     await step("legal documents", `DELETE FROM legal_documents WHERE LOWER(notes) LIKE ?`, [startsWith]);
+    // Test City Partner agreement versions (notes carry the prefix; agreements keep only the version number).
+    await step("city partner templates", `DELETE FROM city_partner_agreement_templates WHERE LOWER(notes) LIKE ?`, [startsWith]);
     {
       const acc = await select(
         `SELECT id FROM legal_acceptances WHERE (person_kind = 'affiliate' AND person_id IN (?)) OR (person_kind = 'contractor' AND person_id IN (?)) OR (person_kind = 'client' AND person_id IN (?))`,
@@ -276,8 +278,20 @@ export async function cleanupPortalFixturesByPrefix(
     }
     // Test agreement template versions (notes carry the prefix). Agreements cascade with projects.
     await step("agreement templates", `DELETE FROM construction_agreement_templates WHERE LOWER(notes) LIKE ?`, [startsWith]);
-    // STOP replies from fictional +1555 numbers.
-    await step("sms opt-outs", `DELETE FROM sms_opt_outs WHERE phone_last10 LIKE '555%'`, []);
+    // STOP replies from this run's own fictional +1555 numbers only: suites run in parallel, so wiping every
+    // 555 opt-out would erase another suite's STOP mid-test. Leftovers go in purgeTestLeftovers (no run active).
+    {
+      const phones = (
+        await select(
+          `SELECT RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 10) AS id FROM (
+             SELECT phone FROM affiliates WHERE ${byEmail()} UNION ALL SELECT phone FROM contractors WHERE ${byEmail()}
+             UNION ALL SELECT phone FROM clients WHERE id IN (?) UNION ALL SELECT phone FROM leads WHERE id IN (?)
+             UNION ALL SELECT phone FROM contacts WHERE id IN (?)) p WHERE phone LIKE '%555%'`,
+          [...emailLikes, ...emailLikes, inList(clientIds), inList(leadIds), inList(contactIds)],
+        )
+      ).map(String).filter((x) => x.startsWith("555"));
+      if (phones.length) await step("sms opt-outs", `DELETE FROM sms_opt_outs WHERE phone_last10 IN (?)`, [phones]);
+    }
   }
   // projects → clients is ON DELETE RESTRICT.
   await step("projects", `DELETE FROM projects WHERE client_id IN (?)`, [inList(clientIds)]);
@@ -393,6 +407,7 @@ export async function findTestFixturePrefixes(pool: Pool): Promise<Map<string, n
     UNION SELECT label FROM qr_external_links WHERE label REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT name FROM service_cities WHERE name REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT email FROM city_partners WHERE email REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
+    UNION SELECT notes FROM city_partner_agreement_templates WHERE notes REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT title FROM conversation_templates WHERE title REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT label_en FROM deal_statuses WHERE label_en REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
     UNION SELECT client_id FROM mcp_oauth_clients WHERE client_id REGEXP '^gw[a-z0-9]*-[0-9]{13}-'
@@ -436,22 +451,12 @@ export async function sweepTestFixtures(
 }
 
 /**
- * Serialize tests that temporarily change global `system_settings` (shared DB).
- * Without it, one suite can snapshot another suite's temporary values and
- * "restore" them permanently (e.g. commission rates 999/1 leaking to prod).
+ * Kept for older suites: settings changes in tests no longer touch `system_settings` (under Vitest every
+ * write lands in the per-file in-memory test settings, see TEST_SETTING_DEFAULTS in api/index.ts), so there
+ * is nothing shared to serialize and no DB lock is taken.
  */
-export async function withSystemSettingsLock<T>(pool: Pool, fn: () => Promise<T>): Promise<T> {
-  const conn = await pool.getConnection();
-  try {
-    const [rows] = await conn.query(`SELECT GET_LOCK('gw_test_system_settings', 120) AS ok`);
-    if (Number((rows as Array<{ ok: number }>)[0]?.ok) !== 1) {
-      throw new Error("[testDbCleanup] could not acquire system_settings test lock");
-    }
-    return await fn();
-  } finally {
-    await conn.query(`SELECT RELEASE_LOCK('gw_test_system_settings')`).catch(() => undefined);
-    conn.release();
-  }
+export async function withSystemSettingsLock<T>(_pool: Pool, fn: () => Promise<T>): Promise<T> {
+  return fn();
 }
 
 // ─── Signature purge (ops): everything that looks like a test fixture ────────
@@ -535,6 +540,8 @@ export async function purgeTestLeftovers(
     await run(`DELETE FROM conversations WHERE ofg_number_id IN (?) OR unknown_contact_id IN (?)`, [inList(lineIds), inList(unkIds)]);
     await run(`DELETE FROM conversation_unknown_contacts WHERE id IN (?)`, [inList(unkIds)]);
     await run(`DELETE FROM admin_phone_numbers WHERE id IN (?) AND e164 LIKE '+1555%'`, [inList(lineIds)]);
+    // No run is active here (run lock held): every STOP from a fictional +1555 number is a leftover.
+    await run(`DELETE FROM sms_opt_outs WHERE phone_last10 LIKE '555%'`, []);
     if (errors.length) throw new Error(errors.join("\n"));
     return found;
   } finally {

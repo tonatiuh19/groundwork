@@ -547,6 +547,34 @@ if (process.env.VITEST === "true") {
   pool.query = retryConnect(pool.query.bind(pool)) as typeof pool.query;
   pool.execute = retryConnect(pool.execute.bind(pool)) as typeof pool.execute;
   pool.getConnection = retryConnect(pool.getConnection.bind(pool)) as typeof pool.getConnection;
+
+  // GW_QUERY_PROFILE=1: count every pooled statement by its shape and write the totals when the test file
+  // ends (node_modules/.cache/dl-query-profile/<pid>.json). Finds which queries make tests slow.
+  if (process.env.GW_QUERY_PROFILE === "1") {
+    const counts = new Map<string, number>();
+    const ms = new Map<string, number>();
+    const shape = (a: unknown) =>
+      String(typeof a === "string" ? a : (a as { sql?: string })?.sql || "").replace(/\s+/g, " ").trim().slice(0, 140);
+    const count = <F extends (...args: any[]) => Promise<any>>(fn: F): F =>
+      (async (...args: any[]) => {
+        const k = shape(args[0]);
+        counts.set(k, (counts.get(k) || 0) + 1);
+        const t0 = Date.now();
+        try {
+          return await fn(...args);
+        } finally {
+          ms.set(k, (ms.get(k) || 0) + Date.now() - t0);
+        }
+      }) as F;
+    pool.query = count(pool.query.bind(pool)) as typeof pool.query;
+    pool.execute = count(pool.execute.bind(pool)) as typeof pool.execute;
+    // Test workers are stopped without an exit event: save every few seconds instead.
+    const file = path.join(process.cwd(), "node_modules/.cache/dl-query-profile", `${process.pid}-${Date.now()}.json`);
+    setInterval(() => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(Object.fromEntries([...counts].map(([k, n]) => [k, { n, ms: ms.get(k) || 0 }]))));
+    }, 2000).unref();
+  }
 }
 
 // ─── Email (Resend) ──────────────────────────────────────────────────────────
@@ -699,14 +727,15 @@ async function findPersonForAddress(channel: "email" | "sms", to: string): Promi
   if (channel === "email") {
     const e = normalizeEmail(to);
     if (!e) return null;
-    // Staff addresses are never "people".
-    const [[staff]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM admins WHERE LOWER(email) = ? LIMIT 1`, [e])) as unknown as [RowDataPacket[]];
+    // Staff addresses are never "people" (both lookups run at once: one round trip of waiting).
+    const [[[staff]], people] = await Promise.all([
+      pool.query<RowDataPacket[]>(`SELECT id FROM admins WHERE LOWER(email) = ? LIMIT 1`, [e]) as unknown as Promise<[RowDataPacket[]]>,
+      matchPeopleByEmailsWithPhone([e]),
+    ]);
     if (staff) return null;
-    const m = (await matchPeopleByEmails([e])).get(e);
+    const m = people.get(e);
     if (!m) return null;
-    const table = { client: "clients", lead: "leads", affiliate: "affiliates", contractor: "contractors", contact: "contacts" }[m.kind];
-    const [[row]] = (await pool.query<RowDataPacket[]>(`SELECT phone FROM ${table} WHERE id = ?`, [m.id])) as unknown as [RowDataPacket[]];
-    return { kind: m.kind, id: m.id, phone: row?.phone ? String(row.phone) : null };
+    return { kind: m.kind, id: m.id, phone: m.phone };
   }
   const last10 = normalizePhoneLast10(to);
   if (!last10) return null;
@@ -2966,10 +2995,7 @@ function clearPortalCookie(res: Response, actor: PortalActor) {
 
 async function getPortalSessionDays(): Promise<number> {
   try {
-    const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT setting_value FROM system_settings WHERE setting_key = 'portal_session_days' LIMIT 1`,
-    );
-    const n = Number(rows[0]?.setting_value);
+    const n = Number(await readSetting("portal_session_days"));
     return Number.isFinite(n) && n > 0 ? n : 30;
   } catch {
     return 30;
@@ -4177,7 +4203,43 @@ function forgetSetting(key?: string) {
   if (key) settingCache.delete(key);
   else settingCache.clear();
 }
+/**
+ * Tests never read or change the live Settings: under Vitest, money / pricing / session settings come from
+ * these fixed values (the production defaults), and every settings write lands in this per-test-file map
+ * instead of `system_settings`. Staff changing a price or rate can't break a deploy's tests, and a test
+ * can't leave production on a test rate if it crashes mid-way.
+ */
+const TEST_SETTING_DEFAULTS: Record<string, string> = {
+  commission_payout_days_after_loan_close: "5",
+  commission_cents_per_sqft: "1000",
+  commission_direct_cents_per_sqft: "1000",
+  commission_closer_cents_per_sqft: "700",
+  commission_parent_cents_per_sqft: "300",
+  commission_parent_shared_cents_per_sqft: "150",
+  commission_grandparent_cents_per_sqft: "150",
+  affiliate_default_price_cents: "1999",
+  affiliate_trial_days: "90",
+  contractor_default_price_cents: "9990",
+  contractor_trial_days: "30",
+  portal_session_days: "30",
+};
+const testSettings: Map<string, string | null> | null =
+  process.env.VITEST === "true" ? new Map(Object.entries(TEST_SETTING_DEFAULTS)) : null;
+
+/** Save one setting (tests: the in-memory test settings only). Always use this, never raw SQL. */
+async function writeSetting(key: string, value: string, db: Pool | PoolConnection = pool): Promise<void> {
+  if (testSettings) testSettings.set(key, value);
+  else
+    await db.execute(
+      `INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+      [key, value],
+    );
+  forgetSetting(key);
+}
+
 async function readSetting(key: string, db: Pool | PoolConnection = pool): Promise<string | null> {
+  if (testSettings?.has(key)) return testSettings.get(key) ?? null;
   const hit = settingCache.get(key);
   if (hit && Date.now() - hit.at < SETTING_TTL_MS) return hit.value;
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1`, [key]);
@@ -6841,16 +6903,8 @@ function cpqOutstandingDocs(
 }
 
 async function cpqTemplates(): Promise<ContractorApplicationTemplates> {
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT setting_key, setting_value FROM system_settings WHERE setting_key IN (?, ?)`,
-    [
-      CPQ_TEMPLATE_KEYS.master_contractor_agreement,
-      CPQ_TEMPLATE_KEYS.background_check_authorization,
-    ],
-  );
-  const byKey = new Map(
-    rows.map((r) => [String(r.setting_key), r.setting_value]),
-  );
+  const keys = [CPQ_TEMPLATE_KEYS.master_contractor_agreement, CPQ_TEMPLATE_KEYS.background_check_authorization];
+  const byKey = new Map<string, string | null>(await Promise.all(keys.map(async (k) => [k, await readSetting(k)] as [string, string | null])));
   const pick = (k: string) => {
     const v = String(byKey.get(k) ?? "").trim();
     return /^https:\/\//i.test(v) ? v : null;
@@ -6980,24 +7034,22 @@ async function affiliateOnboardingState(
   affiliateId: number,
   db: Pool | PoolConnection = pool,
 ): Promise<AffiliateOnboardingState> {
-  const [[a]] = (await db.execute<RowDataPacket[]>(
-    `SELECT status, subscription_price_cents, billing_status, billing_payment_method_id FROM affiliates WHERE id = ? LIMIT 1`,
+  // One round trip (this runs on most affiliate requests): the person, their latest signed agreement,
+  // latest W-9 and the live agreement version.
+  const [[row]] = (await db.execute<RowDataPacket[]>(
+    `SELECT a.status, a.subscription_price_cents, a.billing_status, a.billing_payment_method_id,
+            (SELECT ag.template_version FROM affiliate_agreements ag WHERE ag.affiliate_id = a.id AND ag.status = 'signed' ORDER BY ag.id DESC LIMIT 1) AS ag_version,
+            (SELECT ag.signed_at FROM affiliate_agreements ag WHERE ag.affiliate_id = a.id AND ag.status = 'signed' ORDER BY ag.id DESC LIMIT 1) AS ag_signed_at,
+            (SELECT w.status FROM affiliate_w9s w WHERE w.affiliate_id = a.id ORDER BY w.id DESC LIMIT 1) AS w9_status,
+            (SELECT MAX(t.version) FROM affiliate_agreement_templates t WHERE t.published_at IS NOT NULL) AS cur_version
+       FROM affiliates a WHERE a.id = ? LIMIT 1`,
     [affiliateId],
   )) as unknown as [RowDataPacket[]];
-  const [[ag]] = (await db.execute<RowDataPacket[]>(
-    `SELECT template_version, signed_at FROM affiliate_agreements
-     WHERE affiliate_id = ? AND status = 'signed' ORDER BY id DESC LIMIT 1`,
-    [affiliateId],
-  )) as unknown as [RowDataPacket[]];
-  const [[w9]] = (await db.execute<RowDataPacket[]>(
-    `SELECT status FROM affiliate_w9s WHERE affiliate_id = ? ORDER BY id DESC LIMIT 1`,
-    [affiliateId],
-  )) as unknown as [RowDataPacket[]];
+  const a = row;
+  const ag = row?.ag_signed_at != null ? { template_version: row.ag_version, signed_at: row.ag_signed_at } : undefined;
   const w9Status =
-    (w9?.status as AffiliateOnboardingState["w9_status"]) || "missing";
-  const [[cur]] = (await db.execute<RowDataPacket[]>(
-    `SELECT MAX(version) v FROM affiliate_agreement_templates WHERE published_at IS NOT NULL`,
-  )) as unknown as [RowDataPacket[]];
+    (row?.w9_status as AffiliateOnboardingState["w9_status"]) || "missing";
+  const cur = { v: row?.cur_version ?? null };
   const currentVersion = cur?.v != null ? Number(cur.v) : null;
   return {
     subscription_price_cents:
@@ -18530,14 +18582,7 @@ function registerAdminRoutes(app: Express) {
         updates.commission_direct_cents_per_sqft =
           updates.commission_cents_per_sqft;
       }
-      for (const [key, value] of Object.entries(updates)) {
-        await pool.execute(
-          `INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-          [key, String(value)],
-        );
-        forgetSetting(key);
-      }
+      for (const [key, value] of Object.entries(updates)) await writeSetting(key, String(value));
       res.json({ ok: true });
     }),
   );
@@ -23303,13 +23348,7 @@ async function getSystemSettingValue(key: string): Promise<string | null> {
 }
 
 async function upsertSystemSetting(key: string, value: string): Promise<void> {
-  await pool.query(
-    `INSERT INTO system_settings (setting_key, setting_value)
-     VALUES (?, ?)
-     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-    [key, value],
-  );
-  forgetSetting(key);
+  await writeSetting(key, value);
 }
 
 let cachedTwimlAppSid: string | null =
@@ -33385,27 +33424,36 @@ type MatchedPerson = {
   email: string;
 };
 
-/** CRM people by email: clients first, then affiliates, contractors, contacts, leads. */
+/** CRM people by email: clients first, then affiliates, contractors, contacts, leads (newest lead wins). */
 async function matchPeopleByEmails(
   emails: string[],
 ): Promise<Map<string, MatchedPerson>> {
+  return new Map([...(await matchPeopleByEmailsWithPhone(emails))].map(([e, p]) => [e, { kind: p.kind, id: p.id, name: p.name, email: p.email }]));
+}
+
+/** Same match plus each person's phone, in one round trip (every email the system sends looks this up). */
+async function matchPeopleByEmailsWithPhone(
+  emails: string[],
+): Promise<Map<string, MatchedPerson & { phone: string | null }>> {
   const keys = [...new Set(emails.map(normalizeEmail).filter(Boolean))];
-  const out = new Map<string, MatchedPerson>();
+  const out = new Map<string, MatchedPerson & { phone: string | null }>();
   if (!keys.length) return out;
-  const sources: Array<[MatchedPerson["kind"], string]> = [
-    ["client", `SELECT id, CONCAT_WS(' ', first_name, last_name) AS name, LOWER(email) AS email FROM clients WHERE LOWER(email) IN (?)`],
-    ["affiliate", `SELECT id, CONCAT_WS(' ', first_name, last_name) AS name, LOWER(email) AS email FROM affiliates WHERE LOWER(email) IN (?)`],
-    ["contractor", `SELECT id, CONCAT_WS(' ', first_name, last_name) AS name, LOWER(email) AS email FROM contractors WHERE LOWER(email) IN (?)`],
-    ["contact", `SELECT id, CONCAT_WS(' ', first_name, last_name) AS name, LOWER(email) AS email FROM contacts WHERE deleted_at IS NULL AND LOWER(email) IN (?)`],
-    ["lead", `SELECT id, full_name AS name, LOWER(email) AS email FROM leads WHERE LOWER(email) IN (?) ORDER BY id DESC`],
-  ];
-  for (const [kind, sql] of sources) {
-    const [rows] = await pool.query<RowDataPacket[]>(sql, [keys]);
-    for (const r of rows) {
-      const e = String(r.email);
-      if (!out.has(e))
-        out.set(e, { kind, id: Number(r.id), name: String(r.name || "").trim(), email: e });
-    }
+  const person = (kind: MatchedPerson["kind"], rank: number, table: string, name: string, extra = "") =>
+    `SELECT '${kind}' AS kind, ${rank} AS rnk, id, ${name} AS name, LOWER(email) AS email, phone FROM ${table} WHERE ${extra}email IN (?)`; // case-insensitive collation: same match as LOWER(), but uses the index
+  const full = "CONCAT_WS(' ', first_name, last_name)";
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `${person("client", 1, "clients", full)}
+     UNION ALL ${person("affiliate", 2, "affiliates", full)}
+     UNION ALL ${person("contractor", 3, "contractors", full)}
+     UNION ALL ${person("contact", 4, "contacts", full, "deleted_at IS NULL AND ")}
+     UNION ALL ${person("lead", 5, "leads", "full_name")}
+     ORDER BY rnk, CASE WHEN rnk = 5 THEN -id ELSE id END`,
+    [keys, keys, keys, keys, keys],
+  );
+  for (const r of rows) {
+    const e = String(r.email);
+    if (!out.has(e))
+      out.set(e, { kind: r.kind as MatchedPerson["kind"], id: Number(r.id), name: String(r.name || "").trim(), email: e, phone: r.phone ? String(r.phone) : null });
   }
   return out;
 }
@@ -34231,13 +34279,16 @@ async function syncMailbox(mailboxId: number, opts: { mail?: boolean; calendar?:
       if (!mb || mb.status === "paused") return { skipped: true as const };
       const result: Record<string, unknown> = {};
       const errors: string[] = [];
+      // One write at the end (sync times + error state): each round trip to TiDB costs ~150 ms.
+      let mailOk = false;
+      let calendarOk = false;
       if (opts.mail !== false && Number(mb.mail_sync_enabled)) {
         try {
           result.inbox = await syncMailFolder(mb, "inbox");
           result.sent = await syncMailFolder(mb, "sent");
           await syncCustomMailFolders(mb);
           result.repaired = await repairBlankMailMessages(mb);
-          await pool.execute(`UPDATE mailboxes SET last_mail_sync_at = NOW() WHERE id = ?`, [mb.id]);
+          mailOk = true;
         } catch (e: any) {
           errors.push(`Mail: ${String(e?.message || e)}`);
         }
@@ -34245,18 +34296,19 @@ async function syncMailbox(mailboxId: number, opts: { mail?: boolean; calendar?:
       if (opts.calendar !== false && Number(mb.calendar_sync_enabled)) {
         try {
           result.calendar = await syncMailboxCalendar(mb);
-          await pool.execute(`UPDATE mailboxes SET last_calendar_sync_at = NOW() WHERE id = ?`, [mb.id]);
+          calendarOk = true;
         } catch (e: any) {
           errors.push(`Calendar: ${String(e?.message || e)}`);
         }
       }
+      const synced = `last_mail_sync_at = IF(?, NOW(), last_mail_sync_at), last_calendar_sync_at = IF(?, NOW(), last_calendar_sync_at)`;
       if (errors.length) {
         await pool.execute(
-          `UPDATE mailboxes SET last_error = ?, error_count = error_count + 1, status = IF(error_count >= 4, 'error', status) WHERE id = ?`,
-          [errors.join(" · ").slice(0, 1000), mb.id],
+          `UPDATE mailboxes SET ${synced}, last_error = ?, error_count = error_count + 1, status = IF(error_count >= 4, 'error', status) WHERE id = ?`,
+          [mailOk ? 1 : 0, calendarOk ? 1 : 0, errors.join(" · ").slice(0, 1000), mb.id],
         );
       } else {
-        await pool.execute(`UPDATE mailboxes SET last_error = NULL, error_count = 0, status = 'active' WHERE id = ?`, [mb.id]);
+        await pool.execute(`UPDATE mailboxes SET ${synced}, last_error = NULL, error_count = 0, status = 'active' WHERE id = ?`, [mailOk ? 1 : 0, calendarOk ? 1 : 0, mb.id]);
       }
       return { ...result, errors };
     } finally {
@@ -38389,6 +38441,17 @@ const legalScopeSql = (alias = "") => {
   return /^gw[a-z0-9]+-[0-9]+-$/.test(prefix) ? `(COALESCE(${alias}notes, '') LIKE '${prefix}%')` : "1 = 0";
 };
 
+/**
+ * Test City Partner agreement versions (notes start with a gw<suite>-<ts>- prefix) live in the shared DB:
+ * partners never see them, and under Vitest only the suite that set GW_CP_TEST_PREFIX sees its own, so
+ * staff approving a real version can never change what a test signs (and tests never touch real ones).
+ */
+export const cpTemplateScopeSql = (alias = "") => {
+  if (process.env.VITEST !== "true") return `NOT (COALESCE(${alias}notes, '') REGEXP '^gw[a-z0-9]+-[0-9]+-')`;
+  const prefix = String(process.env.GW_CP_TEST_PREFIX || "");
+  return /^gw[a-z0-9]+-[0-9]+-$/.test(prefix) ? `(COALESCE(${alias}notes, '') LIKE '${prefix}%')` : "1 = 0";
+};
+
 /** Today's date in California (YYYY-MM-DD): a version is live once its effective date has arrived. */
 function legalToday(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
@@ -41456,7 +41519,7 @@ function buildApp(): Express {
     message: { error: "errors.tooMany" },
   });
   const cpTemplate = async () => {
-    const [[t]] = (await pool.query<RowDataPacket[]>(`SELECT version, body FROM city_partner_agreement_templates WHERE approved_at IS NOT NULL ORDER BY version DESC LIMIT 1`)) as unknown as [RowDataPacket[]];
+    const [[t]] = (await pool.query<RowDataPacket[]>(`SELECT version, body FROM city_partner_agreement_templates WHERE approved_at IS NOT NULL AND ${cpTemplateScopeSql()} ORDER BY version DESC LIMIT 1`)) as unknown as [RowDataPacket[]];
     return t || null;
   };
   /** v2+ fields: today's date (Pacific), their opened / still-pending cities, and the address they type when signing. */

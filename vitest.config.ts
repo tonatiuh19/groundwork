@@ -28,7 +28,8 @@ export default defineConfig({
           // Integration tests make many API calls to a remote DB: several take 35-40s even alone.
           testTimeout: 120_000,
           hookTimeout: 90_000,
-          maxWorkers: 2,
+          // Tests wait on network round trips to TiDB, not CPU: 4 files at once (measured: 15 slowest files 16 → 10.5 min).
+          maxWorkers: 4,
           sequence: { groupOrder: 0 },
         },
       },

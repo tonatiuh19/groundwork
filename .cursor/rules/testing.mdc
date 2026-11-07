@@ -45,6 +45,14 @@ Already in place, use them; new integrations MUST add the same kind of seam:
 - Still mandatory: run prefix `gw<suite>-${Date.now()}-`, `@example.com` / `@example.test`, fictional `+1555…` phones,
   `cleanupPortalFixturesByPrefix(prefix)` in `afterAll` (see AGENTS.md "Tests & local QA").
 
+## 3b. Never depend on live data
+
+- Settings: tests get fixed values (`TEST_SETTING_DEFAULTS` in `api/index.ts`) and their writes stay in memory.
+  Never `SELECT`/`UPDATE system_settings` in a test; assert through the API.
+- Staff-approved documents (legal, construction agreement, City Partner agreement): insert your own version with
+  the run prefix in `notes` and set the suite's scope env (`GW_LEGAL_TEST_PREFIX`, `GW_CP_TEST_PREFIX`).
+- If a test breaks because staff changed something in the admin, the test (or the code's test scope) is wrong.
+
 ## 4. Production code that makes tests (and the app) slow
 
 - Never read `system_settings` directly: use `readSetting` / `getSettingInt` / `getSystemSettingValue` (cached 30s);
@@ -53,8 +61,17 @@ Already in place, use them; new integrations MUST add the same kind of seam:
 - Hot endpoints (project / affiliate PATCH, affiliate client registration) are already 30–60 queries: measure before
   adding more.
 
+- Every round trip from a laptop to TiDB costs ~150 ms: the count of statements per request is what makes a
+  test slow. Fold lookups that always run together into one query (subqueries / `UNION ALL`), write once at
+  the end instead of per step, and run independent reads with `Promise.all` (not on a transaction connection).
+- Find them: `GW_QUERY_PROFILE=1 npx vitest run api/<file>` writes per-statement counts and time to
+  `node_modules/.cache/dl-query-profile/*.json`.
+
 ## 5. Running
 
 - While developing: typecheck + only the affected test files (`npx vitest run api/<file>`). The deploy runs everything.
+- 4 test files run at once (`maxWorkers: 4`): suites must stay independent (own prefix, own fixtures, no
+  shared settings or rows). A file over ~2 minutes holds the run back: split it by feature (as `mailFolders`
+  was split from `mailSync`).
 - Never run tests on the shared DB while a deploy is running its test step (one run at a time; a second one waits on
   the DB lock and can break the deploy run if the lock connection drops).

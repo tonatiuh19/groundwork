@@ -50,6 +50,19 @@ describe.runIf(hasDb)("City Partners (integration)", () => {
 
   beforeAll(async () => {
     process.env.VITEST = "true";
+    // This suite signs its own approved agreement version: staff approving a real version never changes it.
+    process.env.GW_CP_TEST_PREFIX = prefix;
+    const body = [
+      "Groundwork City Access test agreement between Ground Work Capital LLC and {{partner_legal_name}} (the Contractor), effective {{effective_date}}.",
+      "Compensation. The Company will pay the Contractor {{fee_per_sqft}} per square foot of each ADU the Company builds in any Opened City. {{opened_cities_clause}}",
+      "If a homeowner cancels after funding, the Company charges the homeowner a cancellation fee of 10% of the total project amount.",
+      "Notices to the Contractor go to:\n\n{{contractor_address}}",
+    ].join("\n\n");
+    await db.execute(`INSERT INTO city_partner_agreement_templates (version, body, approved_at, notes) VALUES (?, ?, NOW(), ?)`, [
+      900_000 + Math.floor(Math.random() * 90_000_000),
+      body,
+      `${prefix}test agreement`,
+    ]);
     admin = await session("admin_sessions", "admin_id", await ins(`INSERT INTO admins (email, first_name, last_name, role, status) VALUES (?, 'Cp', 'Admin', 'super_admin', 'active')`, [em("admin")]), "gw_admin_sid");
     agent = await session("admin_sessions", "admin_id", await ins(`INSERT INTO admins (email, first_name, last_name, role, status) VALUES (?, 'Cp', 'Agent', 'agent', 'active')`, [em("agent")]), "gw_admin_sid");
     plainAdmin = await session("admin_sessions", "admin_id", await ins(`INSERT INTO admins (email, first_name, last_name, role, status) VALUES (?, 'Cp', 'Plain', 'admin', 'active')`, [em("plain")]), "gw_admin_sid");
@@ -62,6 +75,7 @@ describe.runIf(hasDb)("City Partners (integration)", () => {
     projectId = await ins(`INSERT INTO projects (public_id, client_id, sq_ft, property_address) VALUES (?, ?, 830, '8421 Sierra Ave, Fontana')`, [publicId, client]);
   });
   afterAll(async () => {
+    delete process.env.GW_CP_TEST_PREFIX;
     await db.execute(`DELETE FROM projects WHERE id = ?`, [projectId]);
     await cleanupPortalFixturesByPrefix(db, prefix);
     await db.end();
@@ -118,9 +132,11 @@ describe.runIf(hasDb)("City Partners (integration)", () => {
     await request(app).patch(`/api/admin/city-partners/${partnerId}`).set("Cookie", admin).send({ fee_cents_per_sqft: 200 }).expect(200);
     const back = (await request(app).get("/api/city/onboarding").set("Cookie", partner)).body.template.sha256;
     expect(back).toBe(read);
-    const s = await request(app).post("/api/city/onboarding/agreement").set("Cookie", partner).send({ signer_name: "Peter Lee", consent: true, text_sha256: back }).expect(201);
+    // v2+ asks for the business address on the signing screen (ignored on v1).
+    const addr = { address_line: "1 Test Way", address_city: "Fontana", address_zip: "92335" };
+    const s = await request(app).post("/api/city/onboarding/agreement").set("Cookie", partner).send({ signer_name: "Peter Lee", consent: true, text_sha256: back, ...addr }).expect(201);
     expect(s.body.agreement.fee_cents_per_sqft).toBe(200);
-    expect((await request(app).post("/api/city/onboarding/agreement").set("Cookie", partner).send({ signer_name: "Peter Lee", consent: true, text_sha256: back })).status).toBe(409);
+    expect((await request(app).post("/api/city/onboarding/agreement").set("Cookie", partner).send({ signer_name: "Peter Lee", consent: true, text_sha256: back, ...addr })).status).toBe(409);
     // Signed: rate and LLC name are frozen; contact details still editable; history records it all.
     expect((await request(app).patch(`/api/admin/city-partners/${partnerId}`).set("Cookie", admin).send({ fee_cents_per_sqft: 300 })).body.error).toBe("errors.cityRateLocked");
     expect((await request(app).patch(`/api/admin/city-partners/${partnerId}`).set("Cookie", admin).send({ company: "Other LLC" })).body.error).toBe("errors.cityCompanyLocked");
@@ -181,6 +197,12 @@ describe.runIf(hasDb)("City Partners (integration)", () => {
     await request(app).patch(`/api/admin/city-partner-fees/${f.body.fees[0].id}`).set("Cookie", finance).send({ status: "paid" }).expect(200);
     expect(__testGetEmailDryRuns().some((m: any) => /1660\.00/.test(String(m.subject)))).toBe(true);
     expect((await request(app).get("/api/admin/city-partner-fees").set("Cookie", finance).expect(200)).body.items.some((x: any) => x.city_partner_id === partnerId)).toBe(true);
+    // Partners on v2+ keep paid fees when a project is cancelled; only v1 fees become refund_due.
+    // This suite's own test version has a high version number (v2+ rules), so mark the signed agreement as v1
+    // to cover the refund rule (the later grid / feed tests read the refund_due fee).
+    const [[signed]] = (await db.query(`SELECT template_version FROM city_partner_agreements WHERE city_partner_id = ?`, [partnerId])) as any;
+    expect(Number(signed.template_version)).toBeGreaterThanOrEqual(1);
+    await db.execute(`UPDATE city_partner_agreements SET template_version = 1 WHERE city_partner_id = ?`, [partnerId]);
     await request(app).patch(`/api/admin/projects/${publicId}`).set("Cookie", admin).send({ milestone: "cancelled" });
     const [[row]] = (await db.query(`SELECT status FROM city_partner_fees WHERE project_id = ?`, [projectId])) as any;
     expect(row.status).toBe("refund_due");

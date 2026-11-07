@@ -724,24 +724,13 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
     // same-milestone patch is a no-op (no event)
     expect((await patch({ milestone: "lead", notes: "hello" })).status).toBe(200);
 
-    expect((await patch({ milestone: "financing" })).status).toBe(200);
-    expect(
-      (await patch({ milestone: "contracted", contractor_id: ctrId, contractor_cost_cents: 5_000_000 })).status,
-    ).toBe(200);
-    expect((await patch({ milestone: "in_build" })).status).toBe(200);
-    expect((await patch({ milestone: "closed" })).status).toBe(200);
-
-    // the audited hole: closed → lead
-    const reopen = await patch({ milestone: "lead" });
-    expect(reopen.status).toBe(409);
-    expect(reopen.body.error).toBe("errors.invalidTransition");
-
-    // Back to lead (via cancelled): later tests expect the project where it started.
-    expect((await patch({ milestone: "in_build" })).status).toBe(200);
-    expect((await patch({ milestone: "cancelled" })).status).toBe(200);
+    // Wiring only: the full 6x6 transition matrix (closed → lead refused, cancelled → lead allowed, …) is
+    // unit tested in portalHelpers.test.ts. Here: one legal move with its own fields, then back to lead.
+    expect((await patch({ milestone: "financing", contractor_id: ctrId, contractor_cost_cents: 5_000_000 })).status).toBe(200);
     const back = await patch({ milestone: "lead" });
     expect(back.status).toBe(200);
-    expect(back.body.events.map((e: any) => e.to_milestone)).toEqual(["lead", "financing", "contracted", "in_build", "closed", "in_build", "cancelled", "lead"]);
+    expect(back.body.project.contractor_id).toBe(ctrId);
+    expect(back.body.events.map((e: any) => e.to_milestone)).toEqual(["lead", "financing", "lead"]);
   }, 120_000);
 
   it("concurrent milestone moves from the same state: exactly one wins", async () => {
@@ -1419,6 +1408,9 @@ describe.runIf(hasDb)("portal routes + audit hardening (integration)", () => {
             commission_cents_per_sqft: 1234,
           });
         expect(put.status).toBe(200);
+        // Tests change only their own in-memory settings: the live table never sees the test rate.
+        const [[live]] = (await db.query(`SELECT setting_value FROM system_settings WHERE setting_key = 'commission_cents_per_sqft'`)) as any;
+        expect(String(live?.setting_value ?? "")).not.toBe("1234");
         expect(
           (await as(superCookie).get("/api/admin/settings")).body.settings,
         ).toEqual({

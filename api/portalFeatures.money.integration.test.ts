@@ -147,10 +147,8 @@ describe("portal features: projects, commissions, draws (integration)", () => {
     planId = Number(plan.id);
     planSqFt = Number(plan.sq_ft);
     planName = String(plan.name);
-    const [rate] = await db.query(
-      `SELECT setting_value FROM system_settings WHERE setting_key = 'commission_direct_cents_per_sqft'`,
-    );
-    directRate = Number((rate as any[])[0]?.setting_value || 1000);
+    // Tests read fixed settings (TEST_SETTING_DEFAULTS in api/index.ts), never the live ones.
+    directRate = 1000;
   });
 
   afterAll(async () => {
@@ -469,12 +467,7 @@ describe("portal features: projects, commissions, draws (integration)", () => {
     expect(fin.status).toBe(200);
     expect(fin.body.commission.status).toBe("pending");
     expect(fin.body.commission.amount_cents).toBe(planCommission());
-    const days = await (async () => {
-      const [rows] = await db.query(
-        `SELECT setting_value FROM system_settings WHERE setting_key = 'commission_payout_days_after_loan_close'`,
-      );
-      return Number((rows as any[])[0].setting_value);
-    })();
+    const days = 5; // TEST_SETTING_DEFAULTS.commission_payout_days_after_loan_close
     expect(String(fin.body.commission.expected_pay_at).slice(0, 10)).toBe(
       addDaysIso(new Date(), days),
     );
