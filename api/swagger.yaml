@@ -1763,6 +1763,14 @@ paths:
         "200": { description: "{ ok, user } with avatar_url" }
         "400": { description: "validation.photoFile" }
         "503": { description: "errors.storageNotConfigured" }
+  /api/affiliate/events:
+    get:
+      summary: "My events: events this affiliate hosts or got RSVPs for, with only the RSVPs credited to them"
+      tags: [portal-affiliate]
+      description: "Non-draft events where marketing_events.host_affiliate_id = me or a lead on the event has affiliate_id = me (newest first, max 100). Each event: id, slug, status, title_en, title_es, starts_at, city, venue_name, is_host, rsvps[] { id, full_name, email, phone, registration_status confirmed|waitlisted, became_client, created_at }. Other affiliates' RSVPs are never included. 401 without an affiliate session."
+      responses:
+        "200": { description: "{ ok, events[] }" }
+        "401": { description: "errors.unauthorized" }
   /api/affiliate/clients:
     get:
       summary: "Clients registered by or attributed to this affiliate (milestone only; no loan or money fields)"
@@ -2232,6 +2240,7 @@ paths:
                 cta_en: { type: string, nullable: true }
                 cta_es: { type: string, nullable: true }
                 rsvp_flow_id: { type: integer, nullable: true, description: "Automation (trigger event_rsvp) started for each RSVP while it is on; null = no automatic messages. Other triggers → 400 validation.invalidField." }
+                host_affiliate_id: { type: integer, nullable: true, description: "Host affiliate (must be active, else 400 validation.invalidField). RSVPs without another affiliate's referral link are credited to them and emailed to them. Responses add host_affiliate_name." }
       responses:
         "201": { description: "Created { ok, id, event }" }
         "400": { description: validation.invalidField }
@@ -2299,6 +2308,7 @@ paths:
                 cta_en: { type: string, nullable: true }
                 cta_es: { type: string, nullable: true }
                 rsvp_flow_id: { type: integer, nullable: true, description: "Automation (trigger event_rsvp) started for each RSVP while it is on; null = no automatic messages. Other triggers → 400 validation.invalidField." }
+                host_affiliate_id: { type: integer, nullable: true, description: "Host affiliate (must be active, else 400 validation.invalidField). RSVPs without another affiliate's referral link are credited to them and emailed to them. Responses add host_affiliate_name." }
       responses:
         "200": { description: "OK { event }" }
         "400": { description: validation.invalidField }
@@ -4485,7 +4495,7 @@ paths:
     post:
       summary: "Schedule an appointment"
       tags: [portal-admin]
-      description: "Requires `projects.write`. Body { kind, date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
+      description: "Requires `projects.write`. Body { kind (property_inspection|site_visit|lender_meeting|consultation|call|city_meeting|presentation|other), date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
       responses:
         "201": { description: "{ ok, appointment, conflicts[] }" }
         "400": { description: "validation.appointmentTime | validation.attendeeContact | validation.invalidReference" }

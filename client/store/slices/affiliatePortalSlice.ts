@@ -2,6 +2,7 @@ import { createSlice } from "@reduxjs/toolkit";
 import type {
   AffiliateClientRow,
   AffiliateCommissionRow,
+  AffiliateEventRow,
   AffiliateOverview,
   AffiliateTeamMember,
   PublicAduPlan,
@@ -13,6 +14,7 @@ import { createApiThunk } from "@/lib/portalThunk";
 type State = {
   overview: AffiliateOverview | null;
   clients: AffiliateClientRow[];
+  events: AffiliateEventRow[];
   commissions: AffiliateCommissionRow[];
   plans: PublicAduPlan[];
   team: AffiliateTeamMember[];
@@ -32,6 +34,7 @@ type State = {
 const initialState: State = {
   overview: null,
   clients: [],
+  events: [],
   commissions: [],
   plans: [],
   team: [],
@@ -55,6 +58,9 @@ export const fetchAffiliateOverview = createApiThunk("affiliatePortal/overview",
 );
 export const fetchAffiliateClients = createApiThunk("affiliatePortal/clients", A, async () =>
   (await api.get<{ clients: AffiliateClientRow[] }>("/affiliate/clients")).data.clients,
+);
+export const fetchAffiliateEvents = createApiThunk("affiliatePortal/events", A, async () =>
+  (await api.get<{ events: AffiliateEventRow[] }>("/affiliate/events")).data.events,
 );
 export const fetchAffiliateCommissions = createApiThunk(
   "affiliatePortal/commissions",
@@ -154,6 +160,12 @@ const slice = createSlice({
         s.clients = a.payload;
       })
       .addCase(fetchAffiliateClients.rejected, rejected)
+      .addCase(fetchAffiliateEvents.pending, pending)
+      .addCase(fetchAffiliateEvents.fulfilled, (s, a) => {
+        s.loading = false;
+        s.events = a.payload;
+      })
+      .addCase(fetchAffiliateEvents.rejected, rejected)
       .addCase(fetchAffiliateCommissions.pending, pending)
       .addCase(fetchAffiliateCommissions.fulfilled, (s, a) => {
         s.loading = false;

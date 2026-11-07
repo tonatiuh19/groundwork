@@ -815,7 +815,8 @@
     "sectionProjects": "Projects & money",
     "sectionSetup": "Setup",
     "qrCodes": "QR codes",
-    "scorecards": "Scorecards"
+    "scorecards": "Scorecards",
+    "myEvents": "My events"
   },
   "adminNav": {
     "conversationsNumberRequired": "Ask a super admin to assign you a Groundwork phone number in Staff to unlock Conversations"
@@ -1460,7 +1461,11 @@
     "eventRsvpFlow": "Automation after RSVP",
     "eventRsvpFlowNone": "None (staff follow up by hand)",
     "eventRsvpFlowOff": "{{name}} (off)",
-    "eventRsvpFlowHelp": "Pick the automation that messages people who RSVP to this event. Nothing is sent while it is off; turn it on and edit its text in Automations."
+    "eventRsvpFlowHelp": "Pick the automation that messages people who RSVP to this event. Nothing is sent while it is off; turn it on and edit its text in Automations.",
+    "eventSectionHost": "Host affiliate",
+    "eventHostAffiliate": "Affiliate hosting this event",
+    "eventHostHelp": "Everyone who registers without another affiliate's link counts as this affiliate's referral. They see the list under My events and get an email for each registration.",
+    "eventHostNone": "No host"
   },
   "aff": {
     "clicks": "Link clicks",
@@ -1523,7 +1528,16 @@
       "direct": "Direct",
       "closer": "Closer",
       "parent": "Parent"
-    }
+    },
+    "eventsLead": "Events you host and the people who registered through you. Reach out to them before and after the event.",
+    "noEvents": "No events yet. When Groundwork sets you as an event host, or someone registers through your link, it shows here.",
+    "eventGuest": "Name",
+    "eventContact": "Contact",
+    "eventRegisteredOn": "Registered",
+    "eventBecameClient": "Client",
+    "eventYouHost": "You host",
+    "eventNoRsvps": "No registrations yet.",
+    "eventStats": "{{count}} registered through you · {{confirmed}} confirmed · {{clients}} became clients"
   },
   "enroll": {
     "metaTitle": "Start your ADU project",
@@ -3118,6 +3132,7 @@
       "consultation": "Consultation",
       "call": "Call",
       "city_meeting": "City meeting",
+      "presentation": "Presentation",
       "other": "Other"
     },
     "loc": {

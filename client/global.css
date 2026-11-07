@@ -11263,6 +11263,10 @@ button.gw-appt-item:hover {
 .gw-cal-event.is-call {
   --kind: #5c6470;
 }
+.gw-appt-item__dot.is-presentation,
+.gw-cal-event.is-presentation {
+  --kind: #7a4fa0;
+}
 .gw-appt-item__dot.is-other,
 .gw-cal-event.is-other {
   --kind: #8a8f9a;
@@ -20253,4 +20257,62 @@ button.sc-metric:hover {
 .gw-city-address legend {
   font-weight: 700;
   margin-bottom: 0.25rem;
+}
+
+/* Affiliate → My events: one card per event, RSVPs credited to the affiliate */
+.gw-aff-ev__list {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+.gw-aff-ev {
+  min-width: 0;
+}
+.gw-aff-ev__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.gw-aff-ev__title {
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+.gw-aff-ev__title .pf-h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.gw-aff-ev__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.35rem 0 0;
+}
+.gw-aff-ev__meta span,
+.gw-aff-ev__host {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.gw-aff-ev__stats {
+  margin: 0.75rem 0;
+  font-weight: 600;
+}
+.gw-aff-ev__guest {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.gw-aff-ev__contact {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.gw-aff-ev__contact a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  overflow-wrap: anywhere;
 }

@@ -38,6 +38,7 @@ import {
   useBusyAction,
 } from "@/components/portal/kit";
 import { downloadCsv, toCsv } from "@/lib/csv";
+import AffiliatePickerField from "@/components/admin/AffiliatePickerField";
 import { EVENT_STATUSES, REGISTRATION_STATUSES, isEventPast } from "@/lib/eventOptions";
 import EventMediaManager from "@/components/admin/EventMediaManager";
 import EventQrPanel from "@/components/admin/EventQrPanel";
@@ -87,6 +88,7 @@ const toValues = (e: MarketingEvent) => ({
   body_en: e.body_en || "",
   body_es: e.body_es || "",
   rsvp_flow_id: e.rsvp_flow_id == null ? "" : String(e.rsvp_flow_id),
+  host_affiliate_id: e.host_affiliate_id == null ? "" : String(e.host_affiliate_id),
 });
 
 export default function AdminEventDetail() {
@@ -365,6 +367,7 @@ export default function AdminEventDetail() {
                       body_en: textOrNull(v.body_en),
                       body_es: textOrNull(v.body_es),
                       rsvp_flow_id: v.rsvp_flow_id ? Number(v.rsvp_flow_id) : null,
+                      host_affiliate_id: v.host_affiliate_id ? Number(v.host_affiliate_id) : null,
                     },
                   }),
                 );
@@ -437,6 +440,16 @@ export default function AdminEventDetail() {
                   />
                 </div>
                 <p className="pf-muted">{t("admin.eventRsvpFlowHelp")}</p>
+
+                <h3 className="pf-h3">{t("admin.eventSectionHost")}</h3>
+                <AffiliatePickerField
+                  name="host_affiliate_id"
+                  label={t("admin.eventHostAffiliate")}
+                  initialLabel={ev.host_affiliate_name}
+                  noneLabel={t("admin.eventHostNone")}
+                  disabled={!canWrite}
+                />
+                <p className="pf-muted">{t("admin.eventHostHelp")}</p>
 
                 <h3 className="pf-h3">{t("admin.eventSectionVenue")}</h3>
                 <div className="pf-form-grid">

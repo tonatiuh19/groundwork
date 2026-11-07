@@ -81,6 +81,7 @@ import AdminCampaigns from "./pages/admin/Campaigns";
 import AffiliateLayout from "./pages/affiliate/AffiliateLayout";
 import AffiliateDashboard from "./pages/affiliate/Dashboard";
 import AffiliateClients from "./pages/affiliate/Clients";
+import AffiliateEvents from "./pages/affiliate/Events";
 import AffiliateCommissions from "./pages/affiliate/Commissions";
 import AffiliateTeam from "./pages/affiliate/Team";
 import AffiliateTrackingLink from "./pages/affiliate/TrackingLink";
@@ -225,6 +226,7 @@ export default function App() {
             <Route path="/affiliate" element={<AffiliateLayout />}>
               <Route index element={<AffiliateDashboard />} />
               <Route path="clients" element={<AffiliateClients />} />
+              <Route path="events" element={<AffiliateEvents />} />
               <Route path="team" element={<AffiliateTeam />} />
               <Route path="commissions" element={<AffiliateCommissions />} />
               <Route path="link" element={<AffiliateTrackingLink />} />

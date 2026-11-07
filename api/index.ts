@@ -3338,7 +3338,55 @@ function mapMarketingEventRow(
     qr_rsvp_count: extras?.qr_rsvp_count,
     rsvp_flow_id: r.rsvp_flow_id == null ? null : Number(r.rsvp_flow_id),
     city_id: r.city_id == null ? null : Number(r.city_id),
+    host_affiliate_id: r.host_affiliate_id == null ? null : Number(r.host_affiliate_id),
+    host_affiliate_name: r.host_affiliate_name == null ? null : String(r.host_affiliate_name),
   };
+}
+
+/**
+ * Who gets credit for an event RSVP: the affiliate whose own link the person came through
+ * (`?ref` / `/r/` code), else the event's host affiliate, else nobody. Inactive affiliates never get credit.
+ */
+export function eventRsvpCreditAffiliate<T extends { id: number; status?: string | null }>(
+  linkAffiliate: T | null | undefined,
+  host: T | null | undefined,
+): T | null {
+  if (linkAffiliate && (linkAffiliate.status == null || linkAffiliate.status === "active")) return linkAffiliate;
+  if (host && host.status === "active") return host;
+  return null;
+}
+
+/** Email to the host affiliate for each RSVP to their event (name + event + where to see the list). */
+export function tplAffiliateEventRsvp(d: {
+  lang: Lang;
+  first_name: string;
+  guest_name: string;
+  event_title: string;
+  starts_at: string | null;
+  waitlisted: boolean;
+  confirmed_count: number;
+}) {
+  const l = d.lang;
+  const when = d.starts_at
+    ? new Date(d.starts_at).toLocaleString(l === "es" ? "es-US" : "en-US", { timeZone: "America/Los_Angeles", dateStyle: "medium", timeStyle: "short" })
+    : "";
+  const facts: Array<[string, string]> = [[tr(l, "Event", "Evento"), d.event_title]];
+  if (when) facts.push([tr(l, "When", "Cuándo"), when]);
+  facts.push([tr(l, "Status", "Estado"), d.waitlisted ? tr(l, "Waitlist", "Lista de espera") : tr(l, "Confirmed", "Confirmado")]);
+  facts.push([tr(l, "Registered so far", "Registrados hasta ahora"), String(d.confirmed_count)]);
+  return tplPartnerEmail({
+    lang: l,
+    subject: tr(l, `New registration: ${d.guest_name} · ${d.event_title}`, `Nuevo registro: ${d.guest_name} · ${d.event_title}`),
+    kicker: tr(l, "Your event", "Tu evento"),
+    headline: tr(l, `${d.guest_name} registered`, `${d.guest_name} se registró`),
+    intro: tr(
+      l,
+      `Hi ${d.first_name}, someone just registered for your event. Their contact details are in your portal under My events, and they count as your referral.`,
+      `Hola ${d.first_name}, alguien se acaba de registrar a tu evento. Sus datos de contacto están en tu portal en Mis eventos y cuenta como tu referido.`,
+    ),
+    facts,
+    cta: { url: `${APP_URL}/affiliate/events`, label: tr(l, "See my events", "Ver mis eventos") },
+  });
 }
 
 function pickLangField(
@@ -12760,6 +12808,62 @@ function registerFeatureRoutes(
     }),
   );
 
+  // My events: events this affiliate hosts or got RSVPs for, with the people credited to them
+  // (name, contact, confirmed / waitlisted, became a client). Other affiliates' RSVPs are never shown.
+  app.get(
+    "/api/affiliate/events",
+    aff,
+    route(async (_req, res) => {
+      const user = portalUser(res);
+      const [events] = await pool.query<RowDataPacket[]>(
+        `SELECT e.id, e.slug, e.status, e.title_en, e.title_es, e.starts_at, e.city, e.venue_name,
+                (e.host_affiliate_id = ?) AS is_host
+           FROM marketing_events e
+          WHERE e.status <> 'draft'
+            AND (e.host_affiliate_id = ? OR EXISTS (SELECT 1 FROM leads l WHERE l.event_id = e.id AND l.affiliate_id = ?))
+          ORDER BY e.starts_at DESC
+          LIMIT 100`,
+        [user.id, user.id, user.id],
+      );
+      const ids = events.map((e) => Number(e.id));
+      const [rsvps] = ids.length
+        ? await pool.query<RowDataPacket[]>(
+            `SELECT l.id, l.event_id, l.full_name, l.email, l.phone, l.event_registration_status, l.created_at,
+                    (l.client_id IS NOT NULL) AS became_client
+               FROM leads l
+              WHERE l.event_id IN (?) AND l.affiliate_id = ? AND l.mode = 'event' AND l.status <> 'spam'
+              ORDER BY l.created_at DESC`,
+            [ids, user.id],
+          )
+        : [[] as RowDataPacket[]];
+      res.json({
+        ok: true,
+        events: events.map((e) => ({
+          id: Number(e.id),
+          slug: String(e.slug),
+          status: String(e.status),
+          title_en: String(e.title_en),
+          title_es: String(e.title_es),
+          starts_at: isoDate(e.starts_at),
+          city: e.city == null ? null : String(e.city),
+          venue_name: e.venue_name == null ? null : String(e.venue_name),
+          is_host: Number(e.is_host) === 1,
+          rsvps: rsvps
+            .filter((r) => Number(r.event_id) === Number(e.id))
+            .map((r) => ({
+              id: Number(r.id),
+              full_name: String(r.full_name || ""),
+              email: r.email ? String(r.email) : null,
+              phone: r.phone ? String(r.phone) : null,
+              registration_status: r.event_registration_status === "waitlisted" ? "waitlisted" : "confirmed",
+              became_client: Number(r.became_client) === 1,
+              created_at: isoDate(r.created_at),
+            })),
+        })),
+      });
+    }),
+  );
+
   app.get(
     "/api/affiliate/clients",
     aff,
@@ -15408,6 +15512,7 @@ function registerAdminRoutes(app: Express) {
     cta_en: fStr(120),
     cta_es: fStr(120),
     rsvp_flow_id: fInt(1, 2_000_000_000, true),
+    host_affiliate_id: fInt(1, 2_000_000_000, true),
   });
   /** Event city is picked: `city_id` fills `city`; a typed city alone is tagged on an exact match. */
   const applyEventCity = async (body: Record<string, unknown>, updates: Record<string, unknown>) => {
@@ -15421,7 +15526,21 @@ function registerAdminRoutes(app: Express) {
     if (!f) throw new HttpError(400, "validation.invalidField");
   };
 
+  /** The host must be an active affiliate (picked, never typed). */
+  const checkHostAffiliate = async (updates: Record<string, unknown>) => {
+    if (updates.host_affiliate_id == null) return;
+    const [[a]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM affiliates WHERE id = ? AND status = 'active'`, [updates.host_affiliate_id])) as unknown as [RowDataPacket[]];
+    if (!a) throw new HttpError(400, "validation.invalidField");
+  };
+
   const eventWithCounts = async (r: RowDataPacket) => {
+    if (r.host_affiliate_id != null && r.host_affiliate_name == null) {
+      const [[h]] = (await pool.query<RowDataPacket[]>(
+        `SELECT TRIM(CONCAT(first_name, ' ', last_name)) AS name FROM affiliates WHERE id = ?`,
+        [Number(r.host_affiliate_id)],
+      )) as unknown as [RowDataPacket[]];
+      r = { ...r, host_affiliate_name: h?.name ?? null } as RowDataPacket;
+    }
     const [confirmed, waitlisted, qrRows] = await Promise.all([
       countEventRegistrations(Number(r.id), "confirmed"),
       countEventRegistrations(Number(r.id), "waitlisted"),
@@ -15485,6 +15604,7 @@ function registerAdminRoutes(app: Express) {
       const user = portalUser(res);
       const { updates } = parsePatch(req.body, eventFieldSpec());
       await checkRsvpFlow(updates);
+      await checkHostAffiliate(updates);
       await applyEventCity(req.body || {}, updates);
       const slugParser = fStr(80, { min: 1 })(
         req.body?.slug ?? req.body?.title_en,
@@ -15553,6 +15673,7 @@ function registerAdminRoutes(app: Express) {
       if (!existing) throw new HttpError(404, "errors.eventNotFound");
       const { updates } = parsePatch(req.body, eventFieldSpec());
       await checkRsvpFlow(updates);
+      await checkHostAffiliate(updates);
       await applyEventCity(req.body || {}, updates);
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "slug")) {
         const slug = slugifyEvent(String(req.body.slug || ""));
@@ -27903,6 +28024,7 @@ const APPOINTMENT_KINDS = [
   "consultation",
   "call",
   "city_meeting",
+  "presentation",
   "other",
 ] as const;
 type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
@@ -27923,6 +28045,7 @@ const APPT_KIND_LABEL: Record<AppointmentKind, { en: string; es: string }> = {
   consultation: { en: "Consultation", es: "Consulta" },
   call: { en: "Call", es: "Llamada" },
   city_meeting: { en: "City meeting", es: "Reunión con la ciudad" },
+  presentation: { en: "Presentation", es: "Presentación" },
   other: { en: "Appointment", es: "Cita" },
 };
 const APPT_LOCATION_LABEL: Record<
@@ -42773,8 +42896,21 @@ function buildApp(): Express {
           ? String(eventRow.city)
           : data.event_city || null;
 
-        const affiliateRef = await findActiveAffiliateByCode(
+        const linkAffiliate = await findActiveAffiliateByCode(
           req.body?.referral_code,
+        );
+        // Event hosted by an affiliate: an RSVP without another affiliate's link is the host's referral.
+        const hostAffiliate = eventRow?.host_affiliate_id
+          ? ((
+              (await pool.query<RowDataPacket[]>(
+                `SELECT id, referral_code, status, first_name, email, preferred_language FROM affiliates WHERE id = ?`,
+                [Number(eventRow.host_affiliate_id)],
+              )) as unknown as [RowDataPacket[]]
+            )[0][0] as { id: number; referral_code: string; status: string; first_name: string; email: string | null; preferred_language: string | null } | undefined)
+          : undefined;
+        const affiliateRef = eventRsvpCreditAffiliate(
+          linkAffiliate ? { ...linkAffiliate, status: "active" } : null,
+          hostAffiliate ? { ...hostAffiliate, id: Number(hostAffiliate.id) } : null,
         );
         let leadId: number;
         if (eventRow) {
@@ -42868,6 +43004,22 @@ function buildApp(): Express {
         // RSVP leads take the event's city when the form didn't pick one (feeds City Partners and filters).
         if (data.mode === "event" && eventRow?.city_id) {
           await pool.execute(`UPDATE leads SET city_id = ? WHERE id = ? AND city_id IS NULL`, [Number(eventRow.city_id), leadId]);
+        }
+        // Host affiliate: one email per RSVP credited to them (their own event, their referral).
+        if (eventRow && hostAffiliate?.email && affiliateRef && Number(affiliateRef.id) === Number(hostAffiliate.id)) {
+          const hl = asLang(hostAffiliate.preferred_language);
+          await safeSend(
+            String(hostAffiliate.email),
+            tplAffiliateEventRsvp({
+              lang: hl,
+              first_name: String(hostAffiliate.first_name || ""),
+              guest_name: data.full_name,
+              event_title: String(pickLangField(hl, eventRow.title_en, eventRow.title_es) || eventRow.title_en),
+              starts_at: isoDate(eventRow.starts_at),
+              waitlisted: registrationStatus === "waitlisted",
+              confirmed_count: await countEventRegistrations(Number(eventRow.id), "confirmed"),
+            }),
+          );
         }
         // Event RSVP: only the automation staff picked on this event (none = no automatic messages).
         if (data.mode === "event") {
@@ -43807,6 +43959,8 @@ function buildApp(): Express {
               "lender_meeting",
               "consultation",
               "call",
+              "city_meeting",
+              "presentation",
               "other",
             ],
           },

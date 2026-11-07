@@ -815,7 +815,8 @@
     "sectionProjects": "Proyectos y dinero",
     "sectionSetup": "Ajustes",
     "qrCodes": "Códigos QR",
-    "scorecards": "Scorecards"
+    "scorecards": "Scorecards",
+    "myEvents": "Mis eventos"
   },
   "adminNav": {
     "conversationsNumberRequired": "Pide a un super admin que te asigne un número Groundwork en Equipo para desbloquear Conversaciones"
@@ -1460,7 +1461,11 @@
     "eventRsvpFlow": "Automatización al registrarse",
     "eventRsvpFlowNone": "Ninguna (el equipo da seguimiento a mano)",
     "eventRsvpFlowOff": "{{name}} (apagada)",
-    "eventRsvpFlowHelp": "Elige la automatización que escribe a quienes se registran a este evento. No se envía nada mientras esté apagada; enciéndela y edita su texto en Automatizaciones."
+    "eventRsvpFlowHelp": "Elige la automatización que escribe a quienes se registran a este evento. No se envía nada mientras esté apagada; enciéndela y edita su texto en Automatizaciones.",
+    "eventSectionHost": "Afiliado anfitrión",
+    "eventHostAffiliate": "Afiliado que organiza este evento",
+    "eventHostHelp": "Todos los que se registren sin el enlace de otro afiliado cuentan como referidos de este afiliado. Los ve en Mis eventos y recibe un correo por cada registro.",
+    "eventHostNone": "Sin anfitrión"
   },
   "aff": {
     "clicks": "Clics en el enlace",
@@ -1523,7 +1528,16 @@
       "direct": "Directo",
       "closer": "Closer",
       "parent": "Padre"
-    }
+    },
+    "eventsLead": "Eventos que organizas y las personas que se registraron contigo. Contáctalas antes y después del evento.",
+    "noEvents": "Aún no hay eventos. Cuando Groundwork te ponga como anfitrión de un evento, o alguien se registre con tu enlace, aparece aquí.",
+    "eventGuest": "Nombre",
+    "eventContact": "Contacto",
+    "eventRegisteredOn": "Registro",
+    "eventBecameClient": "Cliente",
+    "eventYouHost": "Eres anfitrión",
+    "eventNoRsvps": "Aún no hay registros.",
+    "eventStats": "Registrados contigo: {{count}} · {{confirmed}} confirmados · {{clients}} ya son clientes"
   },
   "enroll": {
     "metaTitle": "Inicia tu proyecto ADU",
@@ -3118,6 +3132,7 @@
       "consultation": "Consulta",
       "call": "Llamada",
       "city_meeting": "Reunión con la ciudad",
+      "presentation": "Presentación",
       "other": "Otra"
     },
     "loc": {

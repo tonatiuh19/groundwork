@@ -557,6 +557,10 @@ export interface MarketingEvent {
   rsvp_flow_id?: number | null;
   /** Picked city (service_cities); RSVP leads inherit it. */
   city_id?: number | null;
+  /** Affiliate hosting the event: RSVPs without another affiliate's link are credited to them. */
+  host_affiliate_id?: number | null;
+  /** Host's display name (admin detail). */
+  host_affiliate_name?: string | null;
 }
 
 /** `POST /api/public/events/:slug/qr-scan` — where a scanned flyer should land. */
@@ -1954,7 +1958,7 @@ export interface AffiliateAgreementTemplateResponse {
 
 // ── Scheduler (appointments, lenders, booking links) ────────────────────────
 
-export const APPOINTMENT_KINDS = ["property_inspection", "site_visit", "lender_meeting", "consultation", "call", "city_meeting", "other"] as const;
+export const APPOINTMENT_KINDS = ["property_inspection", "site_visit", "lender_meeting", "consultation", "call", "city_meeting", "presentation", "other"] as const;
 export type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
 export const APPOINTMENT_LOCATION_TYPES = ["onsite", "office", "phone", "video"] as const;
 export type AppointmentLocationType = (typeof APPOINTMENT_LOCATION_TYPES)[number];
@@ -3131,4 +3135,29 @@ export interface CityMeeting {
   city_id: number;
   city_name: string | null;
   staff: string[];
+}
+
+/** Affiliate portal → My events: one RSVP credited to this affiliate. */
+export interface AffiliateEventRsvp {
+  id: number;
+  full_name: string;
+  email: string | null;
+  phone: string | null;
+  registration_status: "confirmed" | "waitlisted";
+  became_client: boolean;
+  created_at: string | null;
+}
+
+/** Affiliate portal → My events: an event they host or got RSVPs for. */
+export interface AffiliateEventRow {
+  id: number;
+  slug: string;
+  status: string;
+  title_en: string;
+  title_es: string;
+  starts_at: string | null;
+  city: string | null;
+  venue_name: string | null;
+  is_host: boolean;
+  rsvps: AffiliateEventRsvp[];
 }

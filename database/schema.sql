@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS `marketing_events` (
   `waitlist_enabled` TINYINT(1) NOT NULL DEFAULT 1,
   `city` VARCHAR(100) NOT NULL,
   `city_id` INT UNSIGNED DEFAULT NULL COMMENT 'service_cities; RSVP leads inherit it',
+  `host_affiliate_id` INT UNSIGNED DEFAULT NULL COMMENT 'Affiliate hosting the event; RSVPs without another referral link are credited to them',
   `venue_name` VARCHAR(200) DEFAULT NULL,
   `venue_address` VARCHAR(500) DEFAULT NULL,
   `zoom_url` VARCHAR(500) DEFAULT NULL,
@@ -106,9 +107,11 @@ CREATE TABLE IF NOT EXISTS `marketing_events` (
   KEY `idx_marketing_events_status_featured` (`status`, `is_featured`),
   KEY `idx_marketing_events_starts` (`starts_at`),
   KEY `idx_marketing_events_city` (`city_id`),
+  KEY `idx_marketing_events_host` (`host_affiliate_id`),
   CONSTRAINT `fk_marketing_events_admin`
     FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
   -- fk_marketing_events_rsvp_flow → reminder_flows(id) ON DELETE SET NULL (added in 20261103_170000_event_rsvp_flow.sql)
+  -- fk_marketing_events_host_affiliate → affiliates(id) ON DELETE SET NULL (added in 20261106_160000_event_host_affiliate_presentation.sql)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Past-event highlights (photos / uploaded videos / embedded reels)
@@ -1573,7 +1576,7 @@ CREATE TABLE IF NOT EXISTS `affiliate_assistant_messages` (
 CREATE TABLE IF NOT EXISTS `appointments` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `title` VARCHAR(200) NOT NULL,
-  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','city_meeting','other') NOT NULL DEFAULT 'consultation',
+  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','city_meeting','presentation','other') NOT NULL DEFAULT 'consultation',
   `starts_at` DATETIME NOT NULL COMMENT 'UTC',
   `ends_at` DATETIME NOT NULL COMMENT 'UTC',
   `timezone` VARCHAR(64) NOT NULL DEFAULT 'America/Los_Angeles',

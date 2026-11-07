@@ -6,7 +6,7 @@ import {
   Link2,
   UserCog,
   Network,
-  FileSignature, LifeBuoy } from "lucide-react";
+  FileSignature, LifeBuoy, CalendarDays } from "lucide-react";
 import type { PortalNavItem } from "@/components/portal/PortalShell";
 import PortalShell from "@/components/portal/PortalShell";
 import AffiliateLinkButton from "@/components/affiliate/AffiliateLinkButton";
@@ -42,6 +42,7 @@ export default function AffiliateLayout() {
         icon: LayoutDashboard,
       },
       { to: "/affiliate/clients", labelKey: "portalNav.myClients", icon: Users },
+      { to: "/affiliate/events", labelKey: "portalNav.myEvents", icon: CalendarDays },
     ];
     if (canManageTeam) {
       items.push({
