@@ -41,6 +41,7 @@ import { downloadCsv, toCsv } from "@/lib/csv";
 import AffiliatePickerField from "@/components/admin/AffiliatePickerField";
 import { EVENT_STATUSES, REGISTRATION_STATUSES, isEventPast } from "@/lib/eventOptions";
 import EventMediaManager from "@/components/admin/EventMediaManager";
+import EventImageField from "@/components/admin/EventImageField";
 import EventQrPanel from "@/components/admin/EventQrPanel";
 import {
   fromDateTimeLocalValue,
@@ -221,7 +222,18 @@ export default function AdminEventDetail() {
     title_en: Yup.string().trim().required(t("validation.eventTitleEn")),
     title_es: Yup.string().trim().required(t("validation.eventTitleEs")),
     zoom_url: optionalUrl(t),
-    image_url: optionalUrl(t),
+    // A direct picture link (a website address shows a broken image); uploading is the easy path.
+    image_url: Yup.string()
+      .trim()
+      .test("image-link", t("validation.eventImageUrl"), (v) => {
+        if (!v) return true;
+        try {
+          const u = new URL(v);
+          return u.protocol === "https:" && /\.(jpe?g|png|webp|gif|avif)$/i.test(u.pathname);
+        } catch {
+          return false;
+        }
+      }),
   });
 
   // The API refuses to delete published events or events with RSVPs (archive instead).
@@ -389,6 +401,8 @@ export default function AdminEventDetail() {
                   <TextField name="slug" labelKey="admin.eventSlug" disabled={!canWrite} />
                   <CityField textName="city" admin required disabled={!canWrite} />
                 </div>
+                <p className="pf-muted">{t("admin.eventCityHelp")}</p>
+                <EventImageField eventId={ev.id} disabled={!canWrite} />
                 <CheckField name="is_featured" labelKey="admin.isFeatured" disabled={!canWrite} />
                 <p className="pf-muted">{t("admin.isFeaturedHelp")}</p>
 
@@ -456,7 +470,6 @@ export default function AdminEventDetail() {
                   <TextField name="venue_name" labelKey="admin.venueName" disabled={!canWrite} />
                   <TextField name="venue_address" labelKey="admin.venueAddress" disabled={!canWrite} />
                   <TextField name="zoom_url" labelKey="admin.zoomUrl" type="url" disabled={!canWrite} />
-                  <TextField name="image_url" labelKey="admin.eventImageUrl" type="url" disabled={!canWrite} />
                 </div>
 
                 <h3 className="pf-h3">{t("admin.eventSectionEn")}</h3>

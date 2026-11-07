@@ -2228,7 +2228,7 @@ paths:
                 venue_name: { type: string, nullable: true }
                 venue_address: { type: string, nullable: true }
                 zoom_url: { type: string, nullable: true }
-                image_url: { type: string, nullable: true }
+                image_url: { type: string, nullable: true, description: "Direct https link to a picture (.jpg/.jpeg/.png/.webp/.gif/.avif), else 400 validation.invalidField. An uploaded cover photo (event media is_cover) always wins over it." }
                 title_en: { type: string }
                 title_es: { type: string }
                 summary_en: { type: string, nullable: true }
@@ -2296,7 +2296,7 @@ paths:
                 venue_name: { type: string, nullable: true }
                 venue_address: { type: string, nullable: true }
                 zoom_url: { type: string, nullable: true }
-                image_url: { type: string, nullable: true }
+                image_url: { type: string, nullable: true, description: "Direct https link to a picture (.jpg/.jpeg/.png/.webp/.gif/.avif), else 400 validation.invalidField. An uploaded cover photo (event media is_cover) always wins over it." }
                 title_en: { type: string }
                 title_es: { type: string }
                 summary_en: { type: string, nullable: true }
@@ -2341,7 +2341,7 @@ paths:
     post:
       summary: "Register an uploaded file or add a reel link"
       tags: [portal-admin]
-      description: "Requires `approvals` (super_admin, admin). Body either { pathname, caption_en?, caption_es? } after a direct Blob upload (bytes are sniffed: JPG/PNG/WebP photo, MP4/MOV/WebM video; mismatches are deleted) or { embed_url, caption_en?, caption_es? } for Instagram (p/reel), YouTube (watch/youtu.be/shorts) or TikTok video links, normalized to embed URLs. Max 200 items per event. 201 { ok, media }."
+      description: "Requires `approvals` (super_admin, admin). Body either { pathname, caption_en?, caption_es?, make_cover? } after a direct Blob upload (make_cover: true = the event form's "Event image": a photo becomes the only cover at once) (bytes are sniffed: JPG/PNG/WebP photo, MP4/MOV/WebM video; mismatches are deleted) or { embed_url, caption_en?, caption_es? } for Instagram (p/reel), YouTube (watch/youtu.be/shorts) or TikTok video links, normalized to embed URLs. Max 200 items per event. 201 { ok, media }."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:

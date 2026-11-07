@@ -20,9 +20,9 @@ export const fetchEventMedia = createApiThunk<AdminEventMedia[], number>(
  */
 export const uploadEventMedia = createAsyncThunk<
   AdminEventMedia[],
-  { eventId: number; file: File; uploadId: string } & Captions,
+  { eventId: number; file: File; uploadId: string; make_cover?: boolean } & Captions,
   { rejectValue: string }
->("eventMedia/upload", async ({ eventId, file, uploadId, ...captions }, { dispatch, rejectWithValue }) => {
+>("eventMedia/upload", async ({ eventId, file, uploadId, make_cover, ...captions }, { dispatch, rejectWithValue }) => {
   try {
     const grant = (
       await api.post<{ client_token: string; pathname: string }>(`/admin/events/${eventId}/media/upload-token`, {
@@ -39,7 +39,7 @@ export const uploadEventMedia = createAsyncThunk<
         dispatch(eventMediaSlice.actions.uploadProgress({ uploadId, progress: Math.round(percentage) })),
     });
     return (
-      await api.post<MediaResponse>(`/admin/events/${eventId}/media`, { pathname: grant.pathname, ...captions })
+      await api.post<MediaResponse>(`/admin/events/${eventId}/media`, { pathname: grant.pathname, ...captions, ...(make_cover ? { make_cover: true } : {}) })
     ).data.media;
   } catch (error) {
     if (axios.isAxiosError(error)) return rejectWithValue(formatAxiosError(error, "errors.uploadFailed"));

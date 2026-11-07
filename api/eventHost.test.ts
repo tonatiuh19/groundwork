@@ -23,3 +23,24 @@ describe("event RSVP credit (host affiliate)", () => {
     expect(tplAffiliateEventRsvp({ lang: "es", first_name: "B", guest_name: "G", event_title: "E", starts_at: null, waitlisted: true, confirmed_count: 0 }).html).toContain("Lista de espera");
   });
 });
+
+import { isEventImageUrl, tplLeadConfirmation } from "./index";
+
+describe("event image link + confirmation city", () => {
+  it("only a direct https picture link is an event image (a website is not)", () => {
+    expect(isEventImageUrl("https://cdn.example.com/logo.png")).toBe(true);
+    expect(isEventImageUrl("https://cdn.example.com/a/photo.JPG?w=800")).toBe(true);
+    expect(isEventImageUrl("https://ezfundings.com/")).toBe(false);
+    expect(isEventImageUrl("http://cdn.example.com/logo.png")).toBe(false);
+    expect(isEventImageUrl("not a url")).toBe(false);
+  });
+
+  it("the RSVP email never invents a city: no city means no 'in <city>'", () => {
+    const base = { fullName: "Ana Ruiz", mode: "event" as const, eventTitle: "ADU Event", eventStartsAt: null, lang: "en" };
+    const full = tplLeadConfirmation({ ...base, eventCity: null, eventLocation: null, registrationStatus: "waitlisted" });
+    expect(full.html).not.toContain("Fontana");
+    expect(full.html).toContain("event is full");
+    const ok = tplLeadConfirmation({ ...base, eventCity: "Rancho Cucamonga", eventLocation: "EZ Fundings, Inc", registrationStatus: "confirmed" });
+    expect(ok.html).toContain("EZ Fundings, Inc");
+  });
+});

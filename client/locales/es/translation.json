@@ -290,7 +290,8 @@
     "emailOrPhone": "Escribe un correo válido o un teléfono de al menos 10 dígitos.",
     "emailOrPhoneRequired": "Escribe tu correo o celular.",
     "emailOrPhoneOne": "Agrega un correo, un teléfono o ambos.",
-    "smsConsentNoEmail": "Sin correo, el propietario debe aceptar recibir mensajes de texto."
+    "smsConsentNoEmail": "Sin correo, el propietario debe aceptar recibir mensajes de texto.",
+    "eventImageUrl": "Usa un enlace directo a una imagen (que termine en .jpg, .png o .webp), o sube la imagen."
   },
   "errors": {
     "submitFailed": "No pudimos enviar tu solicitud.",
@@ -1470,7 +1471,16 @@
     "eventSectionHost": "Afiliado anfitrión",
     "eventHostAffiliate": "Afiliado que organiza este evento",
     "eventHostHelp": "Todos los que se registren sin el enlace de otro afiliado cuentan como referidos de este afiliado. Los ve en Mis eventos y recibe un correo por cada registro.",
-    "eventHostNone": "Sin anfitrión"
+    "eventHostNone": "Sin anfitrión",
+    "eventCityHelp": "La ciudad donde es el evento. Aparece en el título \"Reserva tu lugar en …\", en los correos de registro y cada registro queda en esa ciudad.",
+    "eventImage": "Imagen del evento",
+    "eventImageHelp": "Se muestra arriba en la página del evento y en las tarjetas de eventos. Usa un logo o una foto (JPG, PNG o WebP, hasta 15 MB).",
+    "eventImageFromUpload": "Esta foto es la portada del evento. Sube otra para reemplazarla.",
+    "eventImageUpload": "Subir imagen",
+    "eventImageReplace": "Reemplazar imagen",
+    "eventImageUploading": "Subiendo…",
+    "eventImageUseLink": "Usar un enlace de imagen",
+    "eventImageUrlHint": "Solo un enlace directo a una imagen (termina en .jpg, .png o .webp), no una página web."
   },
   "aff": {
     "clicks": "Clics en el enlace",

@@ -914,9 +914,10 @@ export function tplLeadConfirmation(opts: {
   );
   const isEvent = opts.mode === "event";
   const waitlisted = opts.registrationStatus === "waitlisted";
-  const city = opts.eventCity ? escapeHtml(opts.eventCity) : "Fontana";
+  // Never guess a city: an event without one just leaves the "in <city>" part out.
+  const city = opts.eventCity ? escapeHtml(opts.eventCity) : "";
   const title = opts.eventTitle ? escapeHtml(opts.eventTitle) : null;
-  const location = opts.eventLocation ? escapeHtml(opts.eventLocation) : city;
+  const location = opts.eventLocation ? escapeHtml(opts.eventLocation) : city || null;
   const when = opts.eventStartsAt
     ? escapeHtml(formatEventWhen(opts.eventStartsAt, isEs ? "es" : "en"))
     : null;
@@ -937,11 +938,11 @@ export function tplLeadConfirmation(opts: {
   const sub = isEvent
     ? waitlisted
       ? isEs
-        ? `El evento${title ? ` “${title}”` : ""} en ${city} está lleno por ahora. Te avisaremos si se libera un lugar.`
-        : `The${title ? ` “${title}”` : ""} event in ${city} is full for now. We'll reach out if a seat opens.`
+        ? `El evento${title ? ` “${title}”` : ""}${city ? ` en ${city}` : ""} está lleno por ahora. Te avisaremos si se libera un lugar.`
+        : `The${title ? ` “${title}”` : ""} event${city ? ` in ${city}` : ""} is full for now. We'll reach out if a seat opens.`
       : isEs
-        ? `Nos vemos en ${location}${when ? ` · ${when}` : ""}. Un miembro del equipo de Groundwork te contactará pronto.`
-        : `See you at ${location}${when ? ` · ${when}` : ""}. A Groundwork team member will be in touch soon.`
+        ? `${location ? `Nos vemos en ${location}` : "Nos vemos pronto"}${when ? ` · ${when}` : ""}. Un miembro del equipo de Groundwork te contactará pronto.`
+        : `${location ? `See you at ${location}` : "See you soon"}${when ? ` · ${when}` : ""}. A Groundwork team member will be in touch soon.`
     : isEs
       ? "Gracias por dar el primer paso. Revisaremos tu solicitud y te guiaremos hacia el siguiente movimiento."
       : "Thanks for taking the first step. We'll review your request and guide you toward the next move.";
@@ -3367,6 +3368,16 @@ function mapMarketingEventRow(
     host_affiliate_id: r.host_affiliate_id == null ? null : Number(r.host_affiliate_id),
     host_affiliate_name: r.host_affiliate_name == null ? null : String(r.host_affiliate_name),
   };
+}
+
+/** A direct https link to an image file (jpg, png, webp, gif, avif), not a web page. */
+export function isEventImageUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && /\.(jpe?g|png|webp|gif|avif)$/i.test(u.pathname);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -15539,6 +15550,12 @@ function registerAdminRoutes(app: Express) {
       const d = asDate(v);
       return d ? { ok: true, value: d } : { ok: false };
     };
+  /** Image URL must be a direct https link to a picture (a website address shows a broken image). */
+  const fEventImageUrl: FieldParser = (v) => {
+    if (v === null || v === undefined || String(v).trim() === "") return { ok: true, value: null };
+    const url = String(v).trim().slice(0, 500);
+    return isEventImageUrl(url) ? { ok: true, value: url } : { ok: false };
+  };
   const eventFieldSpec = (): Record<string, FieldParser> => ({
     status: fEnum(EVENT_STATUSES),
     is_featured: fBool,
@@ -15552,7 +15569,7 @@ function registerAdminRoutes(app: Express) {
     venue_name: fStr(200),
     venue_address: fStr(500),
     zoom_url: fStr(500),
-    image_url: fStr(500),
+    image_url: fEventImageUrl,
     title_en: fStr(200, { min: 1 }),
     title_es: fStr(200, { min: 1 }),
     summary_en: fStr(500),
@@ -15936,7 +15953,7 @@ function registerAdminRoutes(app: Express) {
         await delBlob(meta.url, { token }).catch(() => undefined);
         throw new HttpError(400, "validation.eventMediaFile");
       }
-      await pool.execute(
+      const [mediaIns] = await pool.execute<ResultSetHeader>(
         `INSERT INTO event_media
            (event_id, kind, url, blob_pathname, mime_type, size_bytes, caption_en, caption_es, sort_order, created_by_admin_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -15953,6 +15970,10 @@ function registerAdminRoutes(app: Express) {
           user.id,
         ],
       );
+      // "Event image" on the event form: the uploaded photo becomes the event's cover right away.
+      if (req.body?.make_cover === true && kind === "photo") {
+        await pool.execute(`UPDATE event_media SET is_cover = (id = ?) WHERE event_id = ?`, [Number(mediaIns.insertId), id]);
+      }
       res.status(201).json({ ok: true, media: await eventMediaList(id) });
     }),
   );

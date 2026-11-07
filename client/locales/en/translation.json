@@ -290,7 +290,8 @@
     "emailOrPhone": "Enter a valid email or a phone number with at least 10 digits.",
     "emailOrPhoneRequired": "Enter your email or mobile number.",
     "emailOrPhoneOne": "Add an email, a phone number, or both.",
-    "smsConsentNoEmail": "Without an email, the homeowner must agree to receive texts."
+    "smsConsentNoEmail": "Without an email, the homeowner must agree to receive texts.",
+    "eventImageUrl": "Use a direct link to a picture (ending in .jpg, .png or .webp), or upload the image."
   },
   "errors": {
     "submitFailed": "We couldn't submit your request.",
@@ -1470,7 +1471,16 @@
     "eventSectionHost": "Host affiliate",
     "eventHostAffiliate": "Affiliate hosting this event",
     "eventHostHelp": "Everyone who registers without another affiliate's link counts as this affiliate's referral. They see the list under My events and get an email for each registration.",
-    "eventHostNone": "No host"
+    "eventHostNone": "No host",
+    "eventCityHelp": "The city where the event happens. It shows in the \"Save your spot in …\" title, on the registration emails, and every registration is filed under it.",
+    "eventImage": "Event image",
+    "eventImageHelp": "Shown at the top of the event page and on the event cards. Use a logo or a photo (JPG, PNG or WebP, up to 15 MB).",
+    "eventImageFromUpload": "This photo is the event's cover. Upload another one to replace it.",
+    "eventImageUpload": "Upload image",
+    "eventImageReplace": "Replace image",
+    "eventImageUploading": "Uploading…",
+    "eventImageUseLink": "Use an image link instead",
+    "eventImageUrlHint": "Only a direct link to a picture (ends in .jpg, .png or .webp), not a website."
   },
   "aff": {
     "clicks": "Link clicks",
