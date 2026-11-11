@@ -193,8 +193,9 @@ describe.runIf(hasDb)("scorecards (integration)", () => {
     const tr = await request(app).put(`/api/admin/scorecards/projects/${projectPublicId}/targets`).set("Cookie", adminCookie).send({ milestone: "closed", due_on: scAddDays(prevWs, 30) }).expect(200);
     expect(tr.body.targets).toEqual([expect.objectContaining({ milestone: "closed" })]);
 
-    await request(app).post(`/api/admin/scorecards/contractor/${contractorId}/time-off`).set("Cookie", adminCookie).send({ starts_on: "2026-11-05", ends_on: "2026-11-01" }).expect(400);
-    await request(app).post(`/api/admin/scorecards/contractor/${contractorId}/time-off`).set("Cookie", adminCookie).send({ starts_on: "2026-11-05", ends_on: "2026-11-06", label: "Vacation" }).expect(201);
+    await request(app).post(`/api/admin/scorecards/contractor/${contractorId}/time-off`).set("Cookie", adminCookie).send({ starts_on: scAddDays(prevWs, 44), ends_on: scAddDays(prevWs, 40) }).expect(400);
+    // Relative to the scored week and well after it: fixed dates once landed inside "last week" and skewed later tests.
+    await request(app).post(`/api/admin/scorecards/contractor/${contractorId}/time-off`).set("Cookie", adminCookie).send({ starts_on: scAddDays(prevWs, 44), ends_on: scAddDays(prevWs, 45), label: "Vacation" }).expect(201);
   });
   it("MCP: read-only scorecard tools for super admins, gone while the flag is off", async () => {
     const superCookie = await session(await insertId(`INSERT INTO admins (email, first_name, last_name, role, status) VALUES (?, 'Score', 'Super', 'super_admin', 'active')`, [em("super")]));
@@ -294,9 +295,9 @@ describe.runIf(hasDb)("scorecards (integration)", () => {
     const hits = await request(app).get("/api/admin/scorecards/lead-search").set("Cookie", adminCookie).query({ q: `${prefix}fresh` }).expect(200);
     expect(hits.body.items[0]).toMatchObject({ contractor_id: contractorId });
     expect((await request(app).get("/api/admin/scorecards/lead-search").set("Cookie", adminCookie).query({ q: "%_" }).expect(200)).body.items.length).toBeLessThan(16);
-    await request(app).post(`/api/admin/scorecards/contractor/${contractorId}/time-off`).set("Cookie", adminCookie).send({ starts_on: "2026-11-09" }).expect(201);
+    await request(app).post(`/api/admin/scorecards/contractor/${contractorId}/time-off`).set("Cookie", adminCookie).send({ starts_on: scAddDays(prevWs, 50) }).expect(201);
     const d = await request(app).get(`/api/admin/scorecards/contractor/${contractorId}`).set("Cookie", adminCookie).expect(200);
-    const off = d.body.time_off.find((o: { starts_on: string; ends_on: string }) => o.starts_on === "2026-11-09" && o.ends_on === "2026-11-09");
+    const off = d.body.time_off.find((o: { starts_on: string; ends_on: string }) => o.starts_on === scAddDays(prevWs, 50) && o.ends_on === scAddDays(prevWs, 50));
     await request(app).delete(`/api/admin/scorecards/time-off/${off.id}`).set("Cookie", adminCookie).expect(200);
     const recent = d.body.activities.find((a: { occurred_at: string }) => Date.now() - Date.parse(a.occurred_at) < HOUR);
     await request(app).delete(`/api/admin/scorecards/activities/${recent.id}`).set("Cookie", adminCookie).expect(200);
