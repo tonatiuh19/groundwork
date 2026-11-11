@@ -24566,7 +24566,9 @@ function registerConversationsRoutes(app: Express) {
       }
       if (kind !== "client")
         throw new HttpError(400, "validation.invalidField");
-      if (!(await adminCanAccessClientConversations(adminId, id))) {
+      // A client with no conversation yet opens as an empty thread (first text / call from Clients → Call);
+      // a client whose thread lives on someone else's line stays private.
+      if (!(await adminCanMutateClientConversations(adminId, id))) {
         throw new HttpError(404, "errors.notFound");
       }
       const [crows] = await pool.query<RowDataPacket[]>(
@@ -28485,8 +28487,9 @@ async function loadAppointmentFull(
 ) {
   const [[a]] = (await exec.query<RowDataPacket[]>(
     `SELECT ap.*, CONCAT(c.first_name, ' ', c.last_name) AS client_name, l.full_name AS lead_name, p.public_id AS project_public_id,
-            CONCAT(o.first_name, ' ', o.last_name) AS owner_name
+            CONCAT(o.first_name, ' ', o.last_name) AS owner_name, sc.name AS city_name
      FROM appointments ap
+     LEFT JOIN service_cities sc ON sc.id = ap.city_id
      LEFT JOIN clients c ON c.id = ap.client_id
      LEFT JOIN leads l ON l.id = ap.lead_id
      LEFT JOIN projects p ON p.id = ap.project_id
@@ -28533,6 +28536,8 @@ function mapAppointment(
     owner_admin_id: a.owner_admin_id != null ? Number(a.owner_admin_id) : null,
     owner_name: a.owner_name ? String(a.owner_name).trim() : null,
     cancelled_reason: a.cancelled_reason ? String(a.cancelled_reason) : null,
+    city_id: a.city_id != null ? Number(a.city_id) : null,
+    city_name: a.city_name ? String(a.city_name) : null,
     attendees: attendees.map((t) => ({
       id: Number(t.id),
       kind: String(t.kind),
@@ -28848,6 +28853,99 @@ async function appointmentConflicts(opts: {
     starts_at: isoDate(r.starts_at),
     ends_at: isoDate(r.ends_at),
   }));
+}
+
+/** Appointment types that are about a city (the city is required, and partners of that city see them). */
+const CITY_APPOINTMENT_KINDS: readonly string[] = ["city_meeting", "presentation"];
+
+/**
+ * City of a staff appointment (City Pipeline record): the picked `city_id` wins (must be a live city),
+ * `null` clears it, and when the body doesn't mention it the client / lead / project's city is used.
+ * City meetings and presentations need one. Returns undefined when nothing changes.
+ */
+async function resolveAppointmentCity(
+  body: Record<string, unknown>,
+  kind: string,
+  links: { client_id?: unknown; lead_id?: unknown; project_id?: unknown },
+): Promise<number | null> {
+  let cityId: number | null = null;
+  if (Object.prototype.hasOwnProperty.call(body, "city_id")) {
+    const raw = body.city_id;
+    if (raw !== null && raw !== "" && raw !== undefined) {
+      const id = Number(raw);
+      const [[c]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM service_cities WHERE id = ? AND archived_at IS NULL`, [Number.isInteger(id) ? id : 0])) as unknown as [RowDataPacket[]];
+      if (!c) throw new HttpError(400, "validation.invalidField");
+      cityId = id;
+    }
+  } else {
+    const n = (v: unknown) => (v == null || v === "" ? 0 : Number(v) || 0);
+    const [[r]] = (await pool.query<RowDataPacket[]>(
+      `SELECT sc.id AS city_id FROM service_cities sc
+        WHERE sc.archived_at IS NULL
+          AND sc.id = COALESCE((SELECT city_id FROM projects WHERE id = ?), (SELECT city_id FROM clients WHERE id = ?), (SELECT city_id FROM leads WHERE id = ?))`,
+      [n(links.project_id), n(links.client_id), n(links.lead_id)],
+    )) as unknown as [RowDataPacket[]];
+    cityId = r?.city_id != null ? Number(r.city_id) : null;
+  }
+  if (!cityId && CITY_APPOINTMENT_KINDS.includes(kind)) throw new HttpError(400, "validation.appointmentCity");
+  return cityId;
+}
+
+/** Save the city on the appointment and, when it's newly set, add it to that city's history. */
+async function applyAppointmentCity(appointmentId: number, cityId: number | null, adminId: number | null) {
+  const full = await loadAppointmentFull(appointmentId);
+  if (!full) return;
+  const before = full.a.city_id != null ? Number(full.a.city_id) : null;
+  if (before === cityId) return;
+  await pool.execute(`UPDATE appointments SET city_id = ? WHERE id = ?`, [cityId, appointmentId]);
+  if (!cityId) return;
+  const kind = String(full.a.kind);
+  const label = APPT_KIND_LABEL[kind as AppointmentKind]?.en || "Appointment";
+  const who = [full.a.client_name, full.a.lead_name].map((x) => (x ? String(x).trim() : "")).find(Boolean);
+  await pool.execute(
+    `INSERT INTO city_activities (city_id, admin_id, occurred_on, activity_type, summary, link_url) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      cityId,
+      adminId,
+      pacificDateKey(new Date(full.a.starts_at)),
+      kind === "presentation" ? "presentation" : "meeting",
+      `${label}: ${String(full.a.title)}${who ? ` · ${who}` : ""}`.slice(0, 1000),
+      `/admin/calendar?appointment=${appointmentId}`,
+    ],
+  );
+}
+
+/** Staff create (admin route + MCP): city checked first (nothing is created on a missing city), then saved + logged. */
+async function createStaffAppointment(body: Record<string, unknown>, adminId: number) {
+  const cityId = await resolveAppointmentCity(body, String(body.kind || "consultation"), body);
+  const out = await createAppointment(body as AppointmentInput, { adminId, source: "staff" });
+  await applyAppointmentCity(out.id, cityId, adminId);
+  return out;
+}
+
+/**
+ * Staff update (admin route + MCP). The city changes only when the body sends `city_id`, or when the type
+ * becomes a City meeting / Presentation and there's no city yet. Editing an older city-type appointment
+ * that has no city (other fields only) is never refused.
+ */
+async function updateStaffAppointment(id: number, body: Record<string, unknown>, adminId: number) {
+  const current = await loadAppointmentFull(id);
+  if (!current) throw new HttpError(404, "errors.notFound");
+  const kind = String(body.kind ?? current.a.kind);
+  const kindBecomesCity = body.kind !== undefined && String(body.kind) !== String(current.a.kind) && CITY_APPOINTMENT_KINDS.includes(kind);
+  const cityTouched = Object.prototype.hasOwnProperty.call(body, "city_id") || (kindBecomesCity && current.a.city_id == null);
+  const cityId = cityTouched
+    ? await resolveAppointmentCity(body, kind, {
+        client_id: body.client_id ?? current.a.client_id,
+        lead_id: body.lead_id ?? current.a.lead_id,
+        project_id: body.project_id ?? current.a.project_id,
+      })
+    : undefined;
+  const out = await updateAppointment(id, body as AppointmentInput, adminId);
+  if (cityId === undefined) return out;
+  await applyAppointmentCity(id, cityId, adminId);
+  const full = (await loadAppointmentFull(id))!;
+  return { ...out, appointment: mapAppointment(full.a, full.attendees, { internal: true }) };
 }
 
 /** Create (staff or booking). Returns id + one-time homeowner manage token. */
@@ -29663,10 +29761,7 @@ function registerSchedulerRoutes(app: Express) {
     "/api/admin/appointments",
     requireAdmin("projects.write"),
     route(async (req, res) => {
-      const out = await createAppointment(req.body || {}, {
-        adminId: portalUser(res).id,
-        source: "staff",
-      });
+      const out = await createStaffAppointment(req.body || {}, portalUser(res).id);
       const full = (await loadAppointmentFull(out.id))!;
       res
         .status(201)
@@ -29683,11 +29778,7 @@ function registerSchedulerRoutes(app: Express) {
     "/api/admin/appointments/:id",
     requireAdmin("projects.write"),
     route(async (req, res) => {
-      const out = await updateAppointment(
-        parseId(req.params.id),
-        req.body || {},
-        portalUser(res).id,
-      );
+      const out = await updateStaffAppointment(parseId(req.params.id), req.body || {}, portalUser(res).id);
       res.json({ ok: true, ...out });
     }),
   );
@@ -41610,6 +41701,40 @@ function buildApp(): Express {
       res.send(cityCsv((await cityList(res, { ...(req.query as Record<string, unknown>), limit: 200, offset: 0 })).cities));
     }));
     app.get(`${base}/:id`, ...guard, route(async (req, res) => res.json({ ok: true, ...(await cityDetail(res, parseId(req.params.id))) })));
+    if (base === "/api/admin/city-pipeline") {
+      // Staff: every appointment tagged with this city (Meetings tab), upcoming first, then the last 90 days.
+      app.get(`${base}/:id/appointments`, ...guard, route(async (req, res) => {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT ap.id, ap.title, ap.kind, ap.starts_at, ap.ends_at, ap.status, ap.source, ap.location_type, ap.location,
+                  CONCAT_WS(' ', c.first_name, c.last_name) AS client_name, l.full_name AS lead_name,
+                  CONCAT_WS(' ', o.first_name, o.last_name) AS owner_name, cp.company AS partner_company
+             FROM appointments ap
+             LEFT JOIN clients c ON c.id = ap.client_id
+             LEFT JOIN leads l ON l.id = ap.lead_id
+             LEFT JOIN admins o ON o.id = ap.owner_admin_id
+             LEFT JOIN city_partners cp ON cp.id = ap.city_partner_id
+            WHERE ap.city_id = ? AND ap.starts_at >= NOW() - INTERVAL 90 DAY
+            ORDER BY (ap.starts_at >= NOW()) DESC, ABS(TIMESTAMPDIFF(MINUTE, NOW(), ap.starts_at)) ASC
+            LIMIT 60`,
+          [parseId(req.params.id)],
+        );
+        res.json({
+          ok: true,
+          items: rows.map((r) => ({
+            id: Number(r.id),
+            title: String(r.title),
+            kind: String(r.kind),
+            starts_at: isoDate(r.starts_at),
+            ends_at: isoDate(r.ends_at),
+            status: String(r.status),
+            source: String(r.source),
+            who: [r.client_name, r.lead_name].map((x) => (x ? String(x).trim() : "")).find(Boolean) || null,
+            owner_name: r.owner_name ? String(r.owner_name).trim() || null : null,
+            partner_company: r.partner_company ? String(r.partner_company) : null,
+          })),
+        });
+      }));
+    }
     app.patch(`${base}/:id`, ...guard, route(async (req, res) => {
       await cityPatch(res, parseId(req.params.id), req.body || {});
       res.json({ ok: true, ...(await cityDetail(res, parseId(req.params.id))) });
@@ -42144,15 +42269,19 @@ function buildApp(): Express {
     route(async (req, res) => {
       const me = portalUser(res).id;
       const cityId = req.query.city_id ? parseId(req.query.city_id) : null;
+      // Theirs, plus City meetings / Presentations Groundwork staff booked in their assigned cities
+      // (homeowner appointments in those cities stay private).
+      const mine = await cpPartnerCities(me);
       const [rows] = await pool.query<RowDataPacket[]>(
-        `SELECT a.*, s.name AS city_name,
+        `SELECT a.*, s.name AS city_name, (a.city_partner_id <=> ?) AS is_mine,
            (SELECT GROUP_CONCAT(CONCAT_WS(' ', ad.first_name, ad.last_name) SEPARATOR '|') FROM appointment_attendees t JOIN admins ad ON ad.id = t.admin_id WHERE t.appointment_id = a.id AND t.kind = 'admin') AS staff_names
          FROM appointments a LEFT JOIN service_cities s ON s.id = a.city_id
-         WHERE a.city_partner_id = ? ${cityId ? "AND a.city_id = ?" : ""} AND a.status <> 'cancelled' AND a.ends_at >= NOW() - INTERVAL 1 DAY
+         WHERE (a.city_partner_id = ? OR (a.kind IN ('city_meeting', 'presentation') AND a.city_id IN (?)))
+           ${cityId ? "AND a.city_id = ?" : ""} AND a.status <> 'cancelled' AND a.ends_at >= NOW() - INTERVAL 1 DAY
          ORDER BY a.starts_at LIMIT 50`,
-        cityId ? [me, cityId] : [me],
+        cityId ? [me, me, mine.length ? mine : [0], cityId] : [me, me, mine.length ? mine : [0]],
       );
-      res.json({ ok: true, items: rows.map(cityMeetingRow) });
+      res.json({ ok: true, items: rows.map((r) => ({ ...cityMeetingRow(r), mine: Number(r.is_mine) === 1 })) });
     }),
   );
   app.post(
@@ -44203,7 +44332,7 @@ function buildApp(): Express {
       name: "create_appointment",
       readOnly: false,
       description:
-        "Schedule an appointment (e.g. property inspection) on a client / lead / project and tag people. Everyone tagged + the homeowner (notify_homeowner) gets an email with a calendar invite and a text. Also added to the owner's and tagged staff's Outlook calendars when their mailbox is connected. Onsite defaults to the property address. kind: property_inspection | site_visit | lender_meeting | consultation | call | other. location_type: onsite | office | phone | video. attendees: [{kind:'contractor',contractor_id}, {kind:'lender',lender_id}, {kind:'admin',admin_id}, {kind:'guest',name,email,phone}]. Dry-run first.",
+        "Schedule an appointment (e.g. property inspection) on a client / lead / project and tag people. Everyone tagged + the homeowner (notify_homeowner) gets an email with a calendar invite and a text. Also added to the owner's and tagged staff's Outlook calendars when their mailbox is connected. Onsite defaults to the property address. kind: property_inspection | site_visit | lender_meeting | consultation | call | city_meeting | presentation | other. city_id: City Pipeline city (omit = the client / lead / project's city; required for city_meeting / presentation). location_type: onsite | office | phone | video. attendees: [{kind:'contractor',contractor_id}, {kind:'lender',lender_id}, {kind:'admin',admin_id}, {kind:'guest',name,email,phone}]. Dry-run first.",
       inputSchema: {
         type: "object",
         required: ["kind", "date", "start"],
@@ -44243,6 +44372,7 @@ function buildApp(): Express {
           client_id: { type: "integer" },
           lead_id: { type: "integer" },
           project_id: { type: "integer" },
+          city_id: { type: "integer", description: "service_cities id (see get_city_pipeline). Omit to use the client / lead / project's city." },
           owner_admin_id: { type: "integer" },
           teams_meeting: { type: "boolean", description: "Create a Microsoft Teams meeting on the owner's Outlook calendar; the join link goes in the invite" },
           notify_homeowner: { type: "boolean" },
@@ -44269,6 +44399,7 @@ function buildApp(): Express {
           },
           location: { type: "string" },
           notes: { type: "string" },
+          city_id: { type: ["integer", "null"], description: "Change the City Pipeline city (null clears it)." },
           attendees: { type: "array", items: { type: "object" } },
         },
       },
@@ -45911,10 +46042,7 @@ function buildApp(): Express {
             };
           }
           try {
-            const out = await createAppointment(args as any, {
-              adminId: admin.id,
-              source: "staff",
-            });
+            const out = await createStaffAppointment(args as Record<string, unknown>, admin.id);
             const full = (await loadAppointmentFull(out.id))!;
             return {
               ok: true,
@@ -45958,7 +46086,7 @@ function buildApp(): Express {
             } = args as any;
             return {
               ok: true,
-              result: await updateAppointment(id, patch, admin.id),
+              result: await updateStaffAppointment(id, patch, admin.id),
             };
           } catch (e) {
             if (e instanceof HttpError) return { ok: false, error: e.key };

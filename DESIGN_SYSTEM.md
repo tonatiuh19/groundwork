@@ -632,3 +632,9 @@ Weekly A to F scorecards for affiliates and contractors, admins only (super_admi
 
 - Agreement card on the partner page (super admins only): red **Void and send a new agreement** button → `DangerConfirmModal` with a short explanation (the signed copy is kept as voided, unpaid fees are voided, W-9 stays), **New rate** and **Reason** fields, and the LLC name typed to confirm. History shows "Agreement voided (new one sent)" with the old rate and the reason.
 - Partner email (`tplCityPartnerNewAgreement`, partner-email chrome): kicker "Updated agreement", "Please sign your new agreement", the new fee as a fact row, gold **Review and sign** → `/city/agreement`.
+
+## Appointments ↔ City Pipeline
+
+- Appointment drawer → What: a **City** search picker under the type pills (required mark for City meeting and Presentation). Empty shows "Leave empty to use the client, lead or project's city"; once picked, "Saved on this city in the City Pipeline". Scheduling from a city page opens the drawer with that city picked.
+- Staff city page → **Meetings** tab: "Schedule appointment" (gold) + a list of the city's appointments, upcoming first (kind dot, clay date line, "Type · title" linking to the calendar, who / owner / "Booked by <partner>"); past and cancelled rows on paper, faded. Each new city appointment also appears in the city's Activity history.
+- Partner Meetings tab: staff-booked City meetings / Presentations in their city show a gold "Booked by Groundwork" badge instead of Cancel.

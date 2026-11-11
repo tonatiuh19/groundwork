@@ -21012,3 +21012,67 @@ button.sc-metric:hover {
     background: #fbf3e2;
   }
 }
+
+/* Staff City Pipeline → Meetings tab: appointments tagged with the city */
+.gw-city-appts {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.gw-city-appts__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.gw-city-appts__head .pf-hint {
+  margin: 0;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.gw-city-appts__list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gw-city-appts__item {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #e8dfc8;
+  background: #fff;
+  min-width: 0;
+}
+.gw-city-appts__item.is-past {
+  background: #fbf8f1;
+  opacity: 0.8;
+}
+.gw-city-appts__body {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.gw-city-appts__when {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #b0562f;
+}
+.gw-city-appts__title {
+  font-weight: 700;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.gw-city-appts__body .pf-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  overflow-wrap: anywhere;
+}

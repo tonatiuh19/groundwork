@@ -10,8 +10,7 @@ import type {
   CityPartnerListItem,
   CityPartnerOnboarding,
   CityPartnerOverview,
-  CityPipelineCity,
-} from "@shared/api";
+  CityPipelineCity, CityAppointmentRow } from "@shared/api";
 import { api } from "@/lib/api";
 import { createApiThunk } from "@/lib/portalThunk";
 
@@ -78,6 +77,8 @@ export const fetchCityRequests = createApiThunk<{ items: CityRequest[]; pending:
 export const approveCityRequest = createApiThunk<{ ok: true }, { id: number; city_id: number }>("cityPartner/approveRequest", "admin", async ({ id, city_id }) => (await api.post(`/admin/city-requests/${id}/approve`, { city_id })).data);
 export const declineCityRequest = createApiThunk<{ ok: true }, { id: number; reason: string }>("cityPartner/declineRequest", "admin", async ({ id, reason }) => (await api.post(`/admin/city-requests/${id}/decline`, { reason })).data);
 export const fetchCityStaff = createApiThunk<{ staff: { id: number; name: string }[]; suggested_id: number | null }, void>("cityPartner/staff", "city", async () => (await api.get("/city/staff")).data);
+/** Staff City Pipeline → Meetings tab: every appointment tagged with the city. */
+export const fetchCityAppointments = createApiThunk<{ items: CityAppointmentRow[] }, number>("cityPartner/cityAppointments", "admin", async (cityId) => (await api.get(`/admin/city-pipeline/${cityId}/appointments`)).data);
 export const fetchCityMeetings = createApiThunk<{ items: CityMeeting[] }, number | void>("cityPartner/meetings", "city", async (cityId) => (await api.get("/city/meetings", { params: cityId ? { city_id: cityId } : {} })).data);
 export const bookCityMeeting = createApiThunk<{ item: CityMeeting; conflicts: number }, Record<string, unknown>>("cityPartner/bookMeeting", "city", async (body) => (await api.post("/city/meetings", body)).data);
 export const cancelCityMeeting = createApiThunk<{ ok: true }, number>("cityPartner/cancelMeeting", "city", async (id) => (await api.post(`/city/meetings/${id}/cancel`, {})).data);
@@ -104,10 +105,11 @@ type State = {
   requests: CityRequest[];
   pendingRequests: number;
   meetings: CityMeeting[];
+  cityAppointments: CityAppointmentRow[];
   staff: { id: number; name: string }[];
   suggestedStaffId: number | null;
 };
-const initialState: State = { list: null, detail: null, partners: [], partnersTotal: 0, partner: null, overview: null, onboarding: null, clients: [], fees: [], allFees: [], feesTotal: 0, feeTotals: [], loading: false, saving: false, error: null, invitePreview: null, previewing: false, myRequests: [], requests: [], pendingRequests: 0, meetings: [], staff: [], suggestedStaffId: null };
+const initialState: State = { list: null, detail: null, partners: [], partnersTotal: 0, partner: null, overview: null, onboarding: null, clients: [], fees: [], allFees: [], feesTotal: 0, feeTotals: [], loading: false, saving: false, error: null, invitePreview: null, previewing: false, myRequests: [], requests: [], pendingRequests: 0, meetings: [], cityAppointments: [], staff: [], suggestedStaffId: null };
 
 const reads = [fetchAllCityFees, fetchCityList, fetchCityDetail, fetchCityPartners, fetchCityPartner, fetchCityOverview, fetchCityOnboarding, fetchCityClients, fetchCityFees] as const;
 const writes = [updateCity, addCityActivity, deleteCityActivity, addPipelineCity, saveCityIntel, verifyCityIntel, addCityContact, deleteCityContact, createCityPartner, updateCityPartner, resendCityPartnerInvite, countersignCityAgreement, voidCityAgreement, reviewCityW9, updateCityFee, setProjectFundsReceived, signCityAgreement, submitCityW9, updateCityProfile, deleteCityPartner, requestCity, approveCityRequest, declineCityRequest, bookCityMeeting, cancelCityMeeting] as const;
@@ -168,6 +170,9 @@ const slice = createSlice({
       })
       .addCase(cancelCityMeeting.fulfilled, (s, a) => {
         s.meetings = s.meetings.filter((m) => m.id !== a.meta.arg);
+      })
+      .addCase(fetchCityAppointments.fulfilled, (s, a) => {
+        s.cityAppointments = a.payload.items;
       })
       .addCase(fetchAllCityFees.fulfilled, (s, a) => {
         s.allFees = a.payload.items;

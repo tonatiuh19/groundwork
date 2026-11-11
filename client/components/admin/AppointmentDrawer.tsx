@@ -27,6 +27,7 @@ import {
   type AppointmentLocationType,
 } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
+import { fetchAdminCities } from "@/store/slices/citiesSlice";
 import { fetchAdminAssignees, fetchAdminContractors } from "@/store/slices/adminPortalSlice";
 import {
   cancelAppointment,
@@ -59,6 +60,8 @@ export type AppointmentContext = {
   label?: string | null;
   /** Prefill (e.g. clicked calendar day). */
   date?: string;
+  /** Prefill the City (scheduling from a City Pipeline page). */
+  city_id?: number | null;
 };
 
 /**
@@ -92,6 +95,13 @@ export default function AppointmentDrawer({
   const tz = appointment?.timezone || DEFAULT_TZ;
 
   const [kind, setKind] = useState<AppointmentKind>("property_inspection");
+  // City Pipeline record. `cityTouched` false = let the server use the client / lead / project's city.
+  const [cityId, setCityId] = useState<number | null>(null);
+  const [cityTouched, setCityTouched] = useState(false);
+  const allCities = useAppSelector((s) => s.cities.adminList);
+  useEffect(() => {
+    if (open && !allCities.length) void dispatch(fetchAdminCities());
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   const [date, setDate] = useState(todayIn(DEFAULT_TZ));
   const [start, setStart] = useState("10:00");
   const [duration, setDuration] = useState(60);
@@ -136,6 +146,8 @@ export default function AppointmentDrawer({
     if (appointment) {
       const z = isoToZoned(appointment.starts_at, appointment.timezone);
       setKind(appointment.kind);
+      setCityId(appointment.city_id ?? null);
+      setCityTouched(false);
       setDate(z.date);
       setStart(z.time);
       setDuration(minutesBetween(appointment.starts_at, appointment.ends_at));
@@ -152,6 +164,8 @@ export default function AppointmentDrawer({
       setLenderIds(appointment.attendees.filter((a) => a.kind === "lender" && a.lender_id).map((a) => a.lender_id!));
       setGuests(appointment.attendees.filter((a) => a.kind === "guest").map((a) => ({ name: a.name || "", email: a.email || "", phone: a.phone || "" })));
     } else {
+      setCityId(context?.city_id ?? null);
+      setCityTouched(Boolean(context?.city_id));
       setKind("property_inspection");
       setDate(context?.date || todayIn(DEFAULT_TZ));
       setStart("10:00");
@@ -203,6 +217,7 @@ export default function AppointmentDrawer({
       notes: notes.trim() || null,
       notify_homeowner: hasRecord ? notifyHome : false,
       attendees,
+      ...(cityTouched ? { city_id: cityId } : {}),
       ...(pickRecord
         ? {
             client_id: record?.kind === "client" ? record.id : null,
@@ -342,6 +357,20 @@ export default function AppointmentDrawer({
               </button>
             ))}
           </div>
+          <MultiSearchPicker
+            icon={MapPin}
+            label={`${t("appt.city")}${kind === "city_meeting" || kind === "presentation" ? " *" : ""}`}
+            items={allCities.filter((c) => !c.archived).map((c) => ({ id: c.id, label: c.name }))}
+            selected={cityId ? [cityId] : []}
+            disabled={cancelled}
+            placeholder={t("cities.search")}
+            empty={t("cities.none")}
+            onToggle={(id) => {
+              setCityTouched(true);
+              setCityId(cityId === id ? null : id);
+            }}
+          />
+          <p className="pf-hint">{cityTouched || cityId ? t("appt.cityHint") : t("appt.cityAutoHint")}</p>
           <label className="pf-field">
             <span>{t("appt.titleOptional")}</span>
             <input value={title} maxLength={200} placeholder={t(`appt.kind.${kind}`)} onChange={(e) => setTitle(e.target.value)} disabled={cancelled} />

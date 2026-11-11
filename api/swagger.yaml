@@ -763,6 +763,7 @@ paths:
     get:
       summary: "My upcoming city meetings (query city_id optional)"
       tags: [portal-city]
+      description: "The partner's own meetings plus City meetings / Presentations Groundwork staff booked in their assigned cities (mine: false, can't be cancelled by the partner). Homeowner appointments are never included."
       responses:
         "200": { description: "OK { items: CityMeeting[] }" }
     post:
@@ -901,6 +902,15 @@ paths:
       description: "approvals."
       responses:
         "200": { description: "{ ok, ... }" }
+  /api/admin/city-pipeline/{id}/appointments:
+    get:
+      summary: "Staff City Pipeline → Meetings tab: appointments tagged with the city"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Upcoming first, then the last 90 days (max 60). Items { id, title, kind, starts_at, ends_at, status, source, who (client / lead name), owner_name, partner_company }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, items }" }
   /api/admin/city-pipeline/{id}:
     get:
       summary: "One city: pipeline, activity, city sheet, score"
@@ -4509,7 +4519,7 @@ paths:
     post:
       summary: "Schedule an appointment"
       tags: [portal-admin]
-      description: "Requires `projects.write`. Body { kind (property_inspection|site_visit|lender_meeting|consultation|call|city_meeting|presentation|other), date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
+      description: "Requires `projects.write`. Body { kind (property_inspection|site_visit|lender_meeting|consultation|call|city_meeting|presentation|other), date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, city_id? (City Pipeline record: omit = the client / lead / project's city, null = none; required for city_meeting / presentation → 400 validation.appointmentCity; a newly set city adds a meeting / presentation entry to that city's history; also accepted on PATCH), notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
       responses:
         "201": { description: "{ ok, appointment, conflicts[] }" }
         "400": { description: "validation.appointmentTime | validation.attendeeContact | validation.invalidReference" }
@@ -5525,6 +5535,7 @@ paths:
     get:
       summary: Thread timeline (also clears unread)
       tags: [conversations]
+      description: "kind client: staff with Conversations access open it when one of their lines / assignments holds the thread, or when the client has no conversation yet (empty threads + messages, contact with phone, so Clients → Call / Message works for a first contact). A thread on another staff member's line → 404."
       parameters:
         - in: path
           name: kind

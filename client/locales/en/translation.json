@@ -292,7 +292,8 @@
     "emailOrPhoneOne": "Add an email, a phone number, or both.",
     "smsConsentNoEmail": "Without an email, the homeowner must agree to receive texts.",
     "eventImageUrl": "Use a direct link to a picture (ending in .jpg, .png or .webp), or upload the image.",
-    "voidReason": "Write a short reason."
+    "voidReason": "Write a short reason.",
+    "appointmentCity": "Pick the city for a City meeting or Presentation."
   },
   "errors": {
     "submitFailed": "We couldn't submit your request.",
@@ -3170,7 +3171,10 @@
     "teams": "Microsoft Teams meeting",
     "teamsHint": "Creates the Teams link on the owner's Outlook calendar and sends it in the invite.",
     "outlookTag": "Outlook",
-    "outlookNote": "Synced from Outlook. Outlook sends this event's invites and updates; changes to time, title or place here go back to Outlook."
+    "outlookNote": "Synced from Outlook. Outlook sends this event's invites and updates; changes to time, title or place here go back to Outlook.",
+    "city": "City",
+    "cityHint": "Saved on this city in the City Pipeline (Meetings tab and history).",
+    "cityAutoHint": "Leave empty to use the client, lead or project's city."
   },
   "calendar": {
     "title": "Calendar",
@@ -5285,7 +5289,8 @@
       "cancel": "Cancel meeting",
       "cancelConfirm": "Cancel this meeting? Everyone invited is told.",
       "none": "No meetings booked",
-      "noneText": "Schedule one and the Groundwork team gets it on their calendar."
+      "noneText": "Schedule one and the Groundwork team gets it on their calendar.",
+      "byGroundwork": "Booked by Groundwork"
     },
     "businessAddress": "Business address (goes on your signed copy)",
     "addressLine": "Street address",
@@ -5298,7 +5303,10 @@
     "voidText": "The signed agreement at {{rate}} per sq ft is kept as a voided record and stops counting. Unpaid fees under it are voided. The partner gets an email to review and sign a new agreement at the rate below; their W-9 stays on file.",
     "voidNewRate": "New rate (USD per sq ft)",
     "voidReason": "Reason",
-    "voidReasonPh": "e.g. Rate changed to $1.00"
+    "voidReasonPh": "e.g. Rate changed to $1.00",
+    "cityAppointmentsLead": "Every appointment tagged with this city: staff-booked and City Partner meetings. Each one also goes into the history.",
+    "cityAppointmentsEmpty": "No appointments in this city yet. Pick this city when scheduling one.",
+    "bookedByPartner": "Booked by {{company}}"
   },
   "danger": {
     "typeToConfirm": "Type \"{{text}}\" to confirm",

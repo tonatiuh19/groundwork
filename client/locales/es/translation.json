@@ -292,7 +292,8 @@
     "emailOrPhoneOne": "Agrega un correo, un teléfono o ambos.",
     "smsConsentNoEmail": "Sin correo, el propietario debe aceptar recibir mensajes de texto.",
     "eventImageUrl": "Usa un enlace directo a una imagen (que termine en .jpg, .png o .webp), o sube la imagen.",
-    "voidReason": "Escribe un motivo breve."
+    "voidReason": "Escribe un motivo breve.",
+    "appointmentCity": "Elige la ciudad para una Reunión con la ciudad o una Presentación."
   },
   "errors": {
     "submitFailed": "No pudimos enviar tu solicitud.",
@@ -3170,7 +3171,10 @@
     "teams": "Reunión de Microsoft Teams",
     "teamsHint": "Crea el enlace de Teams en el calendario de Outlook del responsable y lo envía en la invitación.",
     "outlookTag": "Outlook",
-    "outlookNote": "Sincronizado desde Outlook. Outlook envía las invitaciones y cambios de este evento; los cambios de hora, título o lugar hechos aquí regresan a Outlook."
+    "outlookNote": "Sincronizado desde Outlook. Outlook envía las invitaciones y cambios de este evento; los cambios de hora, título o lugar hechos aquí regresan a Outlook.",
+    "city": "Ciudad",
+    "cityHint": "Se guarda en esta ciudad en el City Pipeline (pestaña Reuniones e historial).",
+    "cityAutoHint": "Déjalo vacío para usar la ciudad del cliente, prospecto o proyecto."
   },
   "calendar": {
     "title": "Calendario",
@@ -5285,7 +5289,8 @@
       "cancel": "Cancelar reunión",
       "cancelConfirm": "¿Cancelar esta reunión? Se avisa a todos los invitados.",
       "none": "No hay reuniones agendadas",
-      "noneText": "Agenda una y el equipo de Groundwork la tendrá en su calendario."
+      "noneText": "Agenda una y el equipo de Groundwork la tendrá en su calendario.",
+      "byGroundwork": "Agendada por Groundwork"
     },
     "businessAddress": "Dirección del negocio (va en tu copia firmada)",
     "addressLine": "Calle y número",
@@ -5298,7 +5303,10 @@
     "voidText": "El acuerdo firmado a {{rate}} por pie cuadrado queda guardado como anulado y deja de contar. Las cuotas sin pagar bajo ese acuerdo se anulan. El socio recibe un correo para revisar y firmar un nuevo acuerdo con la tarifa de abajo; su W-9 sigue registrado.",
     "voidNewRate": "Nueva tarifa (USD por pie cuadrado)",
     "voidReason": "Motivo",
-    "voidReasonPh": "p. ej. Tarifa cambiada a $1.00"
+    "voidReasonPh": "p. ej. Tarifa cambiada a $1.00",
+    "cityAppointmentsLead": "Todas las citas de esta ciudad: las agendadas por el equipo y las reuniones de Socios de Ciudad. Cada una también queda en el historial.",
+    "cityAppointmentsEmpty": "Aún no hay citas en esta ciudad. Elige esta ciudad al agendar una.",
+    "bookedByPartner": "Agendada por {{company}}"
   },
   "danger": {
     "typeToConfirm": "Escribe \"{{text}}\" para confirmar",

@@ -2006,6 +2006,9 @@ export interface Appointment {
   owner_admin_id: number | null;
   owner_name: string | null;
   cancelled_reason: string | null;
+  /** City Pipeline record (service_cities); prefilled from the client / lead / project. */
+  city_id?: number | null;
+  city_name?: string | null;
   attendees: AppointmentAttendee[];
 }
 
@@ -2032,6 +2035,8 @@ export interface AppointmentBody {
   lead_id?: number | null;
   project_id?: number | null;
   owner_admin_id?: number | null;
+  /** Omit to use the client / lead / project's city; null clears. Required for city_meeting / presentation. */
+  city_id?: number | null;
   notify_homeowner: boolean;
   attendees: AppointmentAttendeeInput[];
   teams_meeting?: boolean;
@@ -3135,6 +3140,22 @@ export interface CityMeeting {
   city_id: number;
   city_name: string | null;
   staff: string[];
+  /** false = a City meeting / Presentation Groundwork staff booked in this city (partner can't cancel it). */
+  mine?: boolean;
+}
+
+/** Staff City Pipeline → Meetings tab: an appointment tagged with the city. */
+export interface CityAppointmentRow {
+  id: number;
+  title: string;
+  kind: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  status: string;
+  source: string;
+  who: string | null;
+  owner_name: string | null;
+  partner_company: string | null;
 }
 
 /** Affiliate portal → My events: one RSVP credited to this affiliate. */

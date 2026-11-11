@@ -134,14 +134,18 @@ export function CityMeetingsPanel({ cityId, cityName }: { cityId: number; cityNa
               <strong>{m.title}</strong>
               <span className="pf-hint"><Users size={14} aria-hidden /> {m.staff.join(", ")}</span>
               {m.location ? <span className="pf-hint">{m.location}</span> : null}
-              <BusyButton
-                icon={CalendarX2}
-                label={t("cityPartner.meeting.cancel")}
-                busy={saving}
-                onClick={() => {
-                  if (window.confirm(t("cityPartner.meeting.cancelConfirm"))) void dispatch(cancelCityMeeting(m.id));
-                }}
-              />
+              {m.mine === false ? (
+                <span className="pf-badge pf-badge--gold">{t("cityPartner.meeting.byGroundwork")}</span>
+              ) : (
+                <BusyButton
+                  icon={CalendarX2}
+                  label={t("cityPartner.meeting.cancel")}
+                  busy={saving}
+                  onClick={() => {
+                    if (window.confirm(t("cityPartner.meeting.cancelConfirm"))) void dispatch(cancelCityMeeting(m.id));
+                  }}
+                />
+              )}
             </li>
           ))}
         </ul>
