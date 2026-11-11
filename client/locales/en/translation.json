@@ -284,14 +284,15 @@
     "cityName": "Enter a city name.",
     "cityActivitySummary": "Write what happened.",
     "cityPartnerCompany": "Enter the LLC's legal name. It's printed in the agreement.",
-    "confirmNameMismatch": "The name you typed doesn't match.",
+    "confirmNameMismatch": "Type the LLC name exactly to confirm.",
     "cityPartnerRate": "Enter a rate from $0.00 to $100.00 (up to 2 decimals) and the LLC name.",
     "pickStaff": "Pick at least one person from Groundwork.",
     "emailOrPhone": "Enter a valid email or a phone number with at least 10 digits.",
     "emailOrPhoneRequired": "Enter your email or mobile number.",
     "emailOrPhoneOne": "Add an email, a phone number, or both.",
     "smsConsentNoEmail": "Without an email, the homeowner must agree to receive texts.",
-    "eventImageUrl": "Use a direct link to a picture (ending in .jpg, .png or .webp), or upload the image."
+    "eventImageUrl": "Use a direct link to a picture (ending in .jpg, .png or .webp), or upload the image.",
+    "voidReason": "Write a short reason."
   },
   "errors": {
     "submitFailed": "We couldn't submit your request.",
@@ -452,7 +453,9 @@
     "aiTextTooLong": "This draft is too long to improve.",
     "aiRewriteFailed": "The AI could not improve this one. Try rewording it.",
     "aiChangedFacts": "The AI changed a name, link or number, so we kept your text.",
-    "aiUnavailable": "Improve with AI is not available right now."
+    "aiUnavailable": "Improve with AI is not available right now.",
+    "agreementHasPaidFees": "A fee was already paid under this agreement. Refund it first, then void.",
+    "agreementAlreadyVoided": "This agreement was already voided."
   },
   "getCreditReport": {
     "metaTitle": "Free credit report · No score impact",
@@ -5148,7 +5151,7 @@
     "dueFrom": "Due from",
     "dueTo": "Due to",
     "termsEditable": "Both appear in the agreement. You can change them until the partner signs.",
-    "termsLocked": "Locked: the partner signed with this rate and LLC name. Changing them needs a new agreement version and a new signature.",
+    "termsLocked": "Locked: the partner signed with this rate and LLC name. To change them, a super admin uses \"Void and send a new agreement\" below and the partner signs again.",
     "termsConfirmTitle": "Change agreement terms",
     "termsConfirm": "Yes, update the agreement",
     "termsConfirmText": "The agreement will name {{company}} and pay {{rate}} per sq ft. If the partner has the agreement open, they'll be asked to read the new version before signing.",
@@ -5166,7 +5169,8 @@
       "phone": "Phone changed",
       "preferred_language": "Language changed",
       "cities": "Cities changed",
-      "viewed_as": "Viewed as partner"
+      "viewed_as": "Viewed as partner",
+      "agreement_voided": "Agreement voided (new one sent)"
     },
     "hello": {
       "morning": "Good morning, {{name}}",
@@ -5287,7 +5291,14 @@
     "addressLine": "Street address",
     "addressCity": "City",
     "addressZip": "ZIP code",
-    "addressHint": "California address where Groundwork can send notices under the agreement."
+    "addressHint": "California address where Groundwork can send notices under the agreement.",
+    "voidAgreement": "Void and send a new agreement",
+    "voidTitle": "Void this agreement?",
+    "voidConfirm": "Void and send new agreement",
+    "voidText": "The signed agreement at {{rate}} per sq ft is kept as a voided record and stops counting. Unpaid fees under it are voided. The partner gets an email to review and sign a new agreement at the rate below; their W-9 stays on file.",
+    "voidNewRate": "New rate (USD per sq ft)",
+    "voidReason": "Reason",
+    "voidReasonPh": "e.g. Rate changed to $1.00"
   },
   "danger": {
     "typeToConfirm": "Type \"{{text}}\" to confirm",

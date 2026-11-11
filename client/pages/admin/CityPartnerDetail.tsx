@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { BadgeCheck, Eye, FileSignature, FileText, MapPin, MonitorSmartphone, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { clearInvitePreview, countersignCityAgreement, fetchCityPartner, previewCityInvite, resendCityPartnerInvite, reviewCityW9, updateCityFee, updateCityPartner, viewAsCityPartner } from "@/store/slices/cityPartnerSlice";
+import { clearInvitePreview, countersignCityAgreement, voidCityAgreement, fetchCityPartner, previewCityInvite, resendCityPartnerInvite, reviewCityW9, updateCityFee, updateCityPartner, viewAsCityPartner } from "@/store/slices/cityPartnerSlice";
 import { fetchAdminCities } from "@/store/slices/citiesSlice";
 import { BackLink, BusyButton, ErrorNote, PageHeader } from "@/components/portal/kit";
 import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
@@ -86,6 +86,60 @@ function TermsEditor({ id, partner, locked, canEdit, onSaved }: { id: number; pa
         <p>{t("cityPartner.termsConfirmText", { company: company.trim(), rate: Number.isInteger(cents) ? centsToMoney(cents) : "" })}</p>
       </DangerConfirmModal>
     </div>
+  );
+}
+
+/** Void & re-issue (super admin): reason + new rate + typed LLC name; the partner is emailed to sign again. */
+function VoidAgreementButton({ id, agreementId, company, currentCents, onDone }: { id: number; agreementId: number; company: string; currentCents: number; onDone: () => void }) {
+  const { t } = useTranslation();
+  const dispatch = useAppDispatch();
+  const { saving, error } = useAppSelector((s) => s.cityPartner);
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [rate, setRate] = useState((currentCents / 100).toFixed(2));
+  useEffect(() => {
+    if (open) {
+      setReason("");
+      setRate((currentCents / 100).toFixed(2));
+    }
+  }, [open, currentCents]);
+  const cents = /^\d{1,3}(\.\d{1,2})?$/.test(rate.trim()) ? Math.round(Number(rate) * 100) : NaN;
+  const valid = Number.isInteger(cents) && cents >= 0 && cents <= 10_000 && reason.trim().length >= 3;
+  return (
+    <>
+      <button type="button" className="pf-btn pf-btn--sm pf-btn--danger" onClick={() => setOpen(true)}>
+        {t("cityPartner.voidAgreement")}
+      </button>
+      <DangerConfirmModal
+        open={open}
+        titleKey="cityPartner.voidTitle"
+        confirmText={company}
+        confirmLabel={t("cityPartner.voidConfirm")}
+        busy={saving}
+        ready={valid}
+        error={error}
+        onCancel={() => setOpen(false)}
+        onConfirm={async (typed) => {
+          const r = await dispatch(voidCityAgreement({ id, agreementId, reason: reason.trim(), confirm_name: typed, fee_cents_per_sqft: cents }));
+          if (voidCityAgreement.fulfilled.match(r)) {
+            setOpen(false);
+            onDone();
+          }
+        }}
+      >
+        <p>{t("cityPartner.voidText", { rate: centsToMoney(currentCents) })}</p>
+        <div className="pf-form-grid">
+          <label className="pf-field">
+            <span>{t("cityPartner.voidNewRate")}</span>
+            <input inputMode="decimal" value={rate} aria-invalid={!Number.isInteger(cents)} onChange={(e) => setRate(e.target.value)} />
+          </label>
+          <label className="pf-field">
+            <span>{t("cityPartner.voidReason")}</span>
+            <input value={reason} maxLength={500} placeholder={t("cityPartner.voidReasonPh")} onChange={(e) => setReason(e.target.value)} />
+          </label>
+        </div>
+      </DangerConfirmModal>
+    </>
   );
 }
 
@@ -231,6 +285,11 @@ export default function CityPartnerDetail() {
               </div>
             )}
             {!d.agreement.countersigned_at ? <p className="pf-hint">{t("cityPartner.countersignHint")}</p> : null}
+            {isSuper ? (
+              <p>
+                <VoidAgreementButton id={id} agreementId={d.agreement.id} company={p.company || ""} currentCents={d.agreement.fee_cents_per_sqft} onDone={reload} />
+              </p>
+            ) : null}
             <a className="pf-btn pf-btn--sm" href={`/api/admin/city-partners/${id}/agreement/pdf`} target="_blank" rel="noreferrer">
               {t("cityPartner.downloadPdf")}
             </a>{" "}

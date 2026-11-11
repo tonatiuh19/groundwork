@@ -50,6 +50,12 @@ export type EmailPreview = { subject: string; html: string };
 export const previewCityInvite = createApiThunk<EmailPreview, number | Record<string, unknown>>("cityPartner/invitePreview", "admin", async (arg) =>
   (typeof arg === "number" ? await api.get(`/admin/city-partners/${arg}/invite-preview`) : await api.post("/admin/city-partners/invite-preview", arg)).data,
 );
+/** Void & re-issue (super admin): keeps the voided copy, sets the new rate and emails the partner to sign again. */
+export const voidCityAgreement = createApiThunk<{ ok: true }, { id: number; agreementId: number; reason: string; confirm_name: string; fee_cents_per_sqft: number }>(
+  "cityPartner/voidAgreement",
+  "admin",
+  async ({ id, agreementId, ...body }) => (await api.post(`/admin/city-partners/${id}/agreements/${agreementId}/void`, body)).data,
+);
 export const countersignCityAgreement = createApiThunk<{ ok: true }, { id: number; agreementId: number; name: string }>("cityPartner/countersign", "admin", async ({ id, agreementId, name }) => (await api.post(`/admin/city-partners/${id}/agreements/${agreementId}/countersign`, { name })).data);
 export const reviewCityW9 = createApiThunk<{ ok: true }, { id: number; w9Id: number; status: "accepted" | "rejected"; note?: string }>("cityPartner/w9Review", "admin", async ({ id, w9Id, ...body }) => (await api.post(`/admin/city-partners/${id}/w9s/${w9Id}/review`, body)).data);
 export const updateCityFee = createApiThunk<{ item: CityPartnerFee }, { id: number; status: string; note?: string }>("cityPartner/fee", "admin", async ({ id, ...body }) => (await api.patch(`/admin/city-partner-fees/${id}`, body)).data);
@@ -104,7 +110,7 @@ type State = {
 const initialState: State = { list: null, detail: null, partners: [], partnersTotal: 0, partner: null, overview: null, onboarding: null, clients: [], fees: [], allFees: [], feesTotal: 0, feeTotals: [], loading: false, saving: false, error: null, invitePreview: null, previewing: false, myRequests: [], requests: [], pendingRequests: 0, meetings: [], staff: [], suggestedStaffId: null };
 
 const reads = [fetchAllCityFees, fetchCityList, fetchCityDetail, fetchCityPartners, fetchCityPartner, fetchCityOverview, fetchCityOnboarding, fetchCityClients, fetchCityFees] as const;
-const writes = [updateCity, addCityActivity, deleteCityActivity, addPipelineCity, saveCityIntel, verifyCityIntel, addCityContact, deleteCityContact, createCityPartner, updateCityPartner, resendCityPartnerInvite, countersignCityAgreement, reviewCityW9, updateCityFee, setProjectFundsReceived, signCityAgreement, submitCityW9, updateCityProfile, deleteCityPartner, requestCity, approveCityRequest, declineCityRequest, bookCityMeeting, cancelCityMeeting] as const;
+const writes = [updateCity, addCityActivity, deleteCityActivity, addPipelineCity, saveCityIntel, verifyCityIntel, addCityContact, deleteCityContact, createCityPartner, updateCityPartner, resendCityPartnerInvite, countersignCityAgreement, voidCityAgreement, reviewCityW9, updateCityFee, setProjectFundsReceived, signCityAgreement, submitCityW9, updateCityProfile, deleteCityPartner, requestCity, approveCityRequest, declineCityRequest, bookCityMeeting, cancelCityMeeting] as const;
 
 const slice = createSlice({
   name: "cityPartner",

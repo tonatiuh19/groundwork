@@ -812,6 +812,20 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
         "200": { description: "{ ok, ... }" }
+  /api/admin/city-partners/{id}/agreements/{aid}/void:
+    post:
+      summary: "Void & re-issue a City Partner agreement (super admin)"
+      tags: [portal-admin]
+      description: "super_admin only (else 403). Body { reason (3-500), confirm_name (the LLC name, case-insensitive), fee_cents_per_sqft? (new rate 0-10000) }. Keeps the voided copy (voided_at, void_reason, voided_by_admin_id), voids unpaid fees (pending / approved), sets the new rate, logs both in city_partner_changes and emails the partner (tplCityPartnerNewAgreement) to sign the new agreement; their W-9 stays. 409 errors.agreementHasPaidFees when a fee was paid (refund first). 400 validation.voidReason / validation.confirmNameMismatch / validation.cityPartnerRate; 404 when the agreement is unknown or already voided."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok }" }
+        "400": { description: "validation.voidReason | validation.confirmNameMismatch | validation.cityPartnerRate" }
+        "403": { description: "errors.forbidden" }
+        "404": { description: "errors.notFound" }
+        "409": { description: "errors.agreementHasPaidFees" }
   /api/admin/city-partners/{id}/agreements/{aid}/countersign:
     post:
       summary: "Countersign for Groundwork"

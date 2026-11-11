@@ -2398,6 +2398,8 @@ CREATE TABLE IF NOT EXISTS `city_partner_agreements` (
   `countersigner_name` VARCHAR(200) DEFAULT NULL,
   `countersigned_at` DATETIME DEFAULT NULL,
   `voided_at` DATETIME DEFAULT NULL,
+  `void_reason` VARCHAR(500) DEFAULT NULL COMMENT 'Why staff voided it (e.g. rate changed); the partner signs a new one',
+  `voided_by_admin_id` INT UNSIGNED DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_cp_agreements_partner` (`city_partner_id`, `id`),
   CONSTRAINT `fk_cp_agreements_partner` FOREIGN KEY (`city_partner_id`) REFERENCES `city_partners` (`id`) ON DELETE CASCADE

@@ -284,14 +284,15 @@
     "cityName": "Escribe el nombre de la ciudad.",
     "cityActivitySummary": "Escribe qué pasó.",
     "cityPartnerCompany": "Escribe el nombre legal de la LLC. Aparece en el acuerdo.",
-    "confirmNameMismatch": "El nombre que escribiste no coincide.",
+    "confirmNameMismatch": "Escribe el nombre de la LLC exactamente para confirmar.",
     "cityPartnerRate": "Escribe una tarifa de $0.00 a $100.00 (hasta 2 decimales) y el nombre de la LLC.",
     "pickStaff": "Elige al menos una persona de Groundwork.",
     "emailOrPhone": "Escribe un correo válido o un teléfono de al menos 10 dígitos.",
     "emailOrPhoneRequired": "Escribe tu correo o celular.",
     "emailOrPhoneOne": "Agrega un correo, un teléfono o ambos.",
     "smsConsentNoEmail": "Sin correo, el propietario debe aceptar recibir mensajes de texto.",
-    "eventImageUrl": "Usa un enlace directo a una imagen (que termine en .jpg, .png o .webp), o sube la imagen."
+    "eventImageUrl": "Usa un enlace directo a una imagen (que termine en .jpg, .png o .webp), o sube la imagen.",
+    "voidReason": "Escribe un motivo breve."
   },
   "errors": {
     "submitFailed": "No pudimos enviar tu solicitud.",
@@ -452,7 +453,9 @@
     "aiTextTooLong": "Este borrador es demasiado largo para mejorarlo.",
     "aiRewriteFailed": "La IA no pudo mejorar este texto. Intenta redactarlo de otra forma.",
     "aiChangedFacts": "La IA cambió un nombre, enlace o número, así que dejamos tu texto.",
-    "aiUnavailable": "Mejorar con IA no está disponible en este momento."
+    "aiUnavailable": "Mejorar con IA no está disponible en este momento.",
+    "agreementHasPaidFees": "Ya se pagó una cuota bajo este acuerdo. Reembólsala primero y luego anúlalo.",
+    "agreementAlreadyVoided": "Este acuerdo ya fue anulado."
   },
   "getCreditReport": {
     "metaTitle": "Reporte de crédito gratis · Sin afectar su puntaje",
@@ -5148,7 +5151,7 @@
     "dueFrom": "Vence desde",
     "dueTo": "Vence hasta",
     "termsEditable": "Ambos aparecen en el acuerdo. Puedes cambiarlos hasta que el socio firme.",
-    "termsLocked": "Bloqueado: el socio firmó con esta tarifa y este nombre de LLC. Cambiarlos requiere una nueva versión del acuerdo y una nueva firma.",
+    "termsLocked": "Bloqueado: el socio firmó con esta tarifa y nombre de LLC. Para cambiarlos, un super admin usa \"Anular y enviar nuevo acuerdo\" abajo y el socio firma de nuevo.",
     "termsConfirmTitle": "Cambiar condiciones del acuerdo",
     "termsConfirm": "Sí, actualizar el acuerdo",
     "termsConfirmText": "El acuerdo nombrará a {{company}} y pagará {{rate}} por pie cuadrado. Si el socio tiene el acuerdo abierto, se le pedirá leer la nueva versión antes de firmar.",
@@ -5166,7 +5169,8 @@
       "phone": "Teléfono cambiado",
       "preferred_language": "Idioma cambiado",
       "cities": "Ciudades cambiadas",
-      "viewed_as": "Vista como socio"
+      "viewed_as": "Vista como socio",
+      "agreement_voided": "Acuerdo anulado (se envió uno nuevo)"
     },
     "hello": {
       "morning": "Buenos días, {{name}}",
@@ -5287,7 +5291,14 @@
     "addressLine": "Calle y número",
     "addressCity": "Ciudad",
     "addressZip": "Código postal",
-    "addressHint": "Dirección en California donde Groundwork puede enviar avisos según el acuerdo."
+    "addressHint": "Dirección en California donde Groundwork puede enviar avisos según el acuerdo.",
+    "voidAgreement": "Anular y enviar nuevo acuerdo",
+    "voidTitle": "¿Anular este acuerdo?",
+    "voidConfirm": "Anular y enviar nuevo acuerdo",
+    "voidText": "El acuerdo firmado a {{rate}} por pie cuadrado queda guardado como anulado y deja de contar. Las cuotas sin pagar bajo ese acuerdo se anulan. El socio recibe un correo para revisar y firmar un nuevo acuerdo con la tarifa de abajo; su W-9 sigue registrado.",
+    "voidNewRate": "Nueva tarifa (USD por pie cuadrado)",
+    "voidReason": "Motivo",
+    "voidReasonPh": "p. ej. Tarifa cambiada a $1.00"
   },
   "danger": {
     "typeToConfirm": "Escribe \"{{text}}\" para confirmar",

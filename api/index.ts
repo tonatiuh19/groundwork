@@ -5067,6 +5067,26 @@ export function tplCityPartnerCountersigned(d: { lang: Lang; first_name: string;
   });
 }
 
+/** Agreement voided and re-issued (e.g. new rate): sign the new one so the partner has a record at the new terms. */
+export function tplCityPartnerNewAgreement(d: { lang: Lang; first_name: string; fee_cents_per_sqft: number; old_fee_cents_per_sqft: number | null }) {
+  const l = d.lang;
+  const rate = `${centsMoney(d.fee_cents_per_sqft)} ${tr(l, "per sq ft", "por pie cuadrado")}`;
+  const facts: Array<[string, string]> = [[tr(l, "Your fee", "Tu cuota"), rate]];
+  return tplPartnerEmail({
+    lang: l,
+    subject: tr(l, "New City Partner agreement to sign", "Nuevo acuerdo de Socio de Ciudad para firmar"),
+    kicker: tr(l, "Updated agreement", "Acuerdo actualizado"),
+    headline: tr(l, `Please sign your new agreement, ${d.first_name}`, `Firma tu nuevo acuerdo, ${d.first_name}`),
+    intro: tr(
+      l,
+      "We updated your City Partner agreement. Your previous agreement was replaced, so please review and sign the new one. Your W-9 is still on file.",
+      "Actualizamos tu acuerdo de Socio de Ciudad. Tu acuerdo anterior fue reemplazado, así que revisa y firma el nuevo. Tu W-9 sigue registrado.",
+    ),
+    facts,
+    cta: { url: `${APP_URL}/city/agreement`, label: tr(l, "Review and sign", "Revisar y firmar") },
+  });
+}
+
 export function tplCityPartnerFeePaid(d: { lang: Lang; amount_cents: number; city_name: string; sq_ft: number; rate_cents_per_sqft: number }) {
   const l = d.lang;
   const amount = centsMoney(d.amount_cents);
@@ -41208,6 +41228,65 @@ function buildApp(): Express {
       res.json({ ok: true });
     }),
   );
+  // Void & re-issue (super admin): keeps the voided copy, optionally sets the new rate, emails the partner to
+  // sign the new agreement. Refused once a fee was paid under it (refund it first).
+  app.post(
+    "/api/admin/city-partners/:id/agreements/:aid/void",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const user = portalUser(res);
+      if (user.role !== "super_admin") throw new HttpError(403, "errors.forbidden");
+      const id = parseId(req.params.id);
+      const aid = parseId(req.params.aid);
+      const p = await cpLoad(id);
+      const reason = String(req.body?.reason || "").trim().slice(0, 500);
+      if (reason.length < 3) throw new HttpError(400, "validation.voidReason");
+      // Typed confirmation: the LLC name exactly (case and spaces don't matter).
+      const norm = (v: unknown) => String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+      if (!p.company || norm(req.body?.confirm_name) !== norm(p.company)) throw new HttpError(400, "validation.confirmNameMismatch");
+      const newRate = req.body?.fee_cents_per_sqft === undefined || req.body?.fee_cents_per_sqft === null ? null : cpRate(req.body.fee_cents_per_sqft);
+      const [[ag]] = (await pool.query<RowDataPacket[]>(
+        `SELECT id, fee_cents_per_sqft, countersigned_at FROM city_partner_agreements WHERE id = ? AND city_partner_id = ? AND voided_at IS NULL`,
+        [aid, id],
+      )) as unknown as [RowDataPacket[]];
+      if (!ag) throw new HttpError(404, "errors.notFound");
+      const [[paid]] = (await pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) AS n FROM city_partner_fees WHERE city_partner_id = ? AND status IN ('paid', 'refund_due')`,
+        [id],
+      )) as unknown as [RowDataPacket[]];
+      if (Number(paid?.n) > 0) throw new HttpError(409, "errors.agreementHasPaidFees");
+      await withTx(async (conn) => {
+        const [r] = await conn.execute<ResultSetHeader>(
+          `UPDATE city_partner_agreements SET voided_at = NOW(), void_reason = ?, voided_by_admin_id = ? WHERE id = ? AND voided_at IS NULL`,
+          [reason, user.id, aid],
+        );
+        if (!r.affectedRows) throw new HttpError(409, "errors.agreementAlreadyVoided");
+        // Unpaid fees under the voided terms go; the new agreement creates fresh ones once countersigned.
+        await conn.execute(`UPDATE city_partner_fees SET status = 'void' WHERE city_partner_id = ? AND status IN ('pending', 'approved')`, [id]);
+        if (newRate !== null && newRate !== Number(p.fee_cents_per_sqft)) {
+          await conn.execute(`UPDATE city_partners SET fee_cents_per_sqft = ? WHERE id = ?`, [newRate, id]);
+        }
+      });
+      await cpLog(id, "agreement_voided", `v#${aid} ${centsMoney(Number(ag.fee_cents_per_sqft))}`, reason, user.id);
+      if (newRate !== null && newRate !== Number(p.fee_cents_per_sqft)) {
+        await cpLog(id, "fee_cents_per_sqft", p.fee_cents_per_sqft, newRate, user.id);
+      }
+      const after = await cpLoad(id);
+      if (after.status === "active" && after.email) {
+        await safeSend(
+          String(after.email),
+          tplCityPartnerNewAgreement({
+            lang: asLang(after.preferred_language),
+            first_name: String(after.first_name || ""),
+            fee_cents_per_sqft: Number(after.fee_cents_per_sqft),
+            old_fee_cents_per_sqft: Number(ag.fee_cents_per_sqft),
+          }),
+        );
+      }
+      res.json({ ok: true });
+    }),
+  );
+
   app.post(
     "/api/admin/city-partners/:id/agreements/:aid/countersign",
     requireAdmin("approvals"),
