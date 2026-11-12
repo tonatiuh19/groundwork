@@ -1625,10 +1625,11 @@ CREATE TABLE IF NOT EXISTS `appointments` (
 CREATE TABLE IF NOT EXISTS `appointment_attendees` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `appointment_id` INT UNSIGNED NOT NULL,
-  `kind` ENUM('admin','contractor','lender','homeowner','guest') NOT NULL,
+  `kind` ENUM('admin','contractor','lender','homeowner','guest','city_partner') NOT NULL,
   `admin_id` INT UNSIGNED DEFAULT NULL,
   `contractor_id` INT UNSIGNED DEFAULT NULL,
   `lender_id` INT UNSIGNED DEFAULT NULL,
+  `city_partner_id` INT UNSIGNED DEFAULT NULL,
   `name` VARCHAR(200) DEFAULT NULL,
   `email` VARCHAR(255) DEFAULT NULL,
   `phone` VARCHAR(40) DEFAULT NULL,
@@ -1640,6 +1641,7 @@ CREATE TABLE IF NOT EXISTS `appointment_attendees` (
   KEY `idx_appt_attendees_contractor` (`contractor_id`),
   KEY `idx_appt_attendees_admin` (`admin_id`),
   KEY `idx_appt_attendees_lender` (`lender_id`),
+  KEY `idx_appt_attendees_city_partner` (`city_partner_id`),
   CONSTRAINT `fk_appt_attendees_appt` FOREIGN KEY (`appointment_id`) REFERENCES `appointments`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_appt_attendees_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_appt_attendees_contractor` FOREIGN KEY (`contractor_id`) REFERENCES `contractors`(`id`) ON DELETE CASCADE,
@@ -2319,6 +2321,9 @@ CREATE TABLE IF NOT EXISTS `city_partners` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_city_partners_email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Added after city_partners exists (table order).
+ALTER TABLE `appointment_attendees` ADD CONSTRAINT `fk_appt_attendees_city_partner` FOREIGN KEY (`city_partner_id`) REFERENCES `city_partners`(`id`) ON DELETE CASCADE;
 
 CREATE TABLE IF NOT EXISTS `city_partner_changes` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,

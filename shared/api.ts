@@ -1963,7 +1963,7 @@ export type AppointmentKind = (typeof APPOINTMENT_KINDS)[number];
 export const APPOINTMENT_LOCATION_TYPES = ["onsite", "office", "phone", "video"] as const;
 export type AppointmentLocationType = (typeof APPOINTMENT_LOCATION_TYPES)[number];
 export type AppointmentStatus = "scheduled" | "cancelled" | "completed" | "no_show";
-export type AppointmentAttendeeKind = "admin" | "contractor" | "lender" | "homeowner" | "guest";
+export type AppointmentAttendeeKind = "admin" | "contractor" | "lender" | "homeowner" | "guest" | "city_partner";
 
 export interface AppointmentAttendee {
   id: number;
@@ -1971,6 +1971,7 @@ export interface AppointmentAttendee {
   admin_id: number | null;
   contractor_id: number | null;
   lender_id: number | null;
+  city_partner_id?: number | null;
   name: string | null;
   email?: string | null;
   phone?: string | null;
@@ -2012,10 +2013,19 @@ export interface Appointment {
   attendees: AppointmentAttendee[];
 }
 
+/** City Partner staff can tag on an appointment (`GET /api/admin/appointments/city-partners`). */
+export interface AppointmentCityPartnerOption {
+  id: number;
+  name: string;
+  company: string | null;
+  city_ids: number[];
+}
+
 export type AppointmentAttendeeInput =
   | { kind: "admin"; admin_id: number }
   | { kind: "contractor"; contractor_id: number }
   | { kind: "lender"; lender_id: number }
+  | { kind: "city_partner"; city_partner_id: number }
   | { kind: "guest"; name: string; email?: string | null; phone?: string | null; preferred_language?: "en" | "es" };
 
 export interface AppointmentBody {

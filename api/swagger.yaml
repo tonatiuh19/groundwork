@@ -4509,6 +4509,14 @@ paths:
       responses:
         "200": { description: "{ ok, lenders[] }" }
         "404": { description: "errors.notFound" }
+  /api/admin/appointments/city-partners:
+    get:
+      tags: [portal-admin]
+      summary: City Partners staff can tag on an appointment
+      description: "Requires `projects.read`. Active City Partners only, with their assigned `city_ids` (the drawer lists the picked city's partners). Returns { items: [{ id, name, company, city_ids }] }."
+      responses:
+        "200":
+          description: OK
   /api/admin/appointments:
     get:
       summary: "Appointments in a range (calendar)"
@@ -4519,7 +4527,7 @@ paths:
     post:
       summary: "Schedule an appointment"
       tags: [portal-admin]
-      description: "Requires `projects.write`. Body { kind (property_inspection|site_visit|lender_meeting|consultation|call|city_meeting|presentation|other), date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, city_id? (City Pipeline record: omit = the client / lead / project's city, null = none; required for city_meeting / presentation → 400 validation.appointmentCity; a newly set city adds a meeting / presentation entry to that city's history; also accepted on PATCH), notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'guest',name,email?,phone?}] }. Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
+      description: "Requires `projects.write`. Body { kind (property_inspection|site_visit|lender_meeting|consultation|call|city_meeting|presentation|other), date (YYYY-MM-DD), start (HH:mm), duration_minutes, timezone?, location_type: onsite|office|phone|video, location?, video_url?, description? (shared), notes? (internal), client_id? | lead_id? | project_id?, owner_admin_id?, city_id? (City Pipeline record: omit = the client / lead / project's city, null = none; required for city_meeting / presentation → 400 validation.appointmentCity; a newly set city adds a meeting / presentation entry to that city's history; also accepted on PATCH), notify_homeowner, attendees: [{kind:'admin',admin_id}|{kind:'contractor',contractor_id}|{kind:'lender',lender_id}|{kind:'city_partner',city_partner_id}|{kind:'guest',name,email?,phone?}] } (city_partner: active City Partners only; they get the invite and see the appointment in their portal Meetings). Owner is always tagged; the homeowner is added when notify_homeowner. Everyone gets email + calendar invite (.ics) and a text; onsite defaults to the property address. Overlaps return as `conflicts` (warning, not a block); Outlook events marked Free never count. teams_meeting: true creates a Teams meeting on the owner's connected Outlook calendar (join link saved to video_url). With a connected mailbox, the appointment is also written onto the owner's and tagged staff's Outlook calendars (no Outlook attendees, so people only get the CRM invite); edits and cancellations follow. Appointments with source outlook came from Outlook and never trigger CRM invites or reminders."
       responses:
         "201": { description: "{ ok, appointment, conflicts[] }" }
         "400": { description: "validation.appointmentTime | validation.attendeeContact | validation.invalidReference" }

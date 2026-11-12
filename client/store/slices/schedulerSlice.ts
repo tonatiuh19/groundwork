@@ -3,6 +3,7 @@ import type {
   AffiliateAppointment,
   Appointment,
   AppointmentBody,
+  AppointmentCityPartnerOption,
   AppointmentConflict,
   Lender,
   LenderBody,
@@ -74,6 +75,13 @@ export const fetchLenders = createApiThunk<{ lenders: Lender[] }, void>(
   async () => (await api.get("/admin/lenders")).data,
 );
 
+/** City Partners staff can tag on an appointment. */
+export const fetchAppointmentCityPartners = createApiThunk<{ items: AppointmentCityPartnerOption[] }, void>(
+  "scheduler/cityPartners",
+  "admin",
+  async () => (await api.get("/admin/appointments/city-partners")).data,
+);
+
 export const saveLender = createApiThunk<{ lenders: Lender[] }, { id: number | null; body: LenderBody }>(
   "scheduler/saveLender",
   "admin",
@@ -126,6 +134,7 @@ type State = {
   saveError: string | null;
   conflicts: AppointmentConflict[];
   lenders: Lender[];
+  cityPartners: AppointmentCityPartnerOption[];
   lendersSaving: boolean;
   lendersError: string | null;
   mine: SchedulerResponse | null;
@@ -145,6 +154,7 @@ const initialState: State = {
   saveError: null,
   conflicts: [],
   lenders: [],
+  cityPartners: [],
   lendersSaving: false,
   lendersError: null,
   mine: null,
@@ -203,6 +213,9 @@ const slice = createSlice({
     b.addCase(fetchLenders.fulfilled, (s, a) => {
       s.lenders = a.payload.lenders;
     })
+      .addCase(fetchAppointmentCityPartners.fulfilled, (s, a) => {
+        s.cityPartners = a.payload.items;
+      })
       .addCase(saveLender.pending, (s) => {
         s.lendersSaving = true;
         s.lendersError = null;

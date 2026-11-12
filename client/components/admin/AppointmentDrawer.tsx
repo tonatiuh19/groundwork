@@ -7,6 +7,7 @@ import {
   Building2,
   CalendarClock,
   CheckCircle2,
+  Handshake,
   HardHat,
   Landmark,
   MapPin,
@@ -32,6 +33,7 @@ import { fetchAdminAssignees, fetchAdminContractors } from "@/store/slices/admin
 import {
   cancelAppointment,
   clearSchedulerErrors,
+  fetchAppointmentCityPartners,
   fetchLenders,
   saveAppointment,
   setAppointmentStatus,
@@ -90,6 +92,7 @@ export default function AppointmentDrawer({
   const staff = useAppSelector((s) => s.adminPortal.assignees.items);
   const contractors = useAppSelector((s) => s.adminPortal.contractors.items);
   const lenders = useAppSelector((s) => s.scheduler.lenders);
+  const cityPartners = useAppSelector((s) => s.scheduler.cityPartners);
   const { saving, saveError, conflicts } = useAppSelector((s) => s.scheduler);
   const editing = Boolean(appointment);
   const tz = appointment?.timezone || DEFAULT_TZ;
@@ -116,6 +119,7 @@ export default function AppointmentDrawer({
   const [staffIds, setStaffIds] = useState<number[]>([]);
   const [contractorIds, setContractorIds] = useState<number[]>([]);
   const [lenderIds, setLenderIds] = useState<number[]>([]);
+  const [partnerIds, setPartnerIds] = useState<number[]>([]);
   const [guests, setGuests] = useState<Guest[]>([]);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -134,6 +138,7 @@ export default function AppointmentDrawer({
     void dispatch(fetchAdminAssignees());
     void dispatch(fetchAdminContractors({ status: "active", limit: 100 }));
     void dispatch(fetchLenders());
+    void dispatch(fetchAppointmentCityPartners());
     setRecord(
       appointment?.project_id
         ? { kind: "project", id: appointment.project_id, label: [appointment.project_public_id, appointment.client_name].filter(Boolean).join(" · ") }
@@ -162,6 +167,7 @@ export default function AppointmentDrawer({
       setStaffIds(appointment.attendees.filter((a) => a.kind === "admin" && a.admin_id).map((a) => a.admin_id!));
       setContractorIds(appointment.attendees.filter((a) => a.kind === "contractor" && a.contractor_id).map((a) => a.contractor_id!));
       setLenderIds(appointment.attendees.filter((a) => a.kind === "lender" && a.lender_id).map((a) => a.lender_id!));
+      setPartnerIds(appointment.attendees.filter((a) => a.kind === "city_partner" && a.city_partner_id).map((a) => a.city_partner_id!));
       setGuests(appointment.attendees.filter((a) => a.kind === "guest").map((a) => ({ name: a.name || "", email: a.email || "", phone: a.phone || "" })));
     } else {
       setCityId(context?.city_id ?? null);
@@ -181,6 +187,7 @@ export default function AppointmentDrawer({
       setStaffIds(me?.id ? [me.id] : []);
       setContractorIds([]);
       setLenderIds([]);
+      setPartnerIds([]);
       setGuests([]);
     }
   }, [open, appointment, context?.date, dispatch, me?.id]);
@@ -193,12 +200,15 @@ export default function AppointmentDrawer({
       ...staffIds.map((id) => ({ kind: "admin" as const, admin_id: id })),
       ...contractorIds.map((id) => ({ kind: "contractor" as const, contractor_id: id })),
       ...lenderIds.map((id) => ({ kind: "lender" as const, lender_id: id })),
+      ...partnerIds.map((id) => ({ kind: "city_partner" as const, city_partner_id: id })),
       ...guests
         .filter((g) => g.name.trim() && (g.email.trim() || g.phone.trim()))
         .map((g) => ({ kind: "guest" as const, name: g.name.trim(), email: g.email.trim() || null, phone: g.phone.trim() || null })),
     ],
-    [staffIds, contractorIds, lenderIds, guests],
+    [staffIds, contractorIds, lenderIds, partnerIds, guests],
   );
+  // City meetings / Presentations: city required, City Partners can be tagged.
+  const isCityKind = kind === "city_meeting" || kind === "presentation";
   const hasRecord = Boolean(record || context?.client_id || context?.lead_id || context?.project_id);
 
   const save = async () => {
@@ -359,7 +369,7 @@ export default function AppointmentDrawer({
           </div>
           <MultiSearchPicker
             icon={MapPin}
-            label={`${t("appt.city")}${kind === "city_meeting" || kind === "presentation" ? " *" : ""}`}
+            label={`${t("appt.city")}${isCityKind ? " *" : ""}`}
             items={allCities.filter((c) => !c.archived).map((c) => ({ id: c.id, label: c.name }))}
             selected={cityId ? [cityId] : []}
             disabled={cancelled}
@@ -471,6 +481,22 @@ export default function AppointmentDrawer({
             empty={t("appt.noLenders")}
             disabled={cancelled}
           />
+          {isCityKind || partnerIds.length ? (
+            <>
+              <TagGroup
+                icon={Handshake}
+                label={t("appt.tagCityPartner")}
+                items={cityPartners
+                  .filter((p) => !cityId || p.city_ids.includes(cityId) || partnerIds.includes(p.id))
+                  .map((p) => ({ id: p.id, label: [p.company, p.name].filter(Boolean).join(" · ") }))}
+                selected={partnerIds}
+                onToggle={(id) => toggle(partnerIds, setPartnerIds, id)}
+                empty={cityId ? t("appt.noCityPartnersInCity") : t("appt.noCityPartners")}
+                disabled={cancelled}
+              />
+              <p className="pf-hint">{cityId ? t("appt.cityPartnerHint") : t("appt.cityPartnerPickCity")}</p>
+            </>
+          ) : null}
           {!cancelled ? (
             <button type="button" className="pf-btn pf-btn--sm gw-quick-add" onClick={() => setNewLender({ ...EMPTY_LENDER })}>
               <Plus size={13} aria-hidden /> {t("lenders.add")}

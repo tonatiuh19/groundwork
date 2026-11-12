@@ -28314,6 +28314,7 @@ type ApptAttendeeInput =
   | { kind: "admin"; admin_id: number }
   | { kind: "contractor"; contractor_id: number }
   | { kind: "lender"; lender_id: number }
+  | { kind: "city_partner"; city_partner_id: number }
   | {
       kind: "guest";
       name: string;
@@ -28334,6 +28335,8 @@ function parseAttendeeInputs(raw: unknown): ApptAttendeeInput[] {
       out.push({ kind, contractor_id: parseId(a.contractor_id) });
     else if (kind === "lender")
       out.push({ kind, lender_id: parseId(a.lender_id) });
+    else if (kind === "city_partner")
+      out.push({ kind, city_partner_id: parseId(a.city_partner_id) });
     else if (kind === "guest") {
       const name = String(a.name || "")
         .trim()
@@ -28364,6 +28367,7 @@ async function resolveAttendees(
     admin_id: number | null;
     contractor_id: number | null;
     lender_id: number | null;
+    city_partner_id: number | null;
     name: string;
     email: string | null;
     phone: string | null;
@@ -28388,6 +28392,7 @@ async function resolveAttendees(
         admin_id: Number(r.id),
         contractor_id: null,
         lender_id: null,
+        city_partner_id: null,
         name: `${r.first_name} ${r.last_name}`.trim(),
         email: r.email ? String(r.email) : null,
         phone: r.phone ? String(r.phone) : null,
@@ -28404,6 +28409,7 @@ async function resolveAttendees(
         admin_id: null,
         contractor_id: Number(r.id),
         lender_id: null,
+        city_partner_id: null,
         name: [`${r.first_name || ""} ${r.last_name || ""}`.trim(), r.company]
           .filter(Boolean)
           .join(" · "),
@@ -28422,7 +28428,26 @@ async function resolveAttendees(
         admin_id: null,
         contractor_id: null,
         lender_id: Number(r.id),
+        city_partner_id: null,
         name: [r.contact_name, r.company].filter(Boolean).join(" · "),
+        email: r.email ? String(r.email) : null,
+        phone: r.phone ? String(r.phone) : null,
+        preferred_language: asLang(r.preferred_language),
+      });
+    } else if (a.kind === "city_partner") {
+      // Active partners only; they get the invite like any tagged person.
+      const [[r]] = (await exec.query<RowDataPacket[]>(
+        `SELECT id, email, phone, first_name, last_name, company, preferred_language FROM city_partners WHERE id = ? AND status = 'active' LIMIT 1`,
+        [a.city_partner_id],
+      )) as unknown as [RowDataPacket[]];
+      if (!r) throw new HttpError(400, "validation.invalidReference");
+      rows.push({
+        kind: "city_partner",
+        admin_id: null,
+        contractor_id: null,
+        lender_id: null,
+        city_partner_id: Number(r.id),
+        name: [`${r.first_name || ""} ${r.last_name || ""}`.trim(), r.company].filter(Boolean).join(" · "),
         email: r.email ? String(r.email) : null,
         phone: r.phone ? String(r.phone) : null,
         preferred_language: asLang(r.preferred_language),
@@ -28433,6 +28458,7 @@ async function resolveAttendees(
         admin_id: null,
         contractor_id: null,
         lender_id: null,
+        city_partner_id: null,
         name: a.name,
         email: a.email ?? null,
         phone: a.phone ?? null,
@@ -28544,6 +28570,7 @@ function mapAppointment(
       admin_id: t.admin_id != null ? Number(t.admin_id) : null,
       contractor_id: t.contractor_id != null ? Number(t.contractor_id) : null,
       lender_id: t.lender_id != null ? Number(t.lender_id) : null,
+      city_partner_id: t.city_partner_id != null ? Number(t.city_partner_id) : null,
       name: t.name ? String(t.name) : null,
       ...(opts.internal
         ? {
@@ -29056,13 +29083,14 @@ export async function createAppointment(
     const apptId = Number(ins.insertId);
     for (const p of people) {
       await conn.execute(
-        `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, city_partner_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           apptId,
           p.kind,
           p.admin_id,
           p.contractor_id,
           p.lender_id,
+          p.city_partner_id,
           p.name,
           p.email,
           p.phone,
@@ -29223,25 +29251,27 @@ async function updateAppointment(
       admin_id?: unknown;
       contractor_id?: unknown;
       lender_id?: unknown;
+      city_partner_id?: unknown;
       email?: unknown;
       phone?: unknown;
     }) =>
       x.kind === "guest"
         ? `guest:${x.email || x.phone}`
-        : `${x.kind}:${x.admin_id ?? x.contractor_id ?? x.lender_id}`;
+        : `${x.kind}:${x.admin_id ?? x.contractor_id ?? x.lender_id ?? x.city_partner_id}`;
     const current = attendees.filter((t) => t.kind !== "homeowner");
     const wantKeys = new Set(wanted.map(keyOf));
     const curKeys = new Set(current.map((t) => keyOf(t as any)));
     removed = current.filter((t) => !wantKeys.has(keyOf(t as any)));
     for (const p of wanted.filter((w) => !curKeys.has(keyOf(w)))) {
       const [ins] = await pool.execute<ResultSetHeader>(
-        `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, city_partner_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           p.kind,
           p.admin_id,
           p.contractor_id,
           p.lender_id,
+          p.city_partner_id,
           p.name,
           p.email,
           p.phone,
@@ -29682,6 +29712,28 @@ function registerSchedulerRoutes(app: Express) {
   );
 
   // ── Appointments (staff) ──
+  // City Partners staff can tag on an appointment (active only), with their assigned cities so the
+  // drawer can show that city's partners first. Light list: no onboarding / fee lookups.
+  app.get(
+    "/api/admin/appointments/city-partners",
+    requireAdmin("projects.read"),
+    route(async (_req, res) => {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT cp.id, cp.first_name, cp.last_name, cp.company,
+           (SELECT GROUP_CONCAT(cc.city_id) FROM city_partner_cities cc WHERE cc.city_partner_id = cp.id) AS city_ids
+         FROM city_partners cp WHERE cp.status = 'active' ORDER BY COALESCE(NULLIF(cp.company, ''), cp.first_name) LIMIT 200`,
+      );
+      res.json({
+        ok: true,
+        items: rows.map((r) => ({
+          id: Number(r.id),
+          name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
+          company: r.company ? String(r.company) : null,
+          city_ids: r.city_ids ? String(r.city_ids).split(",").map(Number) : [],
+        })),
+      });
+    }),
+  );
   app.get(
     "/api/admin/appointments",
     requireAdmin("projects.read"),
@@ -42276,10 +42328,11 @@ function buildApp(): Express {
         `SELECT a.*, s.name AS city_name, (a.city_partner_id <=> ?) AS is_mine,
            (SELECT GROUP_CONCAT(CONCAT_WS(' ', ad.first_name, ad.last_name) SEPARATOR '|') FROM appointment_attendees t JOIN admins ad ON ad.id = t.admin_id WHERE t.appointment_id = a.id AND t.kind = 'admin') AS staff_names
          FROM appointments a LEFT JOIN service_cities s ON s.id = a.city_id
-         WHERE (a.city_partner_id = ? OR (a.kind IN ('city_meeting', 'presentation') AND a.city_id IN (?)))
+         WHERE (a.city_partner_id = ? OR (a.kind IN ('city_meeting', 'presentation') AND a.city_id IN (?))
+                OR EXISTS (SELECT 1 FROM appointment_attendees ct WHERE ct.appointment_id = a.id AND ct.city_partner_id = ?))
            ${cityId ? "AND a.city_id = ?" : ""} AND a.status <> 'cancelled' AND a.ends_at >= NOW() - INTERVAL 1 DAY
          ORDER BY a.starts_at LIMIT 50`,
-        cityId ? [me, me, mine.length ? mine : [0], cityId] : [me, me, mine.length ? mine : [0]],
+        cityId ? [me, me, mine.length ? mine : [0], me, cityId] : [me, me, mine.length ? mine : [0], me],
       );
       res.json({ ok: true, items: rows.map((r) => ({ ...cityMeetingRow(r), mine: Number(r.is_mine) === 1 })) });
     }),
@@ -44332,7 +44385,7 @@ function buildApp(): Express {
       name: "create_appointment",
       readOnly: false,
       description:
-        "Schedule an appointment (e.g. property inspection) on a client / lead / project and tag people. Everyone tagged + the homeowner (notify_homeowner) gets an email with a calendar invite and a text. Also added to the owner's and tagged staff's Outlook calendars when their mailbox is connected. Onsite defaults to the property address. kind: property_inspection | site_visit | lender_meeting | consultation | call | city_meeting | presentation | other. city_id: City Pipeline city (omit = the client / lead / project's city; required for city_meeting / presentation). location_type: onsite | office | phone | video. attendees: [{kind:'contractor',contractor_id}, {kind:'lender',lender_id}, {kind:'admin',admin_id}, {kind:'guest',name,email,phone}]. Dry-run first.",
+        "Schedule an appointment (e.g. property inspection) on a client / lead / project and tag people. Everyone tagged + the homeowner (notify_homeowner) gets an email with a calendar invite and a text. Also added to the owner's and tagged staff's Outlook calendars when their mailbox is connected. Onsite defaults to the property address. kind: property_inspection | site_visit | lender_meeting | consultation | call | city_meeting | presentation | other. city_id: City Pipeline city (omit = the client / lead / project's city; required for city_meeting / presentation). location_type: onsite | office | phone | video. attendees: [{kind:'contractor',contractor_id}, {kind:'lender',lender_id}, {kind:'city_partner',city_partner_id}, {kind:'admin',admin_id}, {kind:'guest',name,email,phone}]. Dry-run first.",
       inputSchema: {
         type: "object",
         required: ["kind", "date", "start"],

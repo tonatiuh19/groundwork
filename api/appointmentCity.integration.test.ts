@@ -28,13 +28,14 @@ describe.skipIf(!hasDb)("appointment city (integration)", () => {
   let partner = "";
   let cityId = 0;
   let clientId = 0;
+  let partnerId = 0;
 
   beforeAll(async () => {
     process.env.VITEST = "true";
     admin = await session("admin_sessions", "admin_id", await ins(`INSERT INTO admins (email, first_name, last_name, role, status) VALUES (?, 'Ap', 'City', 'super_admin', 'active')`, [em("admin")]), "gw_admin_sid");
     cityId = await ins(`INSERT INTO service_cities (name, active, pipeline_stage) VALUES (?, 0, 'target')`, [`${prefix}Rancho`]);
     clientId = await ins(`INSERT INTO clients (first_name, last_name, email, status, city_id) VALUES ('Ana', 'City', ?, 'active', ?)`, [em("ana"), cityId]);
-    const p = await ins(`INSERT INTO city_partners (email, first_name, last_name, company, status) VALUES (?, 'Adam', 'Perez', 'Perez Test LLC', 'active')`, [em("adam")]);
+    const p = (partnerId = await ins(`INSERT INTO city_partners (email, first_name, last_name, company, status) VALUES (?, 'Adam', 'Perez', 'Perez Test LLC', 'active')`, [em("adam")]));
     await db.execute(`INSERT INTO city_partner_cities (city_partner_id, city_id) VALUES (?, ?)`, [p, cityId]);
     partner = await session("city_partner_sessions", "city_partner_id", p, "gw_city_sid");
   });
@@ -72,6 +73,17 @@ describe.skipIf(!hasDb)("appointment city (integration)", () => {
     // A partner can't cancel a meeting Groundwork booked.
     const council = mine.body.items.find((a: any) => a.title === `${prefix}council`);
     await request(app).post(`/api/city/meetings/${council.id}/cancel`).set("Cookie", partner).send({}).expect(404);
+  });
+
+  it("staff tag a City Partner on a Presentation: picker lists them, they're invited and see it in their portal", async () => {
+    const list = await request(app).get("/api/admin/appointments/city-partners").set("Cookie", admin).expect(200);
+    expect(list.body.items.find((x: any) => x.id === partnerId)).toMatchObject({ company: "Perez Test LLC", city_ids: [cityId] });
+    const r = await book({ kind: "presentation", title: `${prefix}pres`, city_id: cityId, attendees: [{ kind: "city_partner", city_partner_id: partnerId }] }).expect(201);
+    expect(r.body.appointment.attendees).toContainEqual(expect.objectContaining({ kind: "city_partner", city_partner_id: partnerId, email: em("adam") }));
+    const mine = await request(app).get("/api/city/meetings").set("Cookie", partner).expect(200);
+    expect(mine.body.items.find((a: any) => a.title === `${prefix}pres`)).toMatchObject({ mine: false });
+    // An unknown / inactive partner is refused.
+    expect((await book({ kind: "presentation", title: `${prefix}bad-p`, city_id: cityId, attendees: [{ kind: "city_partner", city_partner_id: 999999999 }] })).body.error).toBe("validation.invalidReference");
   });
 
   it("edge cases: older city meetings stay editable, clearing the city is refused, archived cities aren't inherited", async () => {
