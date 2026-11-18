@@ -361,6 +361,12 @@ export const fetchAdminClientDetail = createApiThunk<AdminClient, number>(
   A,
   async (id) => (await api.get<{ client: AdminClient }>(`/admin/clients/${id}`)).data.client,
 );
+/** Super admin: open the affiliate's portal read-only for 30 minutes (this browser only). */
+export const viewAsAffiliate = createApiThunk<{ ok: true; url: string; expires_at: string }, number>(
+  "adminPortal/viewAsAffiliate",
+  A,
+  async (id) => (await api.post(`/admin/affiliates/${id}/view-as`)).data,
+);
 export const fetchAdminAffiliateDetail = createApiThunk<AdminAffiliate, number>(
   "adminPortal/affiliateDetail",
   A,

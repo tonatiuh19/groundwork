@@ -8,6 +8,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { fetchAppointmentById, fetchCalendar } from "@/store/slices/schedulerSlice";
 import AppointmentDrawer from "@/components/admin/AppointmentDrawer";
 import { ErrorNote, PageHeader, StatusBadge } from "@/components/portal/kit";
+import BookingLinkBar from "@/components/admin/BookingLinkBar";
 import { useAdminCan } from "@/hooks/useAdminCan";
 import { DEFAULT_TZ, formatApptRange, formatApptTime, isoToZoned, monthGrid, todayIn } from "@/lib/apptTime";
 import { cn } from "@/lib/cn";
@@ -110,6 +111,7 @@ export default function AdminCalendar() {
           ) : undefined
         }
       />
+      <BookingLinkBar />
       <div className="gw-cal-toolbar">
         <div className="gw-cal-nav">
           <button type="button" className="pf-btn pf-btn--sm" onClick={() => shift(-1)} aria-label={t("calendar.prev")}>

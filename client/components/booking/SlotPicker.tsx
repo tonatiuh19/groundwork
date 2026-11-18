@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronLeft, ChevronRight, Clock } from "lucide-react";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
-import { fetchBookingSlots } from "@/store/slices/bookingSlice";
+import { fetchBookingSlots, slotKey } from "@/store/slices/bookingSlice";
+import type { BookingTypeKey } from "@shared/api";
 import { Loading } from "@/components/portal/kit";
 import { addDays, slotLabel, todayIn } from "@/lib/apptTime";
 import { cn } from "@/lib/cn";
@@ -18,7 +19,9 @@ export default function SlotPicker({
   advanceDays,
   value,
   onChange,
+  type,
 }: {
+  type?: BookingTypeKey;
   slug: string;
   timezone: string;
   days: number[];
@@ -44,12 +47,12 @@ export default function SlotPicker({
     if (!date && window14[0]) setDate(window14[0]);
   }, [date, window14]);
   useEffect(() => {
-    if (date && !slots[date]) void dispatch(fetchBookingSlots({ slug, date }));
-  }, [date, slug, slots, dispatch]);
+    if (date && !slots[slotKey(type, date)]) void dispatch(fetchBookingSlots({ slug, date, type }));
+  }, [date, slug, slots, dispatch, type]);
 
   const loc = lang === "es" ? "es-US" : "en-US";
   const fmt = (d: string, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(loc, { ...o, timeZone: "UTC" }).format(new Date(`${d}T12:00:00Z`));
-  const daySlots = date ? slots[date] : undefined;
+  const daySlots = date ? slots[slotKey(type, date)] : undefined;
 
   return (
     <div className="gw-slots">

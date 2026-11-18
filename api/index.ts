@@ -1212,6 +1212,7 @@ const ADMIN_NOTIFY_EVENT_KEYS: AdminNotifyEventKey[] = [
   "commission_accrued",
   "contract_sent",
   "city_partner",
+  "booking_created",
   "inbound_sms",
   "inbound_email",
 ];
@@ -1383,6 +1384,7 @@ const NOTIFY_AREAS: NotifyArea[] = ["leads", "clients", "contractors", "affiliat
 /** Event → area. inbound_sms / inbound_email are personal (line / mailbox owner) and never routed. */
 const NOTIFY_EVENT_AREA: Partial<Record<AdminNotifyEventKey, NotifyArea>> = {
   lead_submitted: "leads",
+  booking_created: "leads",
   get_credit_report_lead: "leads",
   contact_submitted: "leads",
   lead_converted: "leads",
@@ -1541,12 +1543,15 @@ async function deliverAdminNotificationChannels(opts: {
     smsBody?: string | null;
     inAppBody?: string | null;
   };
+  /** Every channel regardless of the person's switches (company booking page); text falls back to the campaign line. */
+  force?: boolean;
 }): Promise<{ email: boolean; in_app: boolean; sms: boolean }> {
   const { admin, eventKey, tpl } = opts;
   const result = { email: false, in_app: false, sms: false };
   const linkUrl = tpl.linkUrl || "/admin";
+  const on = (ch: "email" | "in_app" | "sms") => opts.force === true || adminNotifyPrefOn(admin.prefs, ch, eventKey);
 
-  if (adminNotifyPrefOn(admin.prefs, "email", eventKey)) {
+  if (on("email")) {
     try {
       const sent = await sendEmail({
         to: admin.email,
@@ -1562,7 +1567,7 @@ async function deliverAdminNotificationChannels(opts: {
     }
   }
 
-  if (adminNotifyPrefOn(admin.prefs, "in_app", eventKey) && admin.id > 0) {
+  if (on("in_app") && admin.id > 0) {
     const notifId = await insertAdminInAppNotification({
       adminId: admin.id,
       adminEmail: admin.email,
@@ -1580,13 +1585,9 @@ async function deliverAdminNotificationChannels(opts: {
     }
   }
 
-  if (
-    adminNotifyPrefOn(admin.prefs, "sms", eventKey) &&
-    admin.phone &&
-    admin.id > 0
-  ) {
+  if (on("sms") && admin.phone && admin.id > 0) {
     try {
-      const from = await resolveAssignedSmsFrom(admin.id);
+      const from = (await resolveAssignedSmsFrom(admin.id)) || (opts.force ? await resolveCampaignSmsFrom() : null);
       if (from) {
         const toDigits = normalizePhoneDigits(admin.phone);
         const fromDigits = normalizePhoneDigits(from);
@@ -3094,7 +3095,7 @@ async function loadPortalUser(
   const token = readCookie(req, cfg.cookie);
   if (!token) return null;
   const [sessions] = await pool.execute<RowDataPacket[]>(
-    `SELECT s.${cfg.idCol} AS actor_id, ${actor === "city" ? "s.viewer_admin_id AS view_as_admin_id," : ""} a.*
+    `SELECT s.${cfg.idCol} AS actor_id, ${actor === "city" || actor === "affiliate" ? "s.viewer_admin_id AS view_as_admin_id," : ""} a.*
      FROM \`${cfg.sessionTable}\` s
      INNER JOIN \`${cfg.table}\` a ON a.id = s.${cfg.idCol}
      WHERE s.token_hash = ? AND s.is_active = 1 AND s.expires_at > NOW()
@@ -3105,13 +3106,289 @@ async function loadPortalUser(
   if (!row) return null;
   if (!["active", "prospect"].includes(String(row.status))) return null;
   const user = toPortalUser(actor, row);
-  // Read-only "View as partner" session opened by a super admin.
+  // Read-only "View as" session (City Partner or affiliate) opened by a super admin.
   if (row.view_as_admin_id) {
     const [[ad]] = (await pool.execute<RowDataPacket[]>(`SELECT id, first_name, last_name FROM admins WHERE id = ? AND status = 'active'`, [row.view_as_admin_id])) as unknown as [RowDataPacket[]];
     if (!ad) return null;
     user.view_as_admin = { id: Number(ad.id), name: `${String(ad.first_name || "")} ${String(ad.last_name || "")}`.trim() };
   }
   return user;
+}
+
+// ─── Spam shield (our own; no third party, nothing to solve for real people) ────
+// Every public form posts `_shield: { token, solution, hp }`:
+//  • token: signed challenge from GET /api/public/shield/challenge?form= (HMAC, 2 h, one use)
+//  • solution: a tiny proof of work the browser solves while the person types (sha256 leading zero bits)
+//  • hp: the hidden trap field (people never see it; bots fill it)
+// shieldVerdict() scores it (pure, unit tested): "bot" → polite 400; "suspect" → quarantined as Spam
+// (leads) / text code (booking) / polite 400 (sign-ups); "ok" → normal.
+export const SHIELD_FORMS = ["lead", "contact", "enroll", "client_signup", "affiliate_signup", "contractor_signup", "partner_referral", "booking"] as const;
+export type ShieldForm = (typeof SHIELD_FORMS)[number];
+export const SHIELD_DIFFICULTY = 14;
+const SHIELD_TTL_MS = 2 * 60 * 60 * 1000;
+/** Browsers with the page open before the shield shipped have no token yet: a missing token only counts as a hint until then. */
+const SHIELD_GRACE_UNTIL = Date.parse("2026-11-25T08:00:00Z");
+function shieldSecret(): string {
+  return process.env.SPAM_SHIELD_SECRET || sha256(`gw-shield:${process.env.DB_PASSWORD || ""}:${process.env.MAIL_TOKEN_KEY || ""}`);
+}
+const shieldSig = (payload: string) => crypto.createHmac("sha256", shieldSecret()).update(payload).digest("hex").slice(0, 32);
+export function issueShieldChallenge(form: ShieldForm, now = Date.now()) {
+  const nonce = crypto.randomBytes(12).toString("hex");
+  const payload = `${form}.${now}.${nonce}.${SHIELD_DIFFICULTY}`;
+  return { token: `${payload}.${shieldSig(payload)}`, nonce, difficulty: SHIELD_DIFFICULTY };
+}
+export function leadingZeroBits(hex: string): number {
+  let bits = 0;
+  for (const ch of hex) {
+    const v = parseInt(ch, 16);
+    if (v === 0) {
+      bits += 4;
+      continue;
+    }
+    return bits + (Math.clz32(v) - 28);
+  }
+  return bits;
+}
+export function parseShieldToken(token: unknown): { form: string; issuedAt: number; nonce: string; difficulty: number } | null {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 5) return null;
+  const [form, t, nonce, d, sig] = parts;
+  const expected = shieldSig(`${form}.${t}.${nonce}.${d}`);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  if (!/^[a-f0-9]{24}$/.test(nonce)) return null;
+  return { form, issuedAt: Number(t), nonce, difficulty: Number(d) };
+}
+const URL_RE = /(https?:\/\/|www\.|\b[a-z0-9-]{2,}\.(ru|cn|xyz|top|click|link|info|biz|io|co|com|net|org)\b)/gi;
+/** A name or word that no person types: long, no vowels, or a random caps salad ("XgTqLpWzr"). */
+export function looksGibberish(text: string): boolean {
+  return String(text || "")
+    .split(/\s+/)
+    .filter((w) => w.length >= 6)
+    .some((w) => {
+      const letters = w.replace(/[^a-záéíóúñü]/gi, "");
+      if (letters.length < 6) return false;
+      if (!/[aeiouyáéíóúü]/i.test(letters)) return true;
+      if (/[bcdfghjklmnpqrstvwxz]{6,}/i.test(letters)) return true;
+      const flips = [...letters].filter((c, i) => i > 0 && (c === c.toUpperCase()) !== (letters[i - 1] === letters[i - 1].toUpperCase())).length;
+      return letters.length >= 8 && flips >= letters.length * 0.6;
+    });
+}
+export type ShieldResult = { verdict: "ok" | "suspect" | "bot"; score: number; reasons: string[]; nonce: string | null };
+/** Under Vitest the shield is off unless a suite turns it on (other suites post forms without a token). */
+let shieldEnforcedInTests = false;
+export function __testSetShieldEnforced(on: boolean) {
+  shieldEnforcedInTests = on;
+}
+export function shieldVerdict(input: { form: ShieldForm; shield: any; texts: Array<string | null | undefined>; phoneOnly?: boolean; now?: number }): ShieldResult {
+  const now = input.now ?? Date.now();
+  const sh = input.shield && typeof input.shield === "object" ? input.shield : null;
+  const reasons: string[] = [];
+  let score = 0;
+  const bot = (r: string): ShieldResult => ({ verdict: "bot", score: 10, reasons: [...reasons, r], nonce: null });
+  if (sh && String(sh.hp || "").trim()) return bot("trap_field");
+  const tok = sh ? parseShieldToken(sh.token) : null;
+  if (!sh || !sh.token) {
+    if (now >= SHIELD_GRACE_UNTIL) return bot("no_token");
+    reasons.push("no_token");
+    score += 1;
+  } else if (!tok) return bot("bad_token");
+  if (tok) {
+    if (tok.form !== input.form) return bot("wrong_form");
+    if (now - tok.issuedAt > SHIELD_TTL_MS || tok.issuedAt > now + 60_000) return bot("expired_token");
+    const hash = crypto.createHash("sha256").update(`${tok.nonce}:${String(sh.solution ?? "")}`).digest("hex");
+    if (leadingZeroBits(hash) < Math.max(tok.difficulty, SHIELD_DIFFICULTY)) return bot("no_proof");
+    const elapsed = now - tok.issuedAt;
+    if (elapsed < 1200) return bot("too_fast");
+    if (elapsed < 3500) {
+      reasons.push("fast");
+      score += 2;
+    }
+  }
+  const text = input.texts.filter(Boolean).join(" \n ");
+  const links = (text.match(URL_RE) || []).length;
+  if (links >= 2) {
+    reasons.push("links");
+    score += 3;
+  } else if (links === 1) {
+    reasons.push("link");
+    score += 2;
+  }
+  if (looksGibberish(text)) {
+    reasons.push("gibberish");
+    score += 2;
+  }
+  if (/(.)\1{7,}/.test(text)) {
+    reasons.push("repeated");
+    score += 1;
+  }
+  if (input.phoneOnly) {
+    reasons.push("phone_only");
+    score += 1;
+  }
+  return { verdict: score >= 3 ? "suspect" : "ok", score, reasons, nonce: tok?.nonce ?? null };
+}
+const maskEmail = (e: unknown) => {
+  const v = String(e || "").trim();
+  const at = v.indexOf("@");
+  return at > 0 ? `${v[0]}***${v.slice(at)}` : null;
+};
+const maskPhone = (p: unknown) => {
+  const d = String(p || "").replace(/\D/g, "");
+  return d.length >= 4 ? `***-***-${d.slice(-4)}` : null;
+};
+async function logShield(req: Request, form: ShieldForm, verdict: "blocked" | "quarantined" | "code", r: ShieldResult, contact: { email?: unknown; phone?: unknown }) {
+  try {
+    const ip = clientIp(req);
+    await pool.execute(`INSERT INTO spam_shield_log (form, verdict, reasons, score, contact_masked, ip_hash) VALUES (?, ?, ?, ?, ?, ?)`, [
+      form,
+      verdict,
+      r.reasons.join(",").slice(0, 255) || "-",
+      Math.min(255, r.score),
+      [maskEmail(contact.email), maskPhone(contact.phone)].filter(Boolean).join(" · ").slice(0, 120) || null,
+      ip ? sha256(`gw-ip:${ip}`).slice(0, 16) : null,
+    ]);
+  } catch (e: any) {
+    console.warn("[spam-shield] log failed:", e?.message ?? e);
+  }
+}
+/**
+ * Run the shield for a public form. Throws a polite 400 for bots (and logs it). Returns the verdict
+ * for the route to act on (suspect → quarantine / text code / polite 400). A token is single-use:
+ * call `markShieldUsed` once the submission is accepted (a 202 "need a code" reply keeps it usable).
+ */
+async function shieldGuard(req: Request, form: ShieldForm, opts: { texts: Array<string | null | undefined>; email?: unknown; phone?: unknown; phoneOnly?: boolean }): Promise<ShieldResult> {
+  if (process.env.VITEST && !shieldEnforcedInTests) return { verdict: "ok", score: 0, reasons: [], nonce: null };
+  const r = shieldVerdict({ form, shield: req.body?._shield, texts: opts.texts, phoneOnly: opts.phoneOnly });
+  if (r.verdict !== "bot" && r.nonce) {
+    const [[used]] = (await pool.query<RowDataPacket[]>(`SELECT nonce FROM spam_shield_used WHERE nonce = ?`, [r.nonce])) as unknown as [RowDataPacket[]];
+    if (used) {
+      const replay = { ...r, verdict: "bot" as const, reasons: [...r.reasons, "reused_token"] };
+      await logShield(req, form, "blocked", replay, opts);
+      throw new HttpError(400, "errors.spamBlocked");
+    }
+  }
+  if (r.verdict === "bot") {
+    await logShield(req, form, "blocked", r, opts);
+    throw new HttpError(400, "errors.spamBlocked");
+  }
+  return r;
+}
+async function markShieldUsed(r: ShieldResult) {
+  if (!r.nonce) return;
+  await pool.execute(`INSERT IGNORE INTO spam_shield_used (nonce, expires_at) VALUES (?, NOW() + INTERVAL 3 HOUR)`, [r.nonce]).catch(() => undefined);
+}
+/** Every top-level text the visitor typed (names, notes, messages…), for the content checks. */
+export function shieldTexts(body: any): string[] {
+  if (!body || typeof body !== "object") return [];
+  return Object.entries(body)
+    // Contact fields and links people are asked for (email, phone, website, socials) are not "content".
+    .filter(([k, v]) => typeof v === "string" && k !== "_shield" && !/token|code|slug|lang|date|time|type|intent|ref|email|phone|website|url|link|instagram|facebook|linkedin|tiktok|social/i.test(k))
+    .map(([, v]) => String(v).slice(0, 4000));
+}
+const shieldContact = (b: any) => ({ email: b?.email, phone: b?.phone });
+/**
+ * Sign-ups / enroll / partner referral: bots and suspects both get a polite 400 (these create real
+ * accounts and send invites, so nothing borderline is saved). Accepted tokens are spent here.
+ */
+async function shieldStrict(req: Request, form: ShieldForm): Promise<void> {
+  const r = await shieldGuard(req, form, { texts: shieldTexts(req.body), ...shieldContact(req.body) });
+  if (r.verdict === "suspect") {
+    await logShield(req, form, "blocked", r, shieldContact(req.body));
+    throw new HttpError(400, "errors.spamSuspected");
+  }
+  await markShieldUsed(r);
+}
+/** For routes that answer errors themselves (try / catch → 500): replies 400 and returns null on a block. */
+async function shieldCheckpoint(req: Request, res: Response, form: ShieldForm): Promise<ShieldResult | null> {
+  try {
+    const r = await shieldGuard(req, form, { texts: shieldTexts(req.body), ...shieldContact(req.body) });
+    if (r.verdict === "ok") await markShieldUsed(r);
+    return r;
+  } catch (e) {
+    if (e instanceof HttpError) {
+      res.status(e.status).json({ error: e.key });
+      return null;
+    }
+    throw e;
+  }
+}
+
+/**
+ * Booking the shield isn't sure about: a 6-digit code by text proves the phone is real before the
+ * appointment is saved. 10 minutes, 5 tries, at most 3 codes per number and 6 per visitor an hour.
+ */
+async function sendBookingPhoneCode(req: Request, phone: string, lang: Lang, nonce: string | null): Promise<void> {
+  const e164 = toSmsE164(phone);
+  const ip = clientIp(req);
+  const ipHash = ip ? sha256(`gw-ip:${ip}`).slice(0, 16) : null;
+  const [[n]] = (await pool.query<RowDataPacket[]>(
+    `SELECT SUM(phone_e164 = ?) AS by_phone, SUM(ip_hash <=> ?) AS by_ip FROM public_phone_codes WHERE purpose = 'booking' AND created_at > NOW() - INTERVAL 1 HOUR AND (phone_e164 = ? OR ip_hash <=> ?)`,
+    [e164, ipHash, e164, ipHash],
+  )) as unknown as [RowDataPacket[]];
+  if (Number(n?.by_phone) >= 3 || Number(n?.by_ip) >= 6) throw new HttpError(429, "errors.tooMany");
+  const from = await resolveCampaignSmsFrom();
+  if (!from || (await smsOptedOut(e164))) throw new HttpError(400, "errors.bookingCodeUnavailable");
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+  await pool.execute(`INSERT INTO public_phone_codes (phone_e164, purpose, shield_nonce, code_hash, expires_at, ip_hash) VALUES (?, 'booking', ?, ?, NOW() + INTERVAL 10 MINUTE, ?)`, [e164, nonce, sha256(`${e164}:${code}`), ipHash]);
+  await sendSms({
+    to: e164,
+    from,
+    body: tr(lang, `Groundwork Capital: your booking code is ${code}. It expires in 10 minutes.`, `Groundwork Capital: su código para agendar es ${code}. Vence en 10 minutos.`),
+    manual: true,
+  });
+}
+/** Throws a 400 with the right message unless `code` is the latest live code for this phone. */
+async function checkBookingPhoneCode(phone: string, code: string): Promise<void> {
+  const e164 = toSmsE164(phone);
+  const [[row]] = (await pool.query<RowDataPacket[]>(
+    `SELECT id, code_hash, attempts, expires_at > NOW() AS live FROM public_phone_codes WHERE phone_e164 = ? AND purpose = 'booking' AND consumed_at IS NULL ORDER BY id DESC LIMIT 1`,
+    [e164],
+  )) as unknown as [RowDataPacket[]];
+  if (!row || !Number(row.live)) throw new HttpError(400, "errors.bookingCodeExpired");
+  if (Number(row.attempts) >= 5) throw new HttpError(429, "errors.tooMany");
+  const ok = /^\d{6}$/.test(code) && crypto.timingSafeEqual(Buffer.from(String(row.code_hash)), Buffer.from(sha256(`${e164}:${code}`)));
+  if (!ok) {
+    await pool.execute(`UPDATE public_phone_codes SET attempts = attempts + 1 WHERE id = ?`, [row.id]);
+    throw new HttpError(400, "errors.bookingCodeInvalid");
+  }
+  await pool.execute(`UPDATE public_phone_codes SET consumed_at = NOW() WHERE id = ?`, [row.id]);
+}
+
+/** Daily housekeeping (billing cron): 30-day log, expired tokens and codes. */
+async function trimSpamShield(): Promise<{ spam_shield_trimmed: number }> {
+  let n = 0;
+  for (const sql of [
+    `DELETE FROM spam_shield_log WHERE created_at < NOW() - INTERVAL 30 DAY`,
+    `DELETE FROM spam_shield_used WHERE expires_at < NOW()`,
+    `DELETE FROM public_phone_codes WHERE expires_at < NOW() - INTERVAL 1 DAY`,
+  ]) {
+    const [r] = await pool.execute<ResultSetHeader>(sql).catch(() => [{ affectedRows: 0 }] as any);
+    n += Number(r.affectedRows || 0);
+  }
+  return { spam_shield_trimmed: n };
+}
+/** Suspect website lead / contact: its own Spam row (never merged into a real lead), no texts or alerts. */
+async function quarantineLead(req: Request, form: ShieldForm, r: ShieldResult, d: { full_name: string; email?: string | null; phone?: string | null; notes?: string | null; lang?: string | null; source?: string | null }) {
+  const parts = String(d.full_name || "").trim().split(/\s+/);
+  const ua = String(req.headers["user-agent"] || "").slice(0, 500) || null;
+  await pool.execute(
+    `INSERT INTO leads (first_name, last_name, full_name, email, phone, preferred_language, source, status, mode, notes, ip_address, user_agent, last_submitted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'spam', 'standard', ?, ?, ?, NOW())`,
+    [
+      (parts[0] || "").slice(0, 100) || null,
+      parts.slice(1).join(" ").slice(0, 100) || null,
+      String(d.full_name || "—").slice(0, 200),
+      String(d.email || ""),
+      String(d.phone || ""),
+      asLang(d.lang),
+      String(d.source || form).slice(0, 100),
+      `Spam shield (${r.reasons.join(", ")})${d.notes ? `\n${String(d.notes).slice(0, 2000)}` : ""}`,
+      clientIp(req),
+      ua,
+    ],
+  );
+  await logShield(req, form, "quarantined", r, d);
+  await markShieldUsed(r);
 }
 
 // ─── Portal feature layer: helpers ───────────────────────────────────────────
@@ -11829,6 +12106,7 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
+      await shieldStrict(req, "affiliate_signup");
       await assertTermsAccepted(b);
       const first = String(b.first_name || "")
         .trim()
@@ -11951,6 +12229,7 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
+      await shieldStrict(req, "client_signup");
       const first = String(b.first_name || "")
         .trim()
         .slice(0, 100);
@@ -12160,6 +12439,7 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
+      await shieldStrict(req, "contractor_signup");
       await assertTermsAccepted(b);
       const first = String(b.first_name || "")
         .trim()
@@ -12462,6 +12742,7 @@ function registerFeatureRoutes(
     limiters.lead,
     route(async (req, res) => {
       const b = req.body || {};
+      await shieldStrict(req, "enroll");
       const first = String(b.first_name || "")
         .trim()
         .slice(0, 100);
@@ -28529,9 +28810,10 @@ async function loadAppointmentFull(
 ) {
   const [[a]] = (await exec.query<RowDataPacket[]>(
     `SELECT ap.*, CONCAT(c.first_name, ' ', c.last_name) AS client_name, l.full_name AS lead_name, p.public_id AS project_public_id,
-            CONCAT(o.first_name, ' ', o.last_name) AS owner_name, sc.name AS city_name
+            CONCAT(o.first_name, ' ', o.last_name) AS owner_name, sc.name AS city_name, bt.name AS booking_team_name
      FROM appointments ap
      LEFT JOIN service_cities sc ON sc.id = ap.city_id
+     LEFT JOIN booking_teams bt ON bt.id = ap.booking_team_id
      LEFT JOIN clients c ON c.id = ap.client_id
      LEFT JOIN leads l ON l.id = ap.lead_id
      LEFT JOIN projects p ON p.id = ap.project_id
@@ -28580,6 +28862,9 @@ function mapAppointment(
     cancelled_reason: a.cancelled_reason ? String(a.cancelled_reason) : null,
     city_id: a.city_id != null ? Number(a.city_id) : null,
     city_name: a.city_name ? String(a.city_name) : null,
+    booking_team_id: a.booking_team_id != null ? Number(a.booking_team_id) : null,
+    booking_team_name: a.booking_team_name ? String(a.booking_team_name) : null,
+    claimed_at: isoDate(a.claimed_at),
     attendees: attendees.map((t) => ({
       id: Number(t.id),
       kind: String(t.kind),
@@ -28998,6 +29283,8 @@ export async function createAppointment(
     adminId: number | null;
     source: "staff" | "booking" | "city_partner";
     attendees?: ApptAttendeeInput[];
+    /** Booked on a company (team) page: unclaimed until a member takes it. */
+    bookingTeamId?: number | null;
   },
 ) {
   const kind = (APPOINTMENT_KINDS as readonly string[]).includes(String(b.kind))
@@ -29097,6 +29384,8 @@ export async function createAppointment(
       ],
     );
     const apptId = Number(ins.insertId);
+    if (opts.bookingTeamId)
+      await conn.execute(`UPDATE appointments SET booking_team_id = ? WHERE id = ?`, [opts.bookingTeamId, apptId]);
     for (const p of people) {
       await conn.execute(
         `INSERT INTO appointment_attendees (appointment_id, kind, admin_id, contractor_id, lender_id, city_partner_id, name, email, phone, preferred_language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -29122,9 +29411,15 @@ export async function createAppointment(
     }
     return apptId;
   });
-  if (b.teams_meeting === true || b.teams_meeting === "true")
+  const wantsTeams = b.teams_meeting === true || b.teams_meeting === "true";
+  if (wantsTeams)
     await pool.execute(`UPDATE appointments SET teams_meeting = 1 WHERE id = ?`, [id]);
   await calendarPushSafe(id);
+  // Public bookings never send a video invite without a way in: no Teams link → it becomes a phone call.
+  if (wantsTeams && opts.source === "booking" && locationType === "video") {
+    const [[v]] = (await pool.query<RowDataPacket[]>(`SELECT video_url FROM appointments WHERE id = ?`, [id])) as unknown as [RowDataPacket[]];
+    if (!v?.video_url) await pool.execute(`UPDATE appointments SET location_type = 'phone', teams_meeting = 0 WHERE id = ?`, [id]);
+  }
   await notifyAppointment(id, "created", { manageToken });
   await startFlows("appointment_booked", "appointment", id);
   return { id, conflicts, manageToken };
@@ -29143,6 +29438,21 @@ async function updateAppointment(
     throw new HttpError(409, "errors.appointmentCancelled");
   const sets: string[] = [];
   const params: any[] = [];
+  // Reassign: the new owner replaces the old one on the invite list (old copy cancelled, new invite sent),
+  // and a company-page booking counts as taken.
+  const newOwner = b.owner_admin_id !== undefined ? (b.owner_admin_id ? parseId(b.owner_admin_id) : null) : undefined;
+  const prevOwner = a.owner_admin_id != null ? Number(a.owner_admin_id) : null;
+  if (newOwner !== undefined && newOwner !== prevOwner) {
+    if (newOwner) {
+      const [[ok]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM admins WHERE id = ? AND status = 'active' LIMIT 1`, [newOwner])) as unknown as [RowDataPacket[]];
+      if (!ok) throw new HttpError(400, "validation.invalidField");
+    }
+    if (b.attendees === undefined) b = { ...b, attendees: swapOwnerAttendees(attendees, prevOwner, newOwner) };
+    if (a.booking_team_id != null && a.claimed_at == null && newOwner) {
+      sets.push("claimed_at = NOW()", "claimed_by_admin_id = ?");
+      params.push(newOwner);
+    }
+  }
   let timeChanged = false;
   let whereChanged = false;
   if (
@@ -29438,12 +29748,42 @@ type SchedulerConfig = {
   allow_office: boolean;
   allow_onsite: boolean;
   video_url: string | null;
+  /** Extra call types on the same link (the homeowner consultation is always on). */
+  booking_types: Record<Exclude<BookingTypeKey, "homeowner">, { enabled: boolean; duration_minutes: number }>;
   availability: Array<{
     day_of_week: number;
     start_time: string;
     end_time: string;
   }>;
 };
+
+/**
+ * Booking page call types. Homeowner = the host's own title / length / kind. Affiliate and contractor
+ * calls are optional per host (Profile → My booking link) and tag the lead for the right follow-up.
+ */
+type BookingTypeKey = "homeowner" | "affiliate" | "contractor";
+const BOOKING_TYPE_KEYS: BookingTypeKey[] = ["homeowner", "affiliate", "contractor"];
+const BOOKING_TYPE_DEFS: Record<Exclude<BookingTypeKey, "homeowner">, { title_en: string; title_es: string; kind: AppointmentKind; audience: string; role: "partner" | "contractor"; duration: number }> = {
+  affiliate: { title_en: "Become a Groundwork affiliate", title_es: "Conviértase en afiliado de Groundwork", kind: "call", audience: "affiliate_lead", role: "partner", duration: 20 },
+  contractor: { title_en: "Contractor partnership call", title_es: "Llamada de alianza para contratistas", kind: "call", audience: "contractor_lead", role: "contractor", duration: 30 },
+};
+function parseBookingTypes(raw: unknown): SchedulerConfig["booking_types"] {
+  const j = (parseJsonCol(raw) as any) || {};
+  const one = (k: "affiliate" | "contractor") => ({
+    enabled: j?.[k]?.enabled === true,
+    duration_minutes: Math.min(240, Math.max(15, Math.round(Number(j?.[k]?.duration_minutes) || BOOKING_TYPE_DEFS[k].duration))),
+  });
+  return { affiliate: one("affiliate"), contractor: one("contractor") };
+}
+/** The host's config for one call type (its length / title / kind). 404 when that type is off. */
+export function bookingTypeCfg(cfg: SchedulerConfig, raw: unknown): { cfg: SchedulerConfig; type: BookingTypeKey; title_en: string; title_es: string } {
+  const type = (BOOKING_TYPE_KEYS as string[]).includes(String(raw)) ? (String(raw) as BookingTypeKey) : "homeowner";
+  if (type === "homeowner") return { cfg, type, title_en: cfg.title_en, title_es: cfg.title_es };
+  const t = cfg.booking_types[type];
+  if (!t?.enabled) throw new HttpError(404, "errors.notFound");
+  const d = BOOKING_TYPE_DEFS[type];
+  return { cfg: { ...cfg, duration_minutes: t.duration_minutes, kind: d.kind }, type, title_en: d.title_en, title_es: d.title_es };
+}
 
 async function loadSchedulerConfig(
   where: { adminId?: number; slug?: string },
@@ -29490,6 +29830,11 @@ async function loadSchedulerConfig(
     `SELECT day_of_week, TIME_FORMAT(start_time, '%H:%i') s, TIME_FORMAT(end_time, '%H:%i') e FROM scheduler_availability WHERE admin_id = ? ORDER BY day_of_week, start_time`,
     [r.admin_id],
   );
+  return schedulerCfgFromRow(r, av);
+}
+
+/** A scheduler_settings (or booking_teams) row + weekly windows → config. */
+function schedulerCfgFromRow(r: RowDataPacket | Record<string, any>, av: RowDataPacket[]): SchedulerConfig {
   return {
     admin_id: Number(r.admin_id),
     is_enabled: Number(r.is_enabled) === 1,
@@ -29509,11 +29854,41 @@ async function loadSchedulerConfig(
     allow_office: Number(r.allow_office) === 1,
     allow_onsite: Number(r.allow_onsite) === 1,
     video_url: r.video_url ? String(r.video_url) : null,
+    booking_types: parseBookingTypes(r.booking_types_json),
     availability: av.map((x) => ({
       day_of_week: Number(x.day_of_week),
       start_time: String(x.s),
       end_time: String(x.e),
     })),
+  };
+}
+
+/** Booking rules shared by personal links and company pages (validated, clamped; missing = current). */
+function schedulerRulesFromBody(b: Record<string, any>, cur: SchedulerConfig): Record<string, string | number | null> {
+  const int = (v: unknown, lo: number, hi: number, d: number) =>
+    Number.isFinite(Number(v)) && v !== null && v !== "" ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d;
+  const tz = String(b.timezone || cur.timezone);
+  if (!isValidTimeZone(tz)) throw new HttpError(400, "validation.invalidField");
+  const kind = (APPOINTMENT_KINDS as readonly string[]).includes(String(b.kind)) ? String(b.kind) : cur.kind;
+  const flag = (k: keyof SchedulerConfig) => (b[k] === undefined ? (cur[k] ? 1 : 0) : b[k] === true ? 1 : 0);
+  const text = (v: unknown, d: string | null, max: number) => String(v ?? d ?? "").trim().slice(0, max);
+  return {
+    is_enabled: flag("is_enabled"),
+    title_en: text(b.title_en, cur.title_en, 200) || cur.title_en,
+    title_es: text(b.title_es, cur.title_es, 200) || cur.title_es,
+    description_en: text(b.description_en, cur.description_en, 2000) || null,
+    description_es: text(b.description_es, cur.description_es, 2000) || null,
+    kind,
+    duration_minutes: int(b.duration_minutes, 15, 240, cur.duration_minutes),
+    buffer_minutes: int(b.buffer_minutes, 0, 120, cur.buffer_minutes),
+    advance_days: int(b.advance_days, 1, 180, cur.advance_days),
+    min_notice_hours: int(b.min_notice_hours, 0, 168, cur.min_notice_hours),
+    timezone: tz,
+    allow_phone: flag("allow_phone"),
+    allow_video: flag("allow_video"),
+    allow_office: flag("allow_office"),
+    allow_onsite: flag("allow_onsite"),
+    video_url: text(b.video_url, cur.video_url, 500) || null,
   };
 }
 
@@ -29585,41 +29960,223 @@ export async function bookingSlots(
   return [...new Set(out)].sort();
 }
 
+/** Current attendees as inputs with the owner swapped (homeowner row is managed separately). Pure. */
+export function swapOwnerAttendees(rows: Array<Record<string, any>>, prevOwner: number | null, newOwner: number | null): ApptAttendeeInput[] {
+  const out: ApptAttendeeInput[] = [];
+  for (const t of rows) {
+    const kind = String(t.kind);
+    if (kind === "homeowner") continue;
+    if (kind === "admin") {
+      const id = Number(t.admin_id);
+      if (id === prevOwner || id === newOwner) continue;
+      out.push({ kind, admin_id: id });
+    } else if (kind === "contractor") out.push({ kind, contractor_id: Number(t.contractor_id) });
+    else if (kind === "lender") out.push({ kind, lender_id: Number(t.lender_id) });
+    else if (kind === "city_partner") out.push({ kind, city_partner_id: Number(t.city_partner_id) });
+    else if (kind === "guest")
+      out.push({ kind, name: String(t.name || ""), email: t.email ? String(t.email) : null, phone: t.phone ? String(t.phone) : null, preferred_language: asLang(t.preferred_language) });
+  }
+  if (newOwner) out.unshift({ kind: "admin", admin_id: newOwner });
+  return out;
+}
+
+// ── Company (team) booking pages ──
+// One public link shared by several staff (booking_teams + booking_team_members). A time is open when at
+// least one member is free on their own weekly hours, days off and calendar (hours read in the page's
+// timezone). A new booking is held by the default member when free, else the first free member, and every
+// member is alerted; the first to claim it owns it (claimed_at), and staff can reassign from the drawer.
+
+type BookingTeam = { id: number; name: string; default_admin_id: number | null; member_ids: number[]; cfg: SchedulerConfig };
+
+async function loadBookingTeam(where: { id?: number; slug?: string }): Promise<BookingTeam | null> {
+  const [[r]] = (await pool.query<RowDataPacket[]>(
+    where.id ? `SELECT * FROM booking_teams WHERE id = ? LIMIT 1` : `SELECT * FROM booking_teams WHERE slug = ? LIMIT 1`,
+    [where.id ?? String(where.slug || "").toLowerCase()],
+  )) as unknown as [RowDataPacket[]];
+  if (!r) return null;
+  const [m] = await pool.query<RowDataPacket[]>(
+    `SELECT m.admin_id FROM booking_team_members m JOIN admins a ON a.id = m.admin_id WHERE m.team_id = ? AND a.status = 'active' ORDER BY m.created_at, m.admin_id`,
+    [r.id],
+  );
+  const member_ids = m.map((x) => Number(x.admin_id));
+  const def = r.default_admin_id != null && member_ids.includes(Number(r.default_admin_id)) ? Number(r.default_admin_id) : null;
+  return {
+    id: Number(r.id),
+    name: String(r.name),
+    default_admin_id: def,
+    member_ids,
+    cfg: schedulerCfgFromRow({ ...r, admin_id: def ?? member_ids[0] ?? 0 }, []),
+  };
+}
+
+/** Each member's own hours / days off / calendar under the page's rules (length, buffer, notice, horizon, tz). */
+async function teamMemberCfgs(team: BookingTeam, typed: SchedulerConfig): Promise<SchedulerConfig[]> {
+  const own = await Promise.all(team.member_ids.map((id) => loadSchedulerConfig({ adminId: id }, true)));
+  return own.filter((c): c is SchedulerConfig => !!c).map((c) => ({ ...typed, admin_id: c.admin_id, availability: c.availability }));
+}
+
+/** Open times on a team page: any member free. Also returns who is free at each time. */
+async function teamBookingSlots(members: SchedulerConfig[], date: string, now = new Date()): Promise<{ slots: string[]; freeAt: Map<string, number[]> }> {
+  const lists = await Promise.all(members.map((c) => bookingSlots(c, date, now)));
+  const freeAt = new Map<string, number[]>();
+  lists.forEach((l, i) => l.forEach((t) => freeAt.set(t, [...(freeAt.get(t) || []), members[i].admin_id])));
+  return { slots: [...freeAt.keys()].sort(), freeAt };
+}
+
+/** Who holds a new team booking until it's claimed: the default member when free, else the first free member. Pure. */
+export function pickTeamHolder(freeIds: number[], memberIds: number[], defaultId: number | null): number | null {
+  if (defaultId != null && freeIds.includes(defaultId)) return defaultId;
+  return memberIds.find((id) => freeIds.includes(id)) ?? null;
+}
+
+/** A slug is free across personal booking links and company pages. */
+async function bookingSlugTaken(slug: string, except: { adminId?: number; teamId?: number }): Promise<boolean> {
+  const [[a]] = (await pool.query<RowDataPacket[]>(`SELECT admin_id FROM scheduler_settings WHERE slug = ? AND admin_id <> ? LIMIT 1`, [slug, except.adminId ?? 0])) as unknown as [RowDataPacket[]];
+  if (a) return true;
+  const [[t]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM booking_teams WHERE slug = ? AND id <> ? LIMIT 1`, [slug, except.teamId ?? 0])) as unknown as [RowDataPacket[]];
+  return !!t;
+}
+
+/**
+ * Team booking alert: every member, on email + bell + text (their own notification switches and the
+ * "Who gets what" routing don't apply: the company page names its people). Sandbox-safe.
+ */
+async function notifyBookingTeamMembers(memberIds: number[], build: (lang: Lang) => Omit<NoticeOpts, "lang">): Promise<number> {
+  if (!memberIds.length) return 0;
+  const admins = (await listActiveTeamAdmins()).filter((x) => memberIds.includes(x.id) && (!notifySandbox() || isSandboxSafeEmail(x.email)));
+  let sent = 0;
+  await Promise.all(
+    admins.map(async (admin) => {
+      try {
+        const notice = { ...build(asLang(admin.preferred_language)), lang: asLang(admin.preferred_language) };
+        const tpl = tplPortalNotice(notice);
+        const preview = String(notice.paragraphs?.[0] || "").slice(0, 200);
+        const d = await deliverAdminNotificationChannels({
+          admin,
+          eventKey: "booking_created",
+          force: true,
+          tpl: { ...tpl, linkUrl: notice.cta?.url || "/admin/calendar", inAppBody: preview || null, smsBody: `${tpl.subject}${notice.cta?.url ? ` ${notice.cta.url}` : ""}`.slice(0, 320) },
+        });
+        if (d.email || d.in_app || d.sms) sent++;
+      } catch (e: any) {
+        console.error(`[notify:team-booking] admin ${admin.id}:`, e?.message ?? e);
+      }
+    }),
+  );
+  return sent;
+}
+
+/**
+ * Homeowner moves a company-page booking: any member free at the new time works. The holder keeps it
+ * when free; otherwise a free member takes over, the booking goes back to unclaimed and members are alerted.
+ */
+async function rescheduleTeamBooking(a: RowDataPacket, date: string, time: string): Promise<void> {
+  const team = await loadBookingTeam({ id: Number(a.booking_team_id) });
+  if (!team || !team.cfg.is_enabled || !team.member_ids.length) throw new HttpError(409, "errors.rescheduleUnavailable");
+  const len = Math.round((new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) / 60000);
+  const { freeAt } = await teamBookingSlots(await teamMemberCfgs(team, { ...team.cfg, duration_minutes: len }), date).catch(() => ({ freeAt: new Map<string, number[]>() }));
+  const free = freeAt.get(time) || [];
+  const own = utcToZoned(new Date(a.starts_at), team.cfg.timezone);
+  const same = own.date === date && own.time === time;
+  const owner = a.owner_admin_id != null ? Number(a.owner_admin_id) : null;
+  const next = same || (owner != null && free.includes(owner)) ? owner : pickTeamHolder(free, team.member_ids, team.default_admin_id);
+  if (!next) throw new HttpError(409, "errors.slotTaken");
+  await updateAppointment(
+    Number(a.id),
+    { date, start: time, duration_minutes: len, timezone: team.cfg.timezone, ...(next !== owner ? { owner_admin_id: next } : {}) },
+    next,
+  );
+  if (next === owner) return;
+  await pool.execute(`UPDATE appointments SET claimed_at = NULL, claimed_by_admin_id = NULL WHERE id = ?`, [a.id]);
+  const when = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: team.cfg.timezone }).format(zonedTimeToUtc(date, time, team.cfg.timezone));
+  await notifyBookingTeamMembers(team.member_ids, (l) => ({
+    subject: tr(l, `Company booking moved: ${a.title} · ${when} · claim it`, `Cita de la compañía movida: ${a.title} · ${when} · tómela`),
+    headline: tr(l, "A homeowner moved their booking", "Un cliente movió su cita"),
+    paragraphs: [tr(l, "Whoever had it isn't free at the new time, so it's open again. Tap \"Take it\" to own the call.", "Quien la tenía no está libre a la nueva hora, así que está abierta otra vez. Toque \"Tomarla\" para quedarse con la llamada.")],
+    cta: { url: `${APP_URL}/admin/calendar?appointment=${a.id}`, label: tr(l, "Open and take it", "Abrir y tomarla") },
+  }));
+}
+
+/** A member takes an unclaimed company booking (first one wins). Others get a bell that it's taken. */
+async function claimTeamBooking(id: number, adminId: number): Promise<void> {
+  const full = await loadAppointmentFull(id);
+  if (!full) throw new HttpError(404, "errors.notFound");
+  const { a } = full;
+  if (a.booking_team_id == null) throw new HttpError(409, "errors.notTeamBooking");
+  if (String(a.status) !== "scheduled") throw new HttpError(409, "errors.appointmentCancelled");
+  const [r] = await pool.execute<ResultSetHeader>(
+    `UPDATE appointments SET claimed_at = NOW(), claimed_by_admin_id = ? WHERE id = ? AND claimed_at IS NULL AND status = 'scheduled'`,
+    [adminId, id],
+  );
+  if (!r.affectedRows) throw new HttpError(409, "errors.alreadyClaimed");
+  if (Number(a.owner_admin_id) !== adminId) await updateAppointment(id, { owner_admin_id: adminId }, adminId);
+  const team = await loadBookingTeam({ id: Number(a.booking_team_id) });
+  const [[me]] = (await pool.query<RowDataPacket[]>(`SELECT first_name, last_name FROM admins WHERE id = ?`, [adminId])) as unknown as [RowDataPacket[]];
+  const who = `${me?.first_name || ""} ${me?.last_name || ""}`.trim();
+  for (const other of (team?.member_ids || []).filter((x) => x !== adminId)) {
+    const [[o]] = (await pool.query<RowDataPacket[]>(`SELECT email, preferred_language FROM admins WHERE id = ?`, [other])) as unknown as [RowDataPacket[]];
+    if (!o || (notifySandbox() && !isSandboxSafeEmail(o.email))) continue;
+    const l = asLang(o.preferred_language);
+    const nid = await insertAdminInAppNotification({
+      adminId: other,
+      adminEmail: String(o.email),
+      eventKey: "booking_created",
+      title: tr(l, `${who} took ${a.title}`, `${who} tomó ${a.title}`),
+      body: null,
+      linkUrl: `/admin/calendar?appointment=${id}`,
+    });
+    if (nid) await publishAdminBellRealtime(other, { notification_id: nid, event_key: "booking_created" });
+  }
+}
+
 /** Match a booker to a client or lead (one person per email / phone), else create a lead. */
+/**
+ * Who booked: an existing client, else an existing lead (email or phone), else a new lead tagged by
+ * call type. Email is optional (phone-only homeowners); an affiliate link is credited on new leads only.
+ */
 async function bookingPerson(input: {
   name: string;
-  email: string;
+  email: string | null;
   phone: string;
   address: string | null;
   lang: Lang;
+  type: BookingTypeKey;
+  affiliate: { id: number; referral_code: string } | null;
 }) {
   const matches = await findPersonMatches({
-    email: input.email,
+    email: input.email || undefined,
     phone: input.phone,
   });
   const client = matches.find((m) => m.entity === "client");
-  if (client) return { client_id: client.id, lead_id: null };
+  if (client) return { client_id: client.id, lead_id: null, created: false };
   const phone10 = normalizePhoneLast10(input.phone) || "x";
   const [[lead]] = (await pool.query<RowDataPacket[]>(
-    `SELECT id FROM leads WHERE (email = ? OR ${phone10Sql("phone")} = ?) AND status <> 'spam' ORDER BY id DESC LIMIT 1`,
-    [input.email, phone10],
+    `SELECT id FROM leads WHERE ((? <> '' AND email = ?) OR ${phone10Sql("phone")} = ?) AND status <> 'spam' ORDER BY id DESC LIMIT 1`,
+    [input.email || "", input.email || "", phone10],
   )) as unknown as [RowDataPacket[]];
-  if (lead) return { client_id: null, lead_id: Number(lead.id) };
+  if (lead) return { client_id: null, lead_id: Number(lead.id), created: false };
   const parts = input.name.trim().split(/\s+/);
+  const def = input.type === "homeowner" ? null : BOOKING_TYPE_DEFS[input.type];
   const [ins] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO leads (first_name, last_name, full_name, email, phone, property_address, preferred_language, source, status, mode, last_submitted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'booking', 'new', 'standard', NOW())`,
+    `INSERT INTO leads (first_name, last_name, full_name, email, phone, property_address, preferred_language, source, status, mode, last_submitted_at,
+       audience_tag, role_answer, role_answered_at, affiliate_id, referral_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'booking', 'new', 'standard', NOW(), ?, ?, IF(? IS NULL, NULL, NOW()), ?, ?)`,
     [
       parts[0] || input.name,
       parts.slice(1).join(" ") || null,
       input.name,
-      input.email,
+      input.email || "",
       input.phone,
       input.address,
       input.lang,
+      def ? def.audience : "homeowner",
+      def ? def.role : "homeowner",
+      def ? def.role : "homeowner",
+      input.affiliate?.id ?? null,
+      input.affiliate?.referral_code ?? null,
     ],
   );
-  return { client_id: null, lead_id: Number(ins.insertId) };
+  return { client_id: null, lead_id: Number(ins.insertId), created: true };
 }
 
 async function loadAppointmentByToken(token: string) {
@@ -29785,12 +30342,13 @@ function registerSchedulerRoutes(app: Express) {
         where.push("ap.status <> 'cancelled'");
       const [rows] = await pool.query<RowDataPacket[]>(
         `SELECT ap.*, CONCAT(c.first_name, ' ', c.last_name) AS client_name, l.full_name AS lead_name, p.public_id AS project_public_id,
-                CONCAT(o.first_name, ' ', o.last_name) AS owner_name
+                CONCAT(o.first_name, ' ', o.last_name) AS owner_name, bt.name AS booking_team_name
          FROM appointments ap
          LEFT JOIN clients c ON c.id = ap.client_id
          LEFT JOIN leads l ON l.id = ap.lead_id
          LEFT JOIN projects p ON p.id = ap.project_id
          LEFT JOIN admins o ON o.id = ap.owner_admin_id
+         LEFT JOIN booking_teams bt ON bt.id = ap.booking_team_id
          WHERE ${where.join(" AND ")} ORDER BY ap.starts_at ASC LIMIT 500`,
         params,
       );
@@ -29875,6 +30433,16 @@ function registerSchedulerRoutes(app: Express) {
       if (!r.affectedRows) throw new HttpError(404, "errors.notFound");
       if (status === "no_show") await startFlows("appointment_no_show", "appointment", parseId(req.params.id));
       res.json({ ok: true });
+    }),
+  );
+  app.post(
+    "/api/admin/appointments/:id/claim",
+    requireAdmin("projects.write"),
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      await claimTeamBooking(id, portalUser(res).id);
+      const full = (await loadAppointmentFull(id))!;
+      res.json({ ok: true, appointment: mapAppointment(full.a, full.attendees, { internal: true }) });
     }),
   );
 
@@ -29962,63 +30530,19 @@ function registerSchedulerRoutes(app: Express) {
       const me = portalUser(res).id;
       const cur = (await loadSchedulerConfig({ adminId: me }, true))!;
       const b = req.body || {};
-      const int = (v: unknown, lo: number, hi: number, d: number) =>
-        Number.isFinite(Number(v))
-          ? Math.min(hi, Math.max(lo, Math.round(Number(v))))
-          : d;
       const slug =
         b.slug !== undefined ? slugifyText(String(b.slug)) : cur.slug;
       if (slug.length < 3) throw new HttpError(400, "validation.slugFormat");
-      const [[taken]] = (await pool.query<RowDataPacket[]>(
-        `SELECT admin_id FROM scheduler_settings WHERE slug = ? AND admin_id <> ? LIMIT 1`,
-        [slug, me],
-      )) as unknown as [RowDataPacket[]];
-      if (taken) throw new HttpError(409, "errors.slugTaken");
-      const tz = String(b.timezone || cur.timezone);
-      if (!isValidTimeZone(tz))
-        throw new HttpError(400, "validation.invalidField");
-      const kind = (APPOINTMENT_KINDS as readonly string[]).includes(
-        String(b.kind),
-      )
-        ? String(b.kind)
-        : cur.kind;
-      const flag = (k: keyof SchedulerConfig) =>
-        b[k] === undefined ? (cur[k] ? 1 : 0) : b[k] === true ? 1 : 0;
-      await pool.execute(
-        `UPDATE scheduler_settings SET is_enabled = ?, slug = ?, title_en = ?, title_es = ?, description_en = ?, description_es = ?, kind = ?,
-           duration_minutes = ?, buffer_minutes = ?, advance_days = ?, min_notice_hours = ?, timezone = ?,
-           allow_phone = ?, allow_video = ?, allow_office = ?, allow_onsite = ?, video_url = ? WHERE admin_id = ?`,
-        [
-          flag("is_enabled"),
-          slug,
-          String(b.title_en ?? cur.title_en)
-            .trim()
-            .slice(0, 200) || cur.title_en,
-          String(b.title_es ?? cur.title_es)
-            .trim()
-            .slice(0, 200) || cur.title_es,
-          String(b.description_en ?? cur.description_en ?? "")
-            .trim()
-            .slice(0, 2000) || null,
-          String(b.description_es ?? cur.description_es ?? "")
-            .trim()
-            .slice(0, 2000) || null,
-          kind,
-          int(b.duration_minutes, 15, 240, cur.duration_minutes),
-          int(b.buffer_minutes, 0, 120, cur.buffer_minutes),
-          int(b.advance_days, 1, 180, cur.advance_days),
-          int(b.min_notice_hours, 0, 168, cur.min_notice_hours),
-          tz,
-          flag("allow_phone"),
-          flag("allow_video"),
-          flag("allow_office"),
-          flag("allow_onsite"),
-          String(b.video_url ?? cur.video_url ?? "")
-            .trim()
-            .slice(0, 500) || null,
-          me,
-        ],
+      if (await bookingSlugTaken(slug, { adminId: me })) throw new HttpError(409, "errors.slugTaken");
+      const rules = schedulerRulesFromBody(b, cur);
+      await pool.query(
+        `UPDATE scheduler_settings SET slug = ?, ${Object.keys(rules).map((k) => `${k} = ?`).join(", ")} WHERE admin_id = ?`,
+        [slug, ...Object.values(rules), me],
       );
+      if (b.booking_types && typeof b.booking_types === "object") {
+        const merged = parseBookingTypes(JSON.stringify({ ...cur.booking_types, ...b.booking_types }));
+        await pool.execute(`UPDATE scheduler_settings SET booking_types_json = ? WHERE admin_id = ?`, [JSON.stringify(merged), me]);
+      }
       if (Array.isArray(b.availability)) {
         const rows = (b.availability as any[]).slice(0, 50).map((w) => ({
           d: Number(w.day_of_week),
@@ -30106,10 +30630,98 @@ function registerSchedulerRoutes(app: Express) {
     }),
   );
 
+  // ── Company booking pages (Settings → Company booking page) ──
+  const teamOut = (t: BookingTeam) => ({
+    ...t.cfg,
+    id: t.id,
+    name: t.name,
+    member_ids: t.member_ids,
+    default_admin_id: t.default_admin_id,
+    booking_url: `${APP_URL}/book/${t.cfg.slug}`,
+  });
+  const listTeams = async () => {
+    const [rows] = await pool.query<RowDataPacket[]>(`SELECT id FROM booking_teams ORDER BY id LIMIT 20`);
+    return (await Promise.all(rows.map((r) => loadBookingTeam({ id: Number(r.id) })))).filter((t): t is BookingTeam => !!t).map(teamOut);
+  };
+  /** Members: active staff ids (deduped, max 20); the default must be one of them. */
+  const saveTeamMembers = async (teamId: number, b: Record<string, any>) => {
+    if (b.member_ids !== undefined) {
+      if (!Array.isArray(b.member_ids)) throw new HttpError(400, "validation.invalidField");
+      const ids = [...new Set((b.member_ids as unknown[]).map((x) => parseId(x)))].slice(0, 20);
+      const [ok] = ids.length ? await pool.query<RowDataPacket[]>(`SELECT id FROM admins WHERE id IN (?) AND status = 'active'`, [ids]) : [[] as RowDataPacket[]];
+      if (ok.length !== ids.length) throw new HttpError(400, "validation.invalidField");
+      await withTx(async (conn) => {
+        await conn.execute(`DELETE FROM booking_team_members WHERE team_id = ?`, [teamId]);
+        for (const id of ids) await conn.execute(`INSERT INTO booking_team_members (team_id, admin_id) VALUES (?, ?)`, [teamId, id]);
+      });
+    }
+    if (b.default_admin_id !== undefined) {
+      const def = b.default_admin_id ? parseId(b.default_admin_id) : null;
+      const [[m]] = def ? ((await pool.query<RowDataPacket[]>(`SELECT 1 x FROM booking_team_members WHERE team_id = ? AND admin_id = ?`, [teamId, def])) as unknown as [RowDataPacket[]]) : [[{ x: 1 }]];
+      if (!m) throw new HttpError(400, "validation.invalidField");
+      await pool.execute(`UPDATE booking_teams SET default_admin_id = ? WHERE id = ?`, [def, teamId]);
+    }
+  };
+  app.get(
+    "/api/admin/booking-teams",
+    requireAdmin("settings"),
+    route(async (_req, res) => {
+      res.json({ ok: true, teams: await listTeams() });
+    }),
+  );
+  app.post(
+    "/api/admin/booking-teams",
+    requireAdmin("settings"),
+    route(async (req, res) => {
+      const b = req.body || {};
+      const base = slugifyText(String(b.slug || b.name || "groundwork")) || "groundwork";
+      let slug = base;
+      for (let i = 2; i < 50 && (await bookingSlugTaken(slug, {})); i++) slug = `${base}-${i}`;
+      const name = String(b.name || "Groundwork Capital").trim().slice(0, 200) || "Groundwork Capital";
+      const [ins] = await pool.execute<ResultSetHeader>(`INSERT INTO booking_teams (slug, name) VALUES (?, ?)`, [slug, name]);
+      await saveTeamMembers(Number(ins.insertId), b);
+      res.status(201).json({ ok: true, teams: await listTeams() });
+    }),
+  );
+  app.put(
+    "/api/admin/booking-teams/:id",
+    requireAdmin("settings"),
+    route(async (req, res) => {
+      const id = parseId(req.params.id);
+      const cur = await loadBookingTeam({ id });
+      if (!cur) throw new HttpError(404, "errors.notFound");
+      const b = req.body || {};
+      const slug = b.slug !== undefined ? slugifyText(String(b.slug)) : cur.cfg.slug;
+      if (slug.length < 3) throw new HttpError(400, "validation.slugFormat");
+      if (await bookingSlugTaken(slug, { teamId: id })) throw new HttpError(409, "errors.slugTaken");
+      const name = b.name !== undefined ? String(b.name).trim().slice(0, 200) || cur.name : cur.name;
+      const rules = schedulerRulesFromBody(b, cur.cfg);
+      await saveTeamMembers(id, b);
+      const types = b.booking_types && typeof b.booking_types === "object" ? JSON.stringify(parseBookingTypes(JSON.stringify({ ...cur.cfg.booking_types, ...b.booking_types }))) : JSON.stringify(cur.cfg.booking_types);
+      await pool.query(
+        `UPDATE booking_teams SET slug = ?, name = ?, booking_types_json = ?, ${Object.keys(rules).map((k) => `${k} = ?`).join(", ")} WHERE id = ?`,
+        [slug, name, types, ...Object.values(rules), id],
+      );
+      // A page can't go live without someone to take the calls.
+      const after = (await loadBookingTeam({ id }))!;
+      if (after.cfg.is_enabled && !after.member_ids.length) {
+        await pool.execute(`UPDATE booking_teams SET is_enabled = 0 WHERE id = ?`, [id]);
+        throw new HttpError(400, "errors.teamNeedsMembers");
+      }
+      res.json({ ok: true, teams: await listTeams() });
+    }),
+  );
+
   // ── Public booking ──
-  const publicCfg = async (slug: string) => {
+  const publicCfg = async (slug: string): Promise<{ cfg: SchedulerConfig; host: { name: string; avatar_url: string | null; team?: boolean }; team: BookingTeam | null }> => {
     const cfg = await loadSchedulerConfig({ slug });
-    if (!cfg || !cfg.is_enabled) throw new HttpError(404, "errors.notFound");
+    if (!cfg) {
+      // Company page: Groundwork is the host; needs at least one active member.
+      const team = await loadBookingTeam({ slug });
+      if (!team || !team.cfg.is_enabled || !team.member_ids.length) throw new HttpError(404, "errors.notFound");
+      return { cfg: team.cfg, host: { name: team.name, avatar_url: null, team: true }, team };
+    }
+    if (!cfg.is_enabled) throw new HttpError(404, "errors.notFound");
     const [[adm]] = (await pool.query<RowDataPacket[]>(
       `SELECT first_name, last_name, avatar_url, status FROM admins WHERE id = ? LIMIT 1`,
       [cfg.admin_id],
@@ -30122,6 +30734,7 @@ function registerSchedulerRoutes(app: Express) {
         name: `${adm.first_name} ${adm.last_name}`.trim(),
         avatar_url: adm.avatar_url ? String(adm.avatar_url) : null,
       },
+      team: null,
     };
   };
   const locationTypes = (cfg: SchedulerConfig) =>
@@ -30132,21 +30745,32 @@ function registerSchedulerRoutes(app: Express) {
     "/api/public/book/:slug",
     readLimiter,
     route(async (req, res) => {
-      const { cfg, host } = await publicCfg(String(req.params.slug));
+      const { cfg: base, host, team } = await publicCfg(String(req.params.slug));
       const l = asLang(req.query.lang);
+      // A shared ?type= link whose call was turned off shows the homeowner consultation instead of a dead page.
+      const safeType = (BOOKING_TYPE_KEYS as string[]).includes(String(req.query.type)) && req.query.type !== "homeowner" && !base.booking_types[req.query.type as "affiliate" | "contractor"].enabled ? "homeowner" : req.query.type;
+      const { cfg, type, title_en, title_es } = bookingTypeCfg(base, safeType);
       res.json({
         ok: true,
         host,
-        title: l === "es" ? cfg.title_es : cfg.title_en,
+        type,
+        // Every call type this host offers (the page shows a picker when there's more than one).
+        types: BOOKING_TYPE_KEYS.filter((k) => k === "homeowner" || base.booking_types[k].enabled).map((k) => {
+          const x = bookingTypeCfg(base, k);
+          return { key: k, title: l === "es" ? x.title_es : x.title_en, duration_minutes: x.cfg.duration_minutes };
+        }),
+        title: l === "es" ? title_es : title_en,
         description:
-          l === "es"
-            ? cfg.description_es || cfg.description_en
-            : cfg.description_en,
+          type !== "homeowner"
+            ? null
+            : l === "es"
+              ? cfg.description_es || cfg.description_en
+              : cfg.description_en,
         duration_minutes: cfg.duration_minutes,
         timezone: cfg.timezone,
         advance_days: cfg.advance_days,
         location_types: locationTypes(cfg),
-        days: [...new Set(cfg.availability.map((w) => w.day_of_week))],
+        days: [...new Set((team ? (await teamMemberCfgs(team, cfg)).flatMap((c) => c.availability) : cfg.availability).map((w) => w.day_of_week))],
       });
     }),
   );
@@ -30154,11 +30778,13 @@ function registerSchedulerRoutes(app: Express) {
     "/api/public/book/:slug/slots",
     readLimiter,
     route(async (req, res) => {
-      const { cfg } = await publicCfg(String(req.params.slug));
+      const { cfg: base, team } = await publicCfg(String(req.params.slug));
+      const { cfg } = bookingTypeCfg(base, req.query.type);
+      const date = String(req.query.date || "");
       res.json({
         ok: true,
         date: String(req.query.date),
-        slots: await bookingSlots(cfg, String(req.query.date || "")),
+        slots: team ? (await teamBookingSlots(await teamMemberCfgs(team, cfg), date)).slots : await bookingSlots(cfg, date),
       });
     }),
   );
@@ -30166,17 +30792,20 @@ function registerSchedulerRoutes(app: Express) {
     "/api/public/book/:slug",
     bookLimiter,
     route(async (req, res) => {
-      const { cfg } = await publicCfg(String(req.params.slug));
+      const { cfg: base, team } = await publicCfg(String(req.params.slug));
       const b = req.body || {};
+      const { cfg: typed, type, title_en, title_es } = bookingTypeCfg(base, b.type);
+      let cfg = typed;
       const name = String(b.name || "")
         .trim()
         .slice(0, 200);
-      const email = normalizeEmail(b.email);
+      // Phone required (confirmations + reminders by text); email optional (adds the calendar invite).
+      const email = b.email ? normalizeEmail(b.email) : "";
       const phone = String(b.phone || "")
         .trim()
         .slice(0, 40);
       if (name.length < 2) throw new HttpError(400, "validation.nameRequired");
-      if (!isValidEmail(email))
+      if (email && !isValidEmail(email))
         throw new HttpError(400, "validation.emailInvalid");
       if (phone.replace(/\D/g, "").length < 10)
         throw new HttpError(400, "validation.phoneMin");
@@ -30191,14 +30820,42 @@ function registerSchedulerRoutes(app: Express) {
         throw new HttpError(400, "validation.addressRequired");
       const date = String(b.date || "");
       const time = String(b.time || "");
-      // Re-check the slot right before booking (another visitor may have taken it).
-      if (!(await bookingSlots(cfg, date)).includes(time))
+      // Re-check the slot right before booking (another visitor may have taken it). Company page: a free
+      // member holds it until someone claims it.
+      if (team) {
+        const { freeAt } = await teamBookingSlots(await teamMemberCfgs(team, typed), date);
+        const holder = pickTeamHolder(freeAt.get(time) || [], team.member_ids, team.default_admin_id);
+        if (!holder) throw new HttpError(409, "errors.slotTaken");
+        cfg = { ...typed, admin_id: holder };
+      } else if (!(await bookingSlots(cfg, date)).includes(time))
         throw new HttpError(409, "errors.slotTaken");
       const lang = asLang(b.lang);
-      const person = await bookingPerson({ name, email, phone, address, lang });
+      // Spam shield: bots get a polite 400; a booking it isn't sure about confirms the phone by text first
+      // (202 needs_code, then the same booking again with phone_code). The token stays usable until then.
+      const shield = await shieldGuard(req, "booking", { texts: shieldTexts(b), email, phone, phoneOnly: !email });
+      // Once a token was asked for a code, it books only with that code (waiting a few seconds doesn't skip it).
+      const [[askedCode]] = shield.nonce
+        ? ((await pool.query<RowDataPacket[]>(`SELECT id FROM public_phone_codes WHERE shield_nonce = ? AND purpose = 'booking' LIMIT 1`, [shield.nonce])) as unknown as [RowDataPacket[]])
+        : [[undefined]];
+      if (shield.verdict === "suspect" || askedCode) {
+        const code = String(b.phone_code || "").trim();
+        if (!code) {
+          await sendBookingPhoneCode(req, phone, lang, shield.nonce);
+          await logShield(req, "booking", "code", shield, { email, phone });
+          return res.status(202).json({ ok: true, needs_code: true, phone_last4: phone.replace(/\D/g, "").slice(-4) });
+        }
+        await checkBookingPhoneCode(phone, code);
+      }
+      await markShieldUsed(shield);
+      const affiliate = await findActiveAffiliateByCode(b.referral_code);
+      const person = await bookingPerson({ name, email: email || null, phone, address, lang, type, affiliate });
+      if (person.lead_id && person.created) await creditQrScan(req, "leads", person.lead_id);
+      // Video with no fixed room: a Teams meeting on the host's Outlook (phone call if Teams can't).
+      const autoTeams = locationType === "video" && !cfg.video_url;
       const out = await createAppointment(
         {
-          title: `${lang === "es" ? cfg.title_es : cfg.title_en} · ${name}`,
+          title: `${lang === "es" ? title_es : title_en} · ${name}`,
+          teams_meeting: autoTeams,
           kind: cfg.kind,
           date,
           start: time,
@@ -30220,9 +30877,34 @@ function registerSchedulerRoutes(app: Express) {
           adminId: cfg.admin_id,
           source: "booking",
           attendees: [{ kind: "admin", admin_id: cfg.admin_id }],
+          bookingTeamId: team?.id ?? null,
         },
       );
-      // Leads booked without a matching record still show up for the team.
+      // The host (and whoever Team notifications route new bookings to) hears about it right away.
+      const when = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: cfg.timezone }).format(
+        zonedTimeToUtc(date, time, cfg.timezone),
+      );
+      const buildNotice = (l2: Lang): Omit<NoticeOpts, "lang"> => ({
+        subject: team
+          ? tr(l2, `New company booking: ${name} · ${when} · claim it`, `Nueva cita de la compañía: ${name} · ${when} · tómela`)
+          : tr(l2, `New booking: ${name} · ${when}`, `Nueva cita: ${name} · ${when}`),
+        headline: tr(l2, `${name} booked a ${title_en}`, `${name} agendó: ${title_es}`),
+        paragraphs: [
+          team
+            ? tr(l2, `From the ${team.name} booking page. The first one to open it and tap "Take it" owns the call.`, `Desde la página para agendar de ${team.name}. Quien la abra primero y toque "Tomarla" se queda con la llamada.`)
+            : tr(l2, `From the public booking page (${cfg.slug}).`, `Desde la página pública para agendar (${cfg.slug}).`),
+        ],
+        details: [
+          [tr(l2, "When", "Cuándo"), `${when} (${cfg.timezone})`],
+          [tr(l2, "Phone", "Teléfono"), phone],
+          ["Email", email || "—"],
+          ...(affiliate ? ([[tr(l2, "Affiliate", "Afiliado"), affiliate.referral_code]] as [string, string][]) : []),
+        ],
+        cta: { url: `${APP_URL}/admin/calendar?appointment=${out.id}`, label: team ? tr(l2, "Open and take it", "Abrir y tomarla") : tr(l2, "Open appointment", "Abrir cita") },
+      });
+      // Company page: its members on every channel. Personal link: the host + Team notifications routing.
+      if (team) await notifyBookingTeamMembers(team.member_ids, buildNotice);
+      else await notifyStaff("booking_created", buildNotice, person.client_id ? { clientId: person.client_id } : undefined);
       res.status(201).json({ ok: true, appointment_id: out.id });
     }),
   );
@@ -30233,9 +30915,13 @@ function registerSchedulerRoutes(app: Express) {
       const full = await loadAppointmentByToken(String(req.params.token));
       if (!full) throw new HttpError(404, "errors.notFound");
       const { a } = full;
-      const cfg = a.owner_admin_id
-        ? await loadSchedulerConfig({ adminId: Number(a.owner_admin_id) })
-        : null;
+      // Company-page bookings reschedule on the company page (any member), never on whoever holds it.
+      const team = a.booking_team_id != null ? await loadBookingTeam({ id: Number(a.booking_team_id) }) : null;
+      const cfg = team
+        ? team.cfg.is_enabled && team.member_ids.length ? team.cfg : null
+        : a.owner_admin_id
+          ? await loadSchedulerConfig({ adminId: Number(a.owner_admin_id) })
+          : null;
       res.json({
         ok: true,
         appointment: {
@@ -30281,6 +30967,10 @@ function registerSchedulerRoutes(app: Express) {
       const { a } = full;
       if (String(a.status) !== "scheduled")
         throw new HttpError(409, "errors.appointmentCancelled");
+      if (a.booking_team_id != null) {
+        await rescheduleTeamBooking(a, String(req.body?.date || ""), String(req.body?.time || ""));
+        return res.json({ ok: true });
+      }
       const cfg = a.owner_admin_id
         ? await loadSchedulerConfig({ adminId: Number(a.owner_admin_id) })
         : null;
@@ -30488,6 +31178,8 @@ function requireAffiliateOrOnboarding() {
         (await loadOnboardingTokenUser(req));
       if (!user) return res.status(401).json({ error: "errors.unauthorized" });
       res.locals.portalUser = user;
+      // "View as affiliate" is read-only here too: staff can't sign, submit a W-9 or add a card for them.
+      if (user.view_as_admin && req.method !== "GET") return res.status(403).json({ error: "errors.viewOnly" });
       return next();
     } catch (e: any) {
       console.error("[affiliate-onboarding] auth failed:", e?.message ?? e);
@@ -32104,7 +32796,7 @@ function registerContractorBillingRoutes(app: Express) {
       ) {
         return res.status(401).json({ error: "errors.unauthorized" });
       }
-      res.json({ ok: true, ...(await runCardExpiryReminders()), ...(await runTrialEndingReminders()), ...(await runAffiliateCardReminders()) });
+      res.json({ ok: true, ...(await runCardExpiryReminders()), ...(await runTrialEndingReminders()), ...(await runAffiliateCardReminders()), ...(await trimSpamShield()) });
     } catch (e: any) {
       console.error("[cron.billing-card-expiry] failed:", e?.message ?? e);
       res.status(500).json({ error: "errors.server" });
@@ -41428,6 +42120,29 @@ function buildApp(): Express {
       res.json({ ok: true, subject: tpl.subject, html: tpl.html });
     }),
   );
+  // "View as affiliate": same read-only session as View as partner (super admin, 30 minutes, every
+  // non-GET refused with errors.viewOnly). The session row (viewer_admin_id) is the record of who looked.
+  app.post(
+    "/api/admin/affiliates/:id/view-as",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const admin = portalUser(res);
+      if (admin.role !== "super_admin") throw new HttpError(403, "errors.forbidden");
+      const id = parseId(req.params.id);
+      const [[a]] = (await pool.query<RowDataPacket[]>(`SELECT id, status FROM affiliates WHERE id = ?`, [id])) as unknown as [RowDataPacket[]];
+      if (!a) throw new HttpError(404, "errors.notFound");
+      // Same statuses the affiliate portal itself lets in.
+      if (!["active", "prospect"].includes(String(a.status))) throw new HttpError(409, "errors.viewAsInactive");
+      const token = crypto.randomBytes(32).toString("hex");
+      const expires = new Date(Date.now() + 30 * 60 * 1000);
+      await pool.execute(
+        `INSERT INTO affiliate_sessions (affiliate_id, token_hash, ip_address, user_agent, expires_at, viewer_admin_id) VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, sha256(token), clientIp(req), String(req.headers["user-agent"] || "").slice(0, 500) || null, expires, admin.id],
+      );
+      setPortalCookie(res, "affiliate", token, expires);
+      res.json({ ok: true, url: "/affiliate", expires_at: expires.toISOString() });
+    }),
+  );
   app.post(
     "/api/admin/city-partners/:id/view-as",
     requireAdmin("approvals"),
@@ -43374,6 +44089,41 @@ function buildApp(): Express {
     });
   }
 
+  // Spam shield challenge: a signed, single-use token + proof-of-work puzzle for one public form.
+  // Never cached; costs nothing (no DB). The browser solves it while the person fills the form.
+  const shieldLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+  // Settings → Spam shield: what the shield blocked / quarantined / asked a code for (30 days, masked contact).
+  app.get(
+    "/api/admin/spam-shield",
+    requireAdmin("approvals"),
+    route(async (_req, res) => {
+      const [totals] = await pool.query<RowDataPacket[]>(
+        `SELECT form, verdict, COUNT(*) AS n FROM spam_shield_log WHERE created_at > NOW() - INTERVAL 30 DAY GROUP BY form, verdict`,
+      );
+      const [recent] = await pool.query<RowDataPacket[]>(
+        `SELECT id, form, verdict, reasons, score, contact_masked, created_at FROM spam_shield_log ORDER BY id DESC LIMIT 50`,
+      );
+      res.json({
+        ok: true,
+        totals: totals.map((r) => ({ form: String(r.form), verdict: String(r.verdict), count: Number(r.n) })),
+        recent: recent.map((r) => ({
+          id: Number(r.id),
+          form: String(r.form),
+          verdict: String(r.verdict),
+          reasons: String(r.reasons).split(",").filter((x) => x && x !== "-"),
+          score: Number(r.score),
+          contact: r.contact_masked ? String(r.contact_masked) : null,
+          at: isoDate(r.created_at),
+        })),
+      });
+    }),
+  );
+  app.get("/api/public/shield/challenge", shieldLimiter, (req: Request, res: Response) => {
+    const form = String(req.query.form || "");
+    if (!(SHIELD_FORMS as readonly string[]).includes(form)) return res.status(400).json({ error: "validation.invalidField" });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ ok: true, ...issueShieldChallenge(form as ShieldForm) });
+  });
   app.post(
     "/api/public/leads",
     leadLimiter,
@@ -43384,6 +44134,13 @@ function buildApp(): Express {
           return res.status(400).json({ error: parsed.error });
         }
         const data = parsed.data;
+        const shield = await shieldCheckpoint(req, res, "lead");
+        if (!shield) return;
+        if (shield.verdict === "suspect") {
+          // Quarantined: its own Spam lead (never merged into a real one), no email, texts, alerts or RSVP seat.
+          await quarantineLead(req, "lead", shield, { full_name: data.full_name, email: data.email, phone: data.phone, notes: data.property_address, lang: data.preferred_language, source: data.source || "website" });
+          return res.status(201).json({ ok: true, lead_id: 0, message: "Thanks. We got your request. Check your email for confirmation." });
+        }
         const ip =
           (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
           req.socket.remoteAddress ||
@@ -43875,6 +44632,16 @@ function buildApp(): Express {
           return res.status(400).json({ error: parsed.error });
         }
         const data = parsed.data;
+        const shield = await shieldCheckpoint(req, res, "contact");
+        if (!shield) return;
+        if (shield.verdict === "suspect") {
+          if (data.intent === "partner") {
+            await logShield(req, "contact", "blocked", shield, shieldContact(req.body));
+            return res.status(400).json({ error: "errors.spamSuspected" });
+          }
+          await quarantineLead(req, "contact", shield, { full_name: data.full_name, email: data.email, phone: data.phone, notes: shieldTexts(req.body).join("\n"), lang: data.preferred_language, source: "contact" });
+          return res.status(201).json({ ok: true, lead_id: 0, message: "Thanks. We got your message." });
+        }
 
         // intent=partner → pending affiliate (same as /partners), not a lead.
         if (data.intent === "partner") {
@@ -43995,6 +44762,12 @@ function buildApp(): Express {
           return res.status(400).json({ error: parsed.error });
         }
         const data = parsed.data;
+        const shield = await shieldCheckpoint(req, res, "partner_referral");
+        if (!shield) return;
+        if (shield.verdict === "suspect") {
+          await logShield(req, "partner_referral", "blocked", shield, shieldContact(req.body));
+          return res.status(400).json({ error: "errors.spamSuspected" });
+        }
         const partner = parsePartnerType(req.body, data.company ? String(data.company) : null);
         await assertTermsAccepted(req.body);
         const created = await createPendingPartnerAffiliate({

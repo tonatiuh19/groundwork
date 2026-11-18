@@ -13,6 +13,7 @@ import { SelectField, TextField } from "@/components/portal/kit";
 import { translateApiError } from "@/lib/api";
 import InvitedByCard from "./InvitedByCard";
 import PartnerTypeFields, { PARTNER_TYPE_DEFAULTS, partnerTypePayload, partnerTypeSchema, type PartnerTypeValues } from "@/components/portal/PartnerTypeFields";
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 
 /** Realtor / partner path on an affiliate's link: applies as an affiliate on the inviter's team (Sponsor). */
 export default function PartnerSignupForm({ affiliate, referralCode, onBack }: { affiliate: PublicAffiliateCard; referralCode: string; onBack: () => void }) {
@@ -78,6 +79,7 @@ export default function PartnerSignupForm({ affiliate, referralCode, onBack }: {
           }
         >
           <Form className="enroll-partner__form" noValidate>
+            <SpamShieldTrap form="affiliate_signup" />
             <div className="enroll-partner__row">
               <TextField name="first_name" labelKey="form.firstName" autoComplete="given-name" />
               <TextField name="last_name" labelKey="form.lastName" autoComplete="family-name" />

@@ -337,6 +337,7 @@ CREATE TABLE IF NOT EXISTS `affiliate_sessions` (
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `ip_address` VARCHAR(45) DEFAULT NULL,
   `user_agent` VARCHAR(500) DEFAULT NULL,
+  `viewer_admin_id` INT UNSIGNED DEFAULT NULL COMMENT 'Set = read-only View as affiliate session opened by this super admin',
   `expires_at` DATETIME NOT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -345,7 +346,9 @@ CREATE TABLE IF NOT EXISTS `affiliate_sessions` (
   KEY `idx_aff_sessions_active` (`is_active`),
   KEY `idx_aff_sessions_expires` (`expires_at`),
   CONSTRAINT `fk_aff_sessions_affiliate`
-    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE
+    FOREIGN KEY (`affiliate_id`) REFERENCES `affiliates`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_aff_sessions_viewer`
+    FOREIGN KEY (`viewer_admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `affiliate_invite_links` (
@@ -1573,6 +1576,45 @@ CREATE TABLE IF NOT EXISTS `affiliate_assistant_messages` (
 -- Lenders directory + scheduler (appointments, attendees, booking links)
 
 
+CREATE TABLE IF NOT EXISTS `booking_teams` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `is_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `slug` VARCHAR(80) NOT NULL,
+  `name` VARCHAR(200) NOT NULL DEFAULT 'Groundwork Capital' COMMENT 'Shown as the host on the public page',
+  `title_en` VARCHAR(200) NOT NULL DEFAULT 'ADU consultation',
+  `title_es` VARCHAR(200) NOT NULL DEFAULT 'Consulta de ADU',
+  `description_en` TEXT DEFAULT NULL,
+  `description_es` TEXT DEFAULT NULL,
+  `kind` ENUM('property_inspection','site_visit','lender_meeting','consultation','call','other') NOT NULL DEFAULT 'consultation',
+  `duration_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  `buffer_minutes` SMALLINT UNSIGNED NOT NULL DEFAULT 15,
+  `advance_days` SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  `min_notice_hours` SMALLINT UNSIGNED NOT NULL DEFAULT 4,
+  `timezone` VARCHAR(64) NOT NULL DEFAULT 'America/Los_Angeles',
+  `allow_phone` TINYINT(1) NOT NULL DEFAULT 1,
+  `allow_video` TINYINT(1) NOT NULL DEFAULT 0,
+  `allow_office` TINYINT(1) NOT NULL DEFAULT 0,
+  `allow_onsite` TINYINT(1) NOT NULL DEFAULT 0,
+  `video_url` VARCHAR(500) DEFAULT NULL,
+  `booking_types_json` JSON DEFAULT NULL,
+  `default_admin_id` INT UNSIGNED DEFAULT NULL COMMENT 'Holds an unclaimed booking (when free); else the first free member',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_booking_teams_slug` (`slug`),
+  CONSTRAINT `fk_booking_teams_default_admin` FOREIGN KEY (`default_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `booking_team_members` (
+  `team_id` INT UNSIGNED NOT NULL,
+  `admin_id` INT UNSIGNED NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`team_id`, `admin_id`),
+  KEY `idx_booking_team_members_admin` (`admin_id`),
+  CONSTRAINT `fk_booking_team_members_team` FOREIGN KEY (`team_id`) REFERENCES `booking_teams`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_booking_team_members_admin` FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `appointments` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `title` VARCHAR(200) NOT NULL,
@@ -1606,7 +1648,11 @@ CREATE TABLE IF NOT EXISTS `appointments` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `city_id` INT UNSIGNED DEFAULT NULL COMMENT 'City meeting: service_cities',
   `city_partner_id` INT UNSIGNED DEFAULT NULL COMMENT 'City meeting booked by this City Partner',
+  `booking_team_id` INT UNSIGNED DEFAULT NULL COMMENT 'Booked on a company (team) page',
+  `claimed_at` DATETIME DEFAULT NULL COMMENT 'Team booking: when a member took it (NULL = unclaimed)',
+  `claimed_by_admin_id` INT UNSIGNED DEFAULT NULL,
   PRIMARY KEY (`id`),
+  KEY `idx_appointments_team_claim` (`booking_team_id`, `claimed_at`),
   KEY `idx_appointments_city_partner` (`city_partner_id`, `starts_at`),
   UNIQUE KEY `uq_appointments_manage_token` (`manage_token_hash`),
   KEY `idx_appointments_starts` (`starts_at`),
@@ -1619,7 +1665,9 @@ CREATE TABLE IF NOT EXISTS `appointments` (
   CONSTRAINT `fk_appointments_lead` FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_appointments_project` FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_appointments_owner` FOREIGN KEY (`owner_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
-  CONSTRAINT `fk_appointments_creator` FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_appointments_creator` FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_appointments_booking_team` FOREIGN KEY (`booking_team_id`) REFERENCES `booking_teams`(`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_appointments_claimed_by` FOREIGN KEY (`claimed_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `appointment_attendees` (
@@ -1667,6 +1715,7 @@ CREATE TABLE IF NOT EXISTS `scheduler_settings` (
   `allow_office` TINYINT(1) NOT NULL DEFAULT 0,
   `allow_onsite` TINYINT(1) NOT NULL DEFAULT 1,
   `video_url` VARCHAR(500) DEFAULT NULL COMMENT 'Default video room for video bookings',
+  `booking_types_json` JSON DEFAULT NULL COMMENT 'Extra booking types (affiliate / contractor calls): enabled + length',
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`admin_id`),
   UNIQUE KEY `uq_scheduler_settings_slug` (`slug`),
@@ -2667,4 +2716,43 @@ CREATE TABLE IF NOT EXISTS `scorecard_actions` (
   UNIQUE KEY `uq_sc_action_auto` (`auto_key`),
   CONSTRAINT `fk_sc_action_admin` FOREIGN KEY (`created_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_sc_action_done_admin` FOREIGN KEY (`completed_by_admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Spam shield (see migration 20261118_180000_spam_shield.sql)
+CREATE TABLE IF NOT EXISTS `spam_shield_log` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `form` VARCHAR(40) NOT NULL,
+  `verdict` ENUM('blocked','quarantined','code') NOT NULL,
+  `reasons` VARCHAR(255) NOT NULL,
+  `score` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `contact_masked` VARCHAR(120) DEFAULT NULL COMMENT 'e.g. j***@gmail.com · ***-***-1234',
+  `ip_hash` CHAR(16) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_spam_shield_log_created` (`created_at`),
+  KEY `idx_spam_shield_log_form` (`form`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `spam_shield_used` (
+  `nonce` CHAR(24) NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  PRIMARY KEY (`nonce`),
+  KEY `idx_spam_shield_used_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `public_phone_codes` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `phone_e164` VARCHAR(20) NOT NULL,
+  `purpose` ENUM('booking') NOT NULL DEFAULT 'booking',
+  `shield_nonce` CHAR(24) DEFAULT NULL COMMENT 'Token that was asked for this code: it can only book with it',
+  `code_hash` CHAR(64) NOT NULL,
+  `attempts` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `expires_at` DATETIME NOT NULL,
+  `consumed_at` DATETIME DEFAULT NULL,
+  `ip_hash` CHAR(16) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_public_phone_codes_phone` (`phone_e164`, `purpose`, `created_at`),
+  KEY `idx_public_phone_codes_expires` (`expires_at`),
+  KEY `idx_public_phone_codes_nonce` (`shield_nonce`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

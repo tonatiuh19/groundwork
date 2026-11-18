@@ -11,6 +11,7 @@ import type { PublicEventView } from "@shared/api";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { resetLeadForm, submitLead } from "@/store/slices/leadSlice";
 import { translateApiError } from "@/lib/api";
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 
 function makeLeadSchema(t: TFunction, isEvent: boolean) {
   return Yup.object({
@@ -171,6 +172,7 @@ export default function LeadForm({
     >
       {({ errors, touched, values, setFieldValue }) => (
         <Form className="lead-form">
+          <SpamShieldTrap form="lead" />
           {waitlistOnly ? (
             <p className="event-waitlist-note" role="status">
               <Clock size={14} /> {t("event.waitlistNotice")}

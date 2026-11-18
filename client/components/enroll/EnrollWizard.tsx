@@ -25,6 +25,7 @@ import { CheckField, SelectField, TextField } from "@/components/portal/kit";
 import { translateApiError } from "@/lib/api";
 import CityField from "@/components/CityField";
 import PhoneOnlyConsent, { phoneOnlyConsentTest } from "@/components/portal/PhoneOnlyConsent";
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 
 export const ENROLL_STEP_COUNT = 4;
 
@@ -289,6 +290,7 @@ export default function EnrollWizard({
           >
             {({ isSubmitting, setValues }) => (
               <Form className="enroll-form">
+                <SpamShieldTrap form="enroll" />
                 {showDevFill ? (
                   <button
                     type="button"

@@ -8,6 +8,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Handshake,
+  Hand,
   HardHat,
   Landmark,
   MapPin,
@@ -32,6 +33,7 @@ import { fetchAdminCities } from "@/store/slices/citiesSlice";
 import { fetchAdminAssignees, fetchAdminContractors } from "@/store/slices/adminPortalSlice";
 import {
   cancelAppointment,
+  claimAppointment,
   clearSchedulerErrors,
   fetchAppointmentCityPartners,
   fetchLenders,
@@ -117,6 +119,8 @@ export default function AppointmentDrawer({
   const [notes, setNotes] = useState("");
   const [notifyHome, setNotifyHome] = useState(true);
   const [staffIds, setStaffIds] = useState<number[]>([]);
+  // Who owns it (their Outlook calendar; company bookings: who takes the call). Changing it reassigns.
+  const [ownerId, setOwnerId] = useState<number | null>(null);
   const [contractorIds, setContractorIds] = useState<number[]>([]);
   const [lenderIds, setLenderIds] = useState<number[]>([]);
   const [partnerIds, setPartnerIds] = useState<number[]>([]);
@@ -165,6 +169,7 @@ export default function AppointmentDrawer({
       setNotes(appointment.notes || "");
       setNotifyHome(appointment.notify_homeowner);
       setStaffIds(appointment.attendees.filter((a) => a.kind === "admin" && a.admin_id).map((a) => a.admin_id!));
+      setOwnerId(appointment.owner_admin_id);
       setContractorIds(appointment.attendees.filter((a) => a.kind === "contractor" && a.contractor_id).map((a) => a.contractor_id!));
       setLenderIds(appointment.attendees.filter((a) => a.kind === "lender" && a.lender_id).map((a) => a.lender_id!));
       setPartnerIds(appointment.attendees.filter((a) => a.kind === "city_partner" && a.city_partner_id).map((a) => a.city_partner_id!));
@@ -185,6 +190,7 @@ export default function AppointmentDrawer({
       setNotes("");
       setNotifyHome(true);
       setStaffIds(me?.id ? [me.id] : []);
+      setOwnerId(me?.id ?? null);
       setContractorIds([]);
       setLenderIds([]);
       setPartnerIds([]);
@@ -227,6 +233,7 @@ export default function AppointmentDrawer({
       notes: notes.trim() || null,
       notify_homeowner: hasRecord ? notifyHome : false,
       attendees,
+      ...(ownerId !== (appointment?.owner_admin_id ?? null) || !editing ? { owner_admin_id: ownerId } : {}),
       ...(cityTouched ? { city_id: cityId } : {}),
       ...(pickRecord
         ? {
@@ -248,6 +255,26 @@ export default function AppointmentDrawer({
       // Keep the panel open once to show overlap warnings; otherwise close.
       if (r.payload.conflicts.length && !savedOnce) setSavedOnce(true);
       else onClose();
+    }
+  };
+
+  // Reassign: the new owner replaces the old one on the invite list.
+  const changeOwner = (id: number | null) => {
+    setStaffIds((cur) => {
+      const next = cur.filter((x) => x !== ownerId);
+      return id && !next.includes(id) ? [id, ...next] : next;
+    });
+    setOwnerId(id);
+  };
+  const unclaimed = Boolean(appointment?.booking_team_id && !appointment.claimed_at && appointment.status === "scheduled");
+  const claim = async () => {
+    if (!appointment || !me?.id) return;
+    const r = await dispatch(claimAppointment(appointment.id));
+    if (claimAppointment.fulfilled.match(r)) {
+      const a = r.payload.appointment;
+      setOwnerId(a.owner_admin_id);
+      setStaffIds(a.attendees.filter((x) => x.kind === "admin" && x.admin_id).map((x) => x.admin_id!));
+      onSaved?.();
     }
   };
 
@@ -320,6 +347,17 @@ export default function AppointmentDrawer({
     >
       <div className="gw-appt-form">
         <ErrorNote error={saveError} />
+        {appointment?.booking_team_id ? (
+          <div className={cn("gw-appt-claim", !unclaimed && "gw-appt-claim--taken")} role="status">
+            <Building2 size={16} aria-hidden />
+            <p>
+              {unclaimed
+                ? t("appt.teamUnclaimed", { team: appointment.booking_team_name || "", name: appointment.owner_name || "" })
+                : t("appt.teamTaken", { team: appointment.booking_team_name || "", name: appointment.owner_name || "" })}
+            </p>
+            {unclaimed ? <BusyButton tone="gold" icon={Hand} label={t("appt.takeIt")} busy={saving} onClick={() => void claim()} /> : null}
+          </div>
+        ) : null}
         {conflicts.length && savedOnce ? (
           <div className="gw-appt-conflict" role="status">
             <AlertTriangle size={15} aria-hidden />
@@ -455,6 +493,18 @@ export default function AppointmentDrawer({
           {pickRecord ? (
             <RecordPicker value={record} onChange={setRecord} label={t("picker.forWho")} hint={t("picker.forWhoHint")} disabled={cancelled} />
           ) : null}
+          <label className="pf-field">
+            <span>{t("appt.owner")}</span>
+            <select value={ownerId ?? ""} onChange={(e) => changeOwner(e.target.value ? Number(e.target.value) : null)} disabled={cancelled || outlook}>
+              <option value="">{t("appt.ownerNone")}</option>
+              {staff.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {`${s.first_name} ${s.last_name}`.trim()}
+                </option>
+              ))}
+            </select>
+            <small className="pf-hint">{t("appt.ownerHint")}</small>
+          </label>
           <TagGroup
             icon={Users}
             label={t("appt.tagStaff")}

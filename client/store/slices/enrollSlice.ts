@@ -8,6 +8,7 @@ import type {
   PublicAffiliateByCodeResponse,
 } from "@shared/api";
 import { api } from "@/lib/api";
+import { withShield } from "@/store/slices/spamShieldSlice";
 import { createApiThunk } from "@/lib/portalThunk";
 
 type State = {
@@ -60,7 +61,7 @@ export const fetchPublicAffiliateByCode = createApiThunk<
 export const submitEnroll = createApiThunk<EnrollResponse, EnrollRequest>(
   "enroll/submit",
   null,
-  async (body) => (await api.post<EnrollResponse>("/public/enroll", body)).data,
+  async (body) => (await api.post<EnrollResponse>("/public/enroll", await withShield("enroll", body))).data,
 );
 
 export const fetchClientInvite = createApiThunk<ClientInvitePreview, string>(

@@ -5,6 +5,7 @@ import PersonFlowsPanel from "@/components/admin/PersonFlowsPanel";
 import LastContactStrip from "@/components/admin/LastContactStrip";
 import AffiliateLinkSend from "@/components/admin/AffiliateLinkSend";
 import AffiliateQrPanel from "@/components/admin/AffiliateQrPanel";
+import ViewAsAffiliateButton from "@/components/admin/ViewAsAffiliateButton";
 import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
@@ -156,6 +157,7 @@ export default function AdminAffiliateDetail() {
               <>
                 <TrackingLinkChip slug={a.slug} referralCode={a.referral_code} />
                 <ScorecardLink type="affiliate" id={a.id} />
+                <ViewAsAffiliateButton id={a.id} firstName={a.first_name} status={a.status} />
               </>
             }
           />

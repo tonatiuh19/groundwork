@@ -9,6 +9,7 @@ import type {
   PortalSignupResponse,
 } from "@shared/api";
 import { api } from "@/lib/api";
+import { withShield } from "@/store/slices/spamShieldSlice";
 import { createApiThunk } from "@/lib/portalThunk";
 
 type SignupSlot = {
@@ -75,7 +76,7 @@ export const submitAffiliateSignup = createApiThunk<
 >(
   "onboarding/affiliateSignup",
   null,
-  async (body) => (await api.post("/public/affiliate/signup", body)).data,
+  async (body) => (await api.post("/public/affiliate/signup", await withShield("affiliate_signup", body))).data,
 );
 export const submitClientSignup = createApiThunk<
   PortalSignupResponse,
@@ -83,7 +84,7 @@ export const submitClientSignup = createApiThunk<
 >(
   "onboarding/clientSignup",
   null,
-  async (body) => (await api.post("/public/client/signup", body)).data,
+  async (body) => (await api.post("/public/client/signup", await withShield("client_signup", body))).data,
 );
 export const submitContractorSignup = createApiThunk<
   PortalSignupResponse,
@@ -91,7 +92,7 @@ export const submitContractorSignup = createApiThunk<
 >(
   "onboarding/contractorSignup",
   null,
-  async (body) => (await api.post("/public/contractor/signup", body)).data,
+  async (body) => (await api.post("/public/contractor/signup", await withShield("contractor_signup", body))).data,
 );
 export const fetchContractorInvite = createApiThunk<
   ContractorInvitePreview,

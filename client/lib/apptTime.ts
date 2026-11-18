@@ -64,3 +64,14 @@ export function slotLabel(time: string, lang: "en" | "es"): string {
     new Date(Date.UTC(2000, 0, 1, h, m)),
   );
 }
+
+/** Wall-clock `date` + `time` in `tz` → the real instant (two-pass offset fix, DST safe). */
+export function zonedToUtc(date: string, time: string, tz: string): Date {
+  const guess = new Date(`${date}T${time}:00Z`);
+  const offset = (d: Date) => {
+    const z = isoToZoned(d.toISOString(), tz);
+    return new Date(`${z.date}T${z.time}:00Z`).getTime() - d.getTime();
+  };
+  const first = new Date(guess.getTime() - offset(guess));
+  return new Date(guess.getTime() - offset(first));
+}

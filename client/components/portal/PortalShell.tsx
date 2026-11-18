@@ -220,7 +220,8 @@ export default function PortalShell({
     >
       <PageMeta title={t(activeNav?.labelKey ?? titleKey)} description={t(titleKey)} noIndex />
       {actor === "admin" ? <AdminRealtimeBridge /> : null}
-      {actor === "affiliate" || actor === "contractor" ? <LegalAcceptGate actor={actor} /> : null}
+      {/* A staff "View as" session can't accept terms for the person, so it never shows the gate. */}
+      {(actor === "affiliate" || actor === "contractor") && !user?.view_as_admin ? <LegalAcceptGate actor={actor} /> : null}
 
       <header className="portal-mobile-bar">
         <Link to={homePath} className="portal-mobile-brand" onClick={closeNav}>

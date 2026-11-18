@@ -18,6 +18,7 @@ import {
 } from "@/store/slices/contactSlice";
 import { translateApiError } from "@/lib/api";
 import PartnerTypeFields, { PARTNER_TYPE_DEFAULTS, partnerTypePayload, partnerTypeSchema, type PartnerTypeValues } from "@/components/portal/PartnerTypeFields";
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 
 function makeSchema(t: TFunction) {
   return Yup.object({
@@ -150,6 +151,7 @@ export default function Partners() {
               >
                 {({ errors, touched }) => (
                   <Form className="lead-form">
+                    <SpamShieldTrap form="partner_referral" />
                     {error ? (
                       <p className="form-error" role="alert">
                         {translateApiError(t, error)}

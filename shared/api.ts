@@ -34,6 +34,7 @@ export type AdminNotifyEventKey =
   | "commission_accrued"
   | "contract_sent"
   | "city_partner"
+  | "booking_created"
   | "inbound_sms"
   | "inbound_email";
 
@@ -2016,6 +2017,10 @@ export interface Appointment {
   /** City Pipeline record (service_cities); prefilled from the client / lead / project. */
   city_id?: number | null;
   city_name?: string | null;
+  /** Booked on a company (team) page; `claimed_at` null = nobody has taken it yet. */
+  booking_team_id?: number | null;
+  booking_team_name?: string | null;
+  claimed_at?: string | null;
   attendees: AppointmentAttendee[];
 }
 
@@ -2119,7 +2124,19 @@ export interface SchedulerSettings {
   allow_office: boolean;
   allow_onsite: boolean;
   video_url: string | null;
+  /** Extra call types on the booking link (homeowner consultation is always on). */
+  booking_types: Record<"affiliate" | "contractor", { enabled: boolean; duration_minutes: number }>;
   availability: SchedulerAvailability[];
+}
+
+/** Company booking page (Settings): one public link shared by several staff. Hours come from each member. */
+export interface BookingTeam extends Omit<SchedulerSettings, "admin_id" | "availability"> {
+  id: number;
+  name: string;
+  member_ids: number[];
+  /** Holds unclaimed bookings when free (else the first free member). */
+  default_admin_id: number | null;
+  booking_url: string;
 }
 
 export interface SchedulerResponse {
@@ -2129,9 +2146,15 @@ export interface SchedulerResponse {
   blocked?: Array<{ id: number; starts_at: string | null; ends_at: string | null; label: string | null }>;
 }
 
+/** Booking page call types: homeowner ADU consultation (always) + optional affiliate / contractor calls. */
+export type BookingTypeKey = "homeowner" | "affiliate" | "contractor";
+
 export interface PublicBookingInfo {
   ok: true;
-  host: { name: string; avatar_url: string | null };
+  /** `team` = a company booking page (Groundwork is the host, any member may take the call). */
+  host: { name: string; avatar_url: string | null; team?: boolean };
+  type: BookingTypeKey;
+  types: Array<{ key: BookingTypeKey; title: string; duration_minutes: number }>;
   title: string;
   description: string | null;
   duration_minutes: number;

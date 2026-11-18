@@ -15,12 +15,18 @@ import { fetchAffiliateOverview } from "@/store/slices/affiliatePortalSlice";
 import { fetchAffiliateBillingStatus } from "@/store/slices/affiliateOnboardingSlice";
 import AffiliateBillingGate from "@/components/affiliate/AffiliateBillingGate";
 import BillingNotice from "@/components/billing/BillingNotice";
+import { ViewAsBanner } from "@/components/partnerKit/PartnerKit";
+import { useTranslation } from "react-i18next";
+import { logoutPortal } from "@/store/slices/portalAuthSlice";
 
 export default function AffiliateLayout() {
   const dispatch = useAppDispatch();
   const overview = useAppSelector((s) => s.affiliatePortal.overview);
   const user = useAppSelector((s) => s.portalAuth.affiliate.user);
   const { status: billing, locked } = useAppSelector((s) => s.affiliateOnboarding);
+  const { t } = useTranslation();
+  // Super admin "View as affiliate": read-only, with a banner to leave.
+  const viewer = user?.view_as_admin;
 
   useEffect(() => {
     if (user) void dispatch(fetchAffiliateBillingStatus());
@@ -66,6 +72,18 @@ export default function AffiliateLayout() {
   }, [canManageTeam]);
 
   return (
+    <>
+      {viewer ? (
+        <ViewAsBanner
+          text={t("affViewAs.banner", { name: `${user.first_name} ${user.last_name}`.trim(), admin: viewer.name })}
+          exitLabel={t("cityPartner.exitView")}
+          onExit={async () => {
+            await dispatch(logoutPortal("affiliate"));
+            window.close();
+            window.location.href = "/admin/affiliates";
+          }}
+        />
+      ) : null}
     <PortalShell
       tabs={["/affiliate", "/affiliate/clients", "/affiliate/commissions", "/affiliate/link"]}
       actor="affiliate"
@@ -77,5 +95,6 @@ export default function AffiliateLayout() {
       titleKey="portalNav.affiliateTitle"
       nav={nav}
     />
+    </>
   );
 }

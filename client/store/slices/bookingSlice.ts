@@ -1,20 +1,24 @@
 import { createSlice } from "@reduxjs/toolkit";
-import type { PublicAppointmentView, PublicBookingInfo } from "@shared/api";
+import type { BookingTypeKey, PublicAppointmentView, PublicBookingInfo } from "@shared/api";
 import { api } from "@/lib/api";
+import { resetShield, withShield } from "@/store/slices/spamShieldSlice";
 import { createApiThunk } from "@/lib/portalThunk";
 
 /** Public booking page (/book/:slug) and "manage my appointment" (/appointment/:token). */
 
-export const fetchBookingInfo = createApiThunk<PublicBookingInfo, { slug: string; lang: "en" | "es" }>(
+export const fetchBookingInfo = createApiThunk<PublicBookingInfo, { slug: string; lang: "en" | "es"; type?: BookingTypeKey }>(
   "booking/info",
   null,
-  async ({ slug, lang }) => (await api.get(`/public/book/${encodeURIComponent(slug)}`, { params: { lang } })).data,
+  async ({ slug, lang, type }) => (await api.get(`/public/book/${encodeURIComponent(slug)}`, { params: { lang, type } })).data,
 );
 
-export const fetchBookingSlots = createApiThunk<{ date: string; slots: string[] }, { slug: string; date: string }>(
+/** Open times are cached per call type + day (types have different lengths). */
+export const slotKey = (type: BookingTypeKey | undefined, date: string) => `${type || "homeowner"}|${date}`;
+
+export const fetchBookingSlots = createApiThunk<{ date: string; slots: string[] }, { slug: string; date: string; type?: BookingTypeKey }>(
   "booking/slots",
   null,
-  async ({ slug, date }) => (await api.get(`/public/book/${encodeURIComponent(slug)}/slots`, { params: { date } })).data,
+  async ({ slug, date, type }) => (await api.get(`/public/book/${encodeURIComponent(slug)}/slots`, { params: { date, type } })).data,
 );
 
 export type BookingForm = {
@@ -27,12 +31,32 @@ export type BookingForm = {
   address?: string;
   notes?: string;
   lang: "en" | "es";
+  type?: BookingTypeKey;
+  /** Affiliate link the visitor came through (credited on new leads). */
+  referral_code?: string;
+  /** 6-digit code texted when the spam shield asked to confirm the phone. */
+  phone_code?: string;
 };
 
-export const submitBooking = createApiThunk<{ appointment_id: number }, { slug: string; body: BookingForm }>(
+/**
+ * Book. When the spam shield isn't sure, the server texts a code first and answers 202 `needs_code`;
+ * the page then sends the same booking again with `phone_code` (same shield token until it's done).
+ */
+export const submitBooking = createApiThunk<{ appointment_id?: number; needs_code?: boolean; phone_last4?: string }, { slug: string; body: BookingForm }>(
   "booking/submit",
   null,
-  async ({ slug, body }) => (await api.post(`/public/book/${encodeURIComponent(slug)}`, body)).data,
+  async ({ slug, body }) => {
+    try {
+      const r = await api.post(`/public/book/${encodeURIComponent(slug)}`, await withShield("booking", body, { keep: true }));
+      if (!r.data?.needs_code) resetShield("booking");
+      return r.data;
+    } catch (e) {
+      // A wrong / expired code keeps the token (they retry); anything else starts fresh.
+      const key = (e as any)?.response?.data?.error;
+      if (!["errors.bookingCodeInvalid", "errors.bookingCodeExpired"].includes(key)) resetShield("booking");
+      throw e;
+    }
+  },
 );
 
 export const fetchManagedAppointment = createApiThunk<PublicAppointmentView, string>(
@@ -61,6 +85,8 @@ type State = {
   submitting: boolean;
   submitError: string | null;
   booked: boolean;
+  /** Last 4 digits the code was texted to (spam shield asked to confirm the phone); null = no code step. */
+  needsCode: string | null;
   manage: PublicAppointmentView | null;
   manageError: string | null;
   manageBusy: boolean;
@@ -74,6 +100,7 @@ const initialState: State = {
   submitting: false,
   submitError: null,
   booked: false,
+  needsCode: null,
   manage: null,
   manageError: null,
   manageBusy: false,
@@ -84,6 +111,11 @@ const slice = createSlice({
   initialState,
   reducers: {
     resetBooking: () => initialState,
+    /** "Change my number" on the code step: back to the details form. */
+    clearBookingCode: (s) => {
+      s.needsCode = null;
+      s.submitError = null;
+    },
   },
   extraReducers: (b) => {
     b.addCase(fetchBookingInfo.fulfilled, (s, a) => {
@@ -98,7 +130,7 @@ const slice = createSlice({
       })
       .addCase(fetchBookingSlots.fulfilled, (s, a) => {
         s.slotsLoading = false;
-        s.slots[a.payload.date] = a.payload.slots;
+        s.slots[slotKey(a.meta.arg.type, a.payload.date)] = a.payload.slots;
       })
       .addCase(fetchBookingSlots.rejected, (s) => {
         s.slotsLoading = false;
@@ -107,9 +139,11 @@ const slice = createSlice({
         s.submitting = true;
         s.submitError = null;
       })
-      .addCase(submitBooking.fulfilled, (s) => {
+      .addCase(submitBooking.fulfilled, (s, a) => {
         s.submitting = false;
-        s.booked = true;
+        // 202 "confirm your phone": not booked yet, the page shows the code step.
+        s.needsCode = a.payload.needs_code ? a.payload.phone_last4 || "" : null;
+        s.booked = !a.payload.needs_code;
       })
       .addCase(submitBooking.rejected, (s, a) => {
         s.submitting = false;
@@ -138,5 +172,5 @@ const slice = createSlice({
   },
 });
 
-export const { resetBooking } = slice.actions;
+export const { resetBooking, clearBookingCode } = slice.actions;
 export default slice.reducer;

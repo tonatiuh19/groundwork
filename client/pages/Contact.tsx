@@ -1,3 +1,4 @@
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 import { useMemo } from "react";
 import { Formik, Form, Field } from "formik";
 import * as Yup from "yup";
@@ -167,6 +168,7 @@ export default function Contact() {
               >
                 {({ errors, touched, values, setFieldValue }) => (
                   <Form className="lead-form">
+                    <SpamShieldTrap form="contact" />
                     {error ? (
                       <p className="form-error" role="alert">
                         {translateApiError(t, error)}

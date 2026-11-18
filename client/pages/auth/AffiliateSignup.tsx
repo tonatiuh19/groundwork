@@ -15,6 +15,7 @@ import { ErrorNote, SubmitButton, TextField } from "@/components/portal/kit";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { resetAffiliateSignup, submitAffiliateSignup } from "@/store/slices/onboardingSlice";
 import { yupPhoneRequired } from "@/lib/validation";
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 
 export default function AffiliateSignup() {
   const { t, i18n } = useTranslation();
@@ -83,6 +84,7 @@ export default function AffiliateSignup() {
           }
         >
           <Form className="portal-login-form pf-form">
+            <SpamShieldTrap form="affiliate_signup" />
             <h2>{t("affSignup.formTitle")}</h2>
             <p className="portal-login-hint">{t("affSignup.formHint")}</p>
             <ErrorNote error={error} />

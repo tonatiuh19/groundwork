@@ -25,6 +25,8 @@ import CitiesPanel from "@/components/admin/CitiesPanel";
 import DealStatusesPanel from "@/components/admin/DealStatusesPanel";
 import AffiliateFaqPanel from "@/components/admin/AffiliateFaqPanel";
 import LendersPanel from "@/components/admin/LendersPanel";
+import SpamShieldPanel from "@/components/admin/SpamShieldPanel";
+import TeamBookingPanel from "@/components/admin/TeamBookingPanel";
 import { centsToDollars, dollarsToCents } from "@/lib/format";
 import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
@@ -123,6 +125,8 @@ export default function AdminSettings() {
         <AdminPhoneNumbersPanel className="pf-section gw-phone-panel" />
       ) : null}
 
+      {showTeamNotify ? <TeamBookingPanel className="pf-section" /> : null}
+
       {showTeamNotify ? <DealStatusesPanel className="pf-section" /> : null}
 
       {showTeamNotify ? <AgreementTemplatePanel className="pf-section" /> : null}
@@ -131,6 +135,7 @@ export default function AdminSettings() {
       {showTeamNotify ? <LegalPagesPanel className="pf-section" /> : null}
       {showTeamNotify ? <AffiliateFaqPanel className="pf-section" /> : null}
       {showTeamNotify ? <LendersPanel className="pf-section" /> : null}
+      {adminCan(me?.role, "approvals") ? <SpamShieldPanel className="pf-section" /> : null}
     </div>
   );
 }

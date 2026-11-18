@@ -783,6 +783,17 @@ paths:
       responses:
         "200": { description: OK }
         "404": { description: errors.notFound }
+  /api/admin/affiliates/{id}/view-as:
+    post:
+      tags: [portal-admin]
+      summary: View as affiliate (read-only portal session)
+      description: "Super admin only (403 otherwise). Opens a 30-minute read-only affiliate session in this browser (sets gw_affiliate_sid; affiliate_sessions.viewer_admin_id records who). Every non-GET in that session returns 403 errors.viewOnly; /api/affiliate/auth/me returns view_as_admin. 409 errors.viewAsInactive unless the affiliate is active or prospect. Returns { url: '/affiliate', expires_at }."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: OK }
+        "403": { description: Not a super admin }
+        "409": { description: Affiliate not active }
   /api/admin/city-partners/{id}/view-as:
     post:
       summary: "View as partner: open a read-only session in the partner portal (super admin)"
@@ -4570,6 +4581,16 @@ paths:
       responses:
         "200": { description: "OK" }
         "404": { description: "errors.notFound" }
+  /api/admin/appointments/{id}/claim:
+    post:
+      summary: "Take an unclaimed company booking"
+      tags: [portal-admin]
+      description: "Requires `projects.write`. Company (team) page bookings only (409 errors.notTeamBooking). First one wins: sets claimed_at, makes the caller the owner (old holder gets a cancellation, caller gets the invite + Outlook event); other members get a bell. 409 errors.alreadyClaimed when someone already took it."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, appointment }" }
+        "409": { description: "errors.alreadyClaimed | errors.notTeamBooking | errors.appointmentCancelled" }
   /api/contractor/appointments:
     get:
       summary: "My appointments (contractor)"
@@ -4594,7 +4615,7 @@ paths:
     put:
       summary: "Update my booking link"
       tags: [portal-admin]
-      description: "Any staff. is_enabled, slug, titles/descriptions (EN/ES), kind, duration_minutes, buffer_minutes, advance_days, min_notice_hours, timezone, allow_phone/video/office/onsite, video_url, availability[] (day_of_week 0–6, HH:mm)."
+      description: "Any staff. is_enabled, slug, titles/descriptions (EN/ES), kind, duration_minutes, buffer_minutes, advance_days, min_notice_hours, timezone, allow_phone/video/office/onsite, video_url (empty = auto Teams meeting per video booking), booking_types { affiliate?: { enabled, duration_minutes 15-240 }, contractor?: {...} } (extra call types on the same link, shared as /book/:slug?type=affiliate), availability[] (day_of_week 0–6, HH:mm)."
       responses:
         "200": { description: "{ ok, settings, booking_url }" }
         "409": { description: "errors.slugTaken" }
@@ -4615,11 +4636,52 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
         "200": { description: "OK" }
+  /api/admin/booking-teams:
+    get:
+      summary: "Company booking pages (Settings)"
+      tags: [portal-admin]
+      description: "Requires `settings`. Each page: the same rules as a personal booking link (slug, titles, length, buffer, notice, horizon, timezone, meeting places, video room, booking_types) + id, name (shown as the host), member_ids (active staff), default_admin_id, booking_url."
+      responses:
+        "200": { description: "{ ok, teams: BookingTeam[] }" }
+    post:
+      summary: "Create a company booking page"
+      tags: [portal-admin]
+      description: "Requires `settings`. Body { name?, slug?, member_ids? }. Starts off; slug made unique across personal links and company pages."
+      responses:
+        "201": { description: "{ ok, teams }" }
+  /api/admin/booking-teams/{id}:
+    put:
+      summary: "Update a company booking page"
+      tags: [portal-admin]
+      description: "Requires `settings`. Any BookingTeam field. member_ids replaces the members (active staff, max 20); default_admin_id must be a member. 409 errors.slugTaken (slugs are shared with personal links), 400 errors.teamNeedsMembers when turned on with no members."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, teams }" }
+        "400": { description: "errors.teamNeedsMembers | validation.invalidField" }
+        "409": { description: "errors.slugTaken" }
+  /api/public/shield/challenge:
+    get:
+      tags: [public]
+      summary: Spam shield challenge for one public form
+      description: "Query form = lead | contact | enroll | client_signup | affiliate_signup | contractor_signup | partner_referral | booking. Returns a signed single-use token (2 h), a nonce and a difficulty: the browser finds `solution` so sha256(`nonce:solution`) starts with that many zero bits, and sends `_shield: { token, solution, hp }` (hp = the hidden trap field) with the form. No DB; never cached. Every public form above checks it: a bot (trap filled, bad / expired / reused / other-form token, puzzle unsolved, sent under ~1 s) gets 400 errors.spamBlocked; a borderline one (very fast, links, gibberish, phone-only booking) is quarantined (website lead / contact: saved as its own Spam lead, no email / texts / alerts, same 201 reply), asked for a text code (booking: 202) or refused with 400 errors.spamSuspected (sign-ups, enroll, partner referral). A missing token only counts as a hint until 2026-11-25."
+      parameters:
+        - { name: form, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "{ ok, token, nonce, difficulty }" }
+        "400": { description: validation.invalidField }
+  /api/admin/spam-shield:
+    get:
+      tags: [portal-admin]
+      summary: Spam shield log (Settings)
+      description: "Requires `approvals`. Last 30 days: totals per form + verdict (blocked | quarantined | code) and the latest 50 (form, verdict, reasons, score, masked contact, time). Trimmed daily by the billing cron."
+      responses:
+        "200": { description: "{ ok, totals[], recent[] }" }
   /api/public/book/{slug}:
     get:
       summary: "Public booking page info"
       tags: [public]
-      description: "Host name, title / description (lang), duration, timezone, location types, weekdays with availability. 404 when disabled."
+      description: "Query lang, type (homeowner | affiliate | contractor, default homeowner). Host name (company page: its name, host.team = true), type + types[] (every call type the host offers, with title and length), title / description (lang), duration, timezone, location types, weekdays with availability. 404 when disabled or the type is off."
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
       responses:
@@ -4628,7 +4690,7 @@ paths:
     post:
       summary: "Book a time"
       tags: [public]
-      description: "Rate limited. Body { date, time, name, email, phone, location_type, address? (onsite), notes?, lang }. Slot re-checked at booking (409 errors.slotTaken). Matches an existing client / lead by email or phone, else creates a lead (source booking). Host + booker get email + invite; the booker's email has a manage link."
+      description: "Rate limited. Body { type?, date, time, name, phone (required), email? (optional, validated when given), location_type, address? (onsite), notes?, lang, referral_code? }. Slot re-checked at booking (409 errors.slotTaken). Matches an existing client / lead by email or phone, else creates a lead (source booking, audience_tag + role_answer by type, credited to the active affiliate of referral_code, QR scan cookie credited). Video with no saved room: a Teams meeting on the host's Outlook; if no join link comes back the booking becomes a phone call. Staff alert booking_created (area leads). Company page (slug of a booking_teams row): open when any member is free; held by the default member when free, else the first free member (409 errors.slotTaken when nobody is); every member is alerted by email + bell + text (routing and personal switches don't apply) and the first to claim owns it (POST /api/admin/appointments/{id}/claim). Host + booker get the invite (email when given, text always); it has a manage link. Spam shield (`_shield`): when it isn't sure (e.g. very fast + phone only) it texts a 6-digit code and answers 202 { needs_code, phone_last4 }; send the same booking again with phone_code (400 errors.bookingCodeInvalid / bookingCodeExpired, 429 errors.tooMany: 5 tries, 3 codes per number and 6 per visitor an hour; 400 errors.bookingCodeUnavailable when the number can't get texts). A token that was asked for a code books only with it."
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
       responses:
@@ -4638,7 +4700,7 @@ paths:
     get:
       summary: "Open times for a day"
       tags: [public]
-      description: "Query date=YYYY-MM-DD. Availability minus appointments (with buffer), blocked ranges, minimum notice and booking horizon."
+      description: "Query date=YYYY-MM-DD, type? (call type: its own length). Availability minus appointments (with buffer), blocked ranges, minimum notice and booking horizon. Company page: any member free (each member's own hours, read in the page's timezone)."
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
       responses:
@@ -4667,7 +4729,7 @@ paths:
     post:
       summary: "Reschedule my appointment"
       tags: [public]
-      description: "Body { date, time } — must be an open slot on the host's booking link."
+      description: "Body { date, time }: must be an open slot on the host's booking link. Company page bookings: any member free; the holder keeps it when free, else a free member takes over, it goes back to unclaimed and members are alerted."
       parameters:
         - { name: token, in: path, required: true, schema: { type: string } }
       responses:

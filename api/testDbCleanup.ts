@@ -119,9 +119,13 @@ export async function cleanupTestLeadsByPrefix(
     throw new Error("[testDbCleanup] empty prefix — refusing cleanup");
   }
   const like = `${prefix.trim().toLowerCase()}%@example.com`;
+  // Booking text codes only ever go to fictional +1555 lines in tests.
+  await pool.execute(`DELETE FROM public_phone_codes WHERE phone_e164 LIKE '+1555%'`).catch(() => undefined);
+  // Phone-only leads (email '') carry the run prefix in their name instead, on a fictional +1555 line.
+  const nameLike = `${prefix.trim().toLowerCase()}%`;
   const [result] = await pool.execute(
-    `DELETE FROM leads WHERE LOWER(email) LIKE ?`,
-    [like],
+    `DELETE FROM leads WHERE LOWER(email) LIKE ? OR (email = '' AND LOWER(full_name) LIKE ? AND phone LIKE '+1555%')`,
+    [like, nameLike],
   );
   return Number((result as { affectedRows?: number }).affectedRows || 0);
 }
@@ -226,6 +230,8 @@ export async function cleanupPortalFixturesByPrefix(
     `DELETE FROM appointments WHERE client_id IN (?) OR lead_id IN (?) OR owner_admin_id IN (?) OR created_by_admin_id IN (?) OR LOWER(title) LIKE ?`,
     [inList(clientIds), inList(leadIds), inList(adminIds), inList(adminIds), contains],
   );
+  // Company booking pages named with the run prefix (members cascade, appointments SET NULL above).
+  await step("booking_teams", `DELETE FROM booking_teams WHERE LOWER(slug) LIKE ? OR LOWER(name) LIKE ?`, [startsWith, startsWith]);
   // Reminder-flow runs reference people by (kind, id) without an FK (events + links cascade).
   {
     const fAff = await select(`SELECT id FROM affiliates WHERE ${byEmail()}`, emailLikes);

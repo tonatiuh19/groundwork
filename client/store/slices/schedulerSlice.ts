@@ -5,6 +5,7 @@ import type {
   AppointmentBody,
   AppointmentCityPartnerOption,
   AppointmentConflict,
+  BookingTeam,
   Lender,
   LenderBody,
   SchedulerResponse,
@@ -112,6 +113,32 @@ export const removeBlockedRange = createApiThunk<{ ok: true }, number>(
   async (id) => (await api.delete(`/admin/scheduler/blocked/${id}`)).data,
 );
 
+/** Company booking pages (Settings). */
+export const fetchBookingTeams = createApiThunk<{ teams: BookingTeam[] }, void>(
+  "scheduler/teams",
+  "admin",
+  async () => (await api.get("/admin/booking-teams")).data,
+);
+
+export const createBookingTeam = createApiThunk<{ teams: BookingTeam[] }, { name?: string; member_ids?: number[] }>(
+  "scheduler/createTeam",
+  "admin",
+  async (body) => (await api.post("/admin/booking-teams", body)).data,
+);
+
+export const saveBookingTeam = createApiThunk<{ teams: BookingTeam[] }, { id: number; body: Partial<BookingTeam> }>(
+  "scheduler/saveTeam",
+  "admin",
+  async ({ id, body }) => (await api.put(`/admin/booking-teams/${id}`, body)).data,
+);
+
+/** Take an unclaimed company booking (first one wins; 409 errors.alreadyClaimed). */
+export const claimAppointment = createApiThunk<{ appointment: Appointment }, number>(
+  "scheduler/claim",
+  "admin",
+  async (id) => (await api.post(`/admin/appointments/${id}/claim`)).data,
+);
+
 export const fetchContractorAppointments = createApiThunk<{ appointments: Appointment[] }, void>(
   "scheduler/contractor",
   "contractor",
@@ -143,6 +170,9 @@ type State = {
   portal: Appointment[];
   affiliate: AffiliateAppointment[];
   portalLoading: boolean;
+  teams: BookingTeam[] | null;
+  teamsSaving: boolean;
+  teamsError: string | null;
 };
 
 const initialState: State = {
@@ -163,6 +193,9 @@ const initialState: State = {
   portal: [],
   affiliate: [],
   portalLoading: false,
+  teams: null,
+  teamsSaving: false,
+  teamsError: null,
 };
 
 const slice = createSlice({
@@ -174,6 +207,7 @@ const slice = createSlice({
       s.conflicts = [];
       s.lendersError = null;
       s.mineError = null;
+      s.teamsError = null;
     },
   },
   extraReducers: (b) => {
@@ -255,6 +289,40 @@ const slice = createSlice({
       })
       .addCase(fetchAffiliateAppointments.fulfilled, (s, a) => {
         s.affiliate = a.payload.appointments;
+      })
+      .addCase(fetchBookingTeams.fulfilled, (s, a) => {
+        s.teams = a.payload.teams;
+      })
+      .addCase(fetchBookingTeams.rejected, (s, a) => {
+        s.teams = s.teams ?? [];
+        s.teamsError = a.payload || "errors.server";
+      });
+    for (const t of [createBookingTeam, saveBookingTeam]) {
+      b.addCase(t.pending, (s) => {
+        s.teamsSaving = true;
+        s.teamsError = null;
+      })
+        .addCase(t.fulfilled, (s, a) => {
+          s.teamsSaving = false;
+          s.teams = a.payload.teams;
+        })
+        .addCase(t.rejected, (s, a) => {
+          s.teamsSaving = false;
+          s.teamsError = a.payload || "errors.server";
+        });
+    }
+    b.addCase(claimAppointment.pending, (s) => {
+      s.saving = true;
+      s.saveError = null;
+    })
+      .addCase(claimAppointment.fulfilled, (s, a) => {
+        s.saving = false;
+        const ap = a.payload.appointment;
+        s.calendar = s.calendar.map((x) => (x.id === ap.id ? ap : x));
+      })
+      .addCase(claimAppointment.rejected, (s, a) => {
+        s.saving = false;
+        s.saveError = a.payload || "errors.server";
       });
   },
 });

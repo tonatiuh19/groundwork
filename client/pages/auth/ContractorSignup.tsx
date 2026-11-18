@@ -18,6 +18,7 @@ import {
   submitContractorSignup,
 } from "@/store/slices/onboardingSlice";
 import { yupPhoneRequired } from "@/lib/validation";
+import SpamShieldTrap from "@/components/spam/SpamShieldTrap";
 
 function OutcomeCard({
   outcome,
@@ -126,6 +127,7 @@ export default function ContractorSignup() {
           }
         >
           <Form className="portal-login-form pf-form">
+            <SpamShieldTrap form="contractor_signup" />
             <h2>{t("ctrSignup.formTitle")}</h2>
             <p className="portal-login-hint">{t("ctrSignup.formHint")}</p>
             <ErrorNote error={error} />

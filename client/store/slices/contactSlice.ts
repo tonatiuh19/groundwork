@@ -6,6 +6,7 @@ import type {
   SubmitPartnerReferralResponse,
 } from "@shared/api";
 import { api, formatAxiosError } from "@/lib/api";
+import { withShield } from "@/store/slices/spamShieldSlice";
 import { getReferralCode } from "@/lib/referral";
 import { logger } from "@/utils/logger";
 
@@ -15,10 +16,13 @@ export const submitContact = createAsyncThunk<
   { rejectValue: string }
 >("contact/submit", async (payload, { rejectWithValue }) => {
   try {
-    const { data } = await api.post<SubmitContactResponse>("/public/contact", {
-      ...payload,
-      referral_code: payload.referral_code ?? getReferralCode() ?? null,
-    });
+    const { data } = await api.post<SubmitContactResponse>(
+      "/public/contact",
+      await withShield("contact", {
+        ...payload,
+        referral_code: payload.referral_code ?? getReferralCode() ?? null,
+      }),
+    );
     return data;
   } catch (error) {
     const message = formatAxiosError(error, "errors.submitFailed");
@@ -35,10 +39,10 @@ export const submitPartnerReferral = createAsyncThunk<
   try {
     const { data } = await api.post<SubmitPartnerReferralResponse>(
       "/public/partner-referral",
-      {
+      await withShield("partner_referral", {
         ...payload,
         referral_code: payload.referral_code ?? getReferralCode() ?? null,
-      },
+      }),
     );
     return data;
   } catch (error) {

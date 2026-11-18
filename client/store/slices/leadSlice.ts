@@ -5,6 +5,7 @@ import type {
   SubmitLeadResponse,
 } from "@shared/api";
 import { api, formatAxiosError } from "@/lib/api";
+import { withShield } from "@/store/slices/spamShieldSlice";
 import { getReferralCode } from "@/lib/referral";
 import { logger } from "@/utils/logger";
 
@@ -14,10 +15,13 @@ export const submitLead = createAsyncThunk<
   { rejectValue: string }
 >("lead/submit", async (payload, { rejectWithValue }) => {
   try {
-    const { data } = await api.post<SubmitLeadResponse>("/public/leads", {
-      ...payload,
-      referral_code: payload.referral_code ?? getReferralCode(),
-    });
+    const { data } = await api.post<SubmitLeadResponse>(
+      "/public/leads",
+      await withShield("lead", {
+        ...payload,
+        referral_code: payload.referral_code ?? getReferralCode(),
+      }),
+    );
     return data;
   } catch (error) {
     const message = formatAxiosError(error, "errors.submitFailed");

@@ -6,6 +6,7 @@ import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import { addBlockedRange, fetchMyScheduler, removeBlockedRange, saveMyScheduler } from "@/store/slices/schedulerSlice";
 import { BusyButton, ErrorNote, Loading } from "@/components/portal/kit";
 import { cn } from "@/lib/cn";
+import BookingRulesFields from "@/components/booking/BookingRulesFields";
 import { KitSkeleton } from "@/components/partnerKit/PartnerKit";
 
 const DAYS = [1, 2, 3, 4, 5, 6, 0];
@@ -31,6 +32,11 @@ export default function BookingLinkPanel() {
     if (mine?.settings) setForm(mine.settings);
   }, [mine?.settings]);
 
+  // Calendar → "Settings" opens /admin/profile#booking-link: bring this panel into view once it renders.
+  useEffect(() => {
+    if (form && window.location.hash === "#booking-link") document.getElementById("booking-link")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [Boolean(form)]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!form) return <section className="pf-section"><KitSkeleton layout="list" rows={3} /></section>;
   const set = (patch: Partial<SchedulerSettings>) => setForm({ ...form, ...patch });
   const dayName = (d: number) => new Intl.DateTimeFormat(lang === "es" ? "es-US" : "en-US", { weekday: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2026, 9, 4 + d)));
@@ -49,7 +55,7 @@ export default function BookingLinkPanel() {
   };
 
   return (
-    <section className="pf-section gw-booking-admin">
+    <section className="pf-section gw-booking-admin" id="booking-link">
       <div className="pf-section-head">
         <h2 className="pf-h2">
           <Link2 size={17} aria-hidden /> {t("booking.adminTitle")}
@@ -75,77 +81,7 @@ export default function BookingLinkPanel() {
       <ErrorNote error={mineError} />
 
       <div className="pf-form">
-        <div className="pf-form-grid">
-          <label className="pf-field">
-            <span>{t("booking.slug")}</span>
-            <input value={form.slug} maxLength={60} onChange={(e) => set({ slug: e.target.value })} />
-          </label>
-          <label className="pf-field">
-            <span>{t("booking.length")}</span>
-            <select value={form.duration_minutes} onChange={(e) => set({ duration_minutes: Number(e.target.value) })}>
-              {[15, 30, 45, 60, 90].map((m) => (
-                <option key={m} value={m}>
-                  {t("appt.minutes", { count: m })}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="pf-field">
-            <span>{t("booking.buffer")}</span>
-            <select value={form.buffer_minutes} onChange={(e) => set({ buffer_minutes: Number(e.target.value) })}>
-              {[0, 5, 10, 15, 30, 45, 60].map((m) => (
-                <option key={m} value={m}>
-                  {t("appt.minutes", { count: m })}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="pf-field">
-            <span>{t("booking.notice")}</span>
-            <select value={form.min_notice_hours} onChange={(e) => set({ min_notice_hours: Number(e.target.value) })}>
-              {[0, 1, 2, 4, 12, 24, 48].map((h) => (
-                <option key={h} value={h}>
-                  {t("booking.hours", { count: h })}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="pf-field">
-            <span>{t("booking.horizon")}</span>
-            <select value={form.advance_days} onChange={(e) => set({ advance_days: Number(e.target.value) })}>
-              {[7, 14, 30, 60, 90].map((d) => (
-                <option key={d} value={d}>
-                  {t("booking.days", { count: d })}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="pf-form-grid">
-          <label className="pf-field">
-            <span>{t("booking.titleEn")}</span>
-            <input value={form.title_en} maxLength={200} onChange={(e) => set({ title_en: e.target.value })} />
-          </label>
-          <label className="pf-field">
-            <span>{t("booking.titleEs")}</span>
-            <input value={form.title_es} maxLength={200} onChange={(e) => set({ title_es: e.target.value })} />
-          </label>
-        </div>
-        <fieldset className="gw-booking-types">
-          <legend>{t("booking.types")}</legend>
-          {(["onsite", "phone", "video", "office"] as const).map((k) => (
-            <label key={k} className="gw-check">
-              <input type="checkbox" checked={form[`allow_${k}`]} onChange={(e) => set({ [`allow_${k}`]: e.target.checked } as Partial<SchedulerSettings>)} />
-              <span>{t(`appt.loc.${k}`)}</span>
-            </label>
-          ))}
-        </fieldset>
-        {form.allow_video ? (
-          <label className="pf-field">
-            <span>{t("booking.videoRoom")}</span>
-            <input type="url" value={form.video_url || ""} placeholder="https://" onChange={(e) => set({ video_url: e.target.value || null })} />
-          </label>
-        ) : null}
+        <BookingRulesFields form={form} set={set} bookingUrl={mine?.booking_url} />
 
         <fieldset className="gw-hours">
           <legend>{t("booking.hoursTitle", { tz: form.timezone.replace("_", " ") })}</legend>
