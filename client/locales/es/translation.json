@@ -4157,6 +4157,7 @@
     "goal_affiliate_onboarded": "Acuerdo y W-9 completos",
     "goal_contractor_documents": "Documentos del contratista completos",
     "goal_homeowner_next_step": "El propietario aplicó, agendó o se convirtió",
+    "goal_appointment_booked": "Cita agendada",
     "goal_contract_signed": "Contrato firmado",
     "goal_billing_resolved": "Pago resuelto",
     "stopOnReply": "Detener cuando responda (texto o correo)",
@@ -5334,5 +5335,18 @@
     "comingSoon": "Muy pronto",
     "comingSoonHint": "Mejorar con IA ya casi está lista. Pronto pulirá tus borradores con un toque.",
     "soon": "Pronto"
+  },
+  "affQr": {
+    "title": "Código QR",
+    "hint": "Su link de seguimiento como QR. Descárgalo y envíaselo, o imprímelo en volantes. Cada escaneo cuenta como clic y los registros nuevos se le acreditan.",
+    "aria": "Código QR del link de {{name}}",
+    "copy": "Copiar link"
+  },
+  "projectPeople": {
+    "title": "Personas en este proyecto",
+    "homeowner": "Propietario",
+    "affiliate": "Afiliado",
+    "contractor": "Contratista",
+    "noContact": "Sin teléfono ni correo registrado."
   }
 }

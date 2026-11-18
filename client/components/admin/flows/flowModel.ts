@@ -12,7 +12,7 @@ export function stepBranches(type: FlowStepType): FlowEdgeType[] {
   return ["next"];
 }
 
-export const FLOW_VARS = ["first_name", "last_name", "company", "link", "rep_name", "missing_items"] as const;
+export const FLOW_VARS = ["first_name", "last_name", "company", "link", "booking_link", "rep_name", "missing_items"] as const;
 
 export function defaultConfig(type: FlowStepType): FlowStepConfig {
   if (type === "wait") return { amount: 1, unit: "days" };

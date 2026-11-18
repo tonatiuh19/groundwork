@@ -1137,6 +1137,12 @@ export interface AdminProject {
   created_at: string;
   client_name: string;
   client_email: string;
+  /** People on the project (Text / Call / Email from the project page). */
+  client_phone?: string | null;
+  affiliate_phone?: string | null;
+  affiliate_email?: string | null;
+  contractor_phone?: string | null;
+  contractor_email?: string | null;
   affiliate_name: string | null;
   contractor_name: string | null;
   plan_name: string | null;

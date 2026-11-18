@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import ProjectTrackingPanel from "@/components/scorecard/ProjectTrackingPanel";
 import { useScorecardEnabled } from "@/hooks/useScorecardEnabled";
 import type { AdminProject } from "@shared/api";
+import ProjectPeoplePanel from "@/components/admin/ProjectPeoplePanel";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   clearAdminProject,
@@ -123,13 +124,15 @@ export default function AdminProjectDetail() {
                 <p className="pf-kicker">{p.public_id}</p>
                 <h2>{p.client_name}</h2>
                 <p className="pf-muted">
-                  {p.client_email} · {p.property_address || "—"}
+                  {[p.client_email || p.client_phone, p.property_address].filter(Boolean).join(" · ") || "—"}
                 </p>
               </div>
               <StatusBadge group="milestone" value={p.milestone} />
             </div>
             <MilestoneTracker milestone={p.milestone} />
           </section>
+
+          <ProjectPeoplePanel p={p} />
 
           {scorecards ? <ProjectTrackingPanel publicId={publicId} /> : null}
 

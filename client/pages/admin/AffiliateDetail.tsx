@@ -4,6 +4,7 @@ import AutomaticMessagesPanel from "@/components/admin/AutomaticMessagesPanel";
 import PersonFlowsPanel from "@/components/admin/PersonFlowsPanel";
 import LastContactStrip from "@/components/admin/LastContactStrip";
 import AffiliateLinkSend from "@/components/admin/AffiliateLinkSend";
+import AffiliateQrPanel from "@/components/admin/AffiliateQrPanel";
 import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { useNavigate, useParams } from "react-router-dom";
 import { Formik, Form } from "formik";
@@ -185,7 +186,7 @@ export default function AdminAffiliateDetail() {
               }
             />
             <StatCard labelKey="aff.clicks" value={a.click_count} />
-            <StatCard labelKey="aff.clients" value={a.client_count} />
+            <StatCard labelKey="aff.clients" value={a.client_count} to={`/admin/clients?affiliate=${a.id}`} />
             <StatCard
               labelKey="admin.parentAffiliate"
               value={a.parent_name || t("admin.topLevelAffiliate")}
@@ -195,6 +196,8 @@ export default function AdminAffiliateDetail() {
             <StatCard labelKey="admin.lastLogin" value={fmt.date(a.last_login_at)} />
             <StatCard labelKey="pf.created" value={fmt.date(a.created_at)} />
           </div>
+
+          <AffiliateQrPanel slug={a.slug} referralCode={a.referral_code} name={`${a.first_name} ${a.last_name}`.trim()} />
 
           <ErrorNote error={saveError} />
           <PersonConflictNotice

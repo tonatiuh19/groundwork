@@ -2,7 +2,7 @@ import { useCityFilterOptions } from "@/hooks/useCityFilter";
 import { useEffect, useRef, useState } from "react";
 import { touchColumns } from "@/components/admin/leads/LeadTouchCell";
 import DealStatusBadge from "@/components/portal/DealStatusBadge";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Formik, Form } from "formik";
 import * as Yup from "yup";
 import { Check, Mail, MessageSquare, Phone, UserPlus } from "lucide-react";
@@ -64,6 +64,19 @@ export default function AdminClients() {
   const [q, setQ] = useState("");
   const [status, setStatus] = useStatusQueryParam(FILTER_STATUSES);
   const [cityId, setCityId] = useState("");
+  // `?affiliate=ID` (Affiliate page → Clients tile) keeps the filter in the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const affiliateId = searchParams.get("affiliate") || "";
+  const setAffiliateId = (v: string) =>
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (v) next.set("affiliate", v);
+        else next.delete("affiliate");
+        return next;
+      },
+      { replace: true },
+    );
   const cityOptions = useCityFilterOptions();
   const [offset, setOffset] = useState(0);
   const [open, setOpen] = useState(false);
@@ -75,12 +88,16 @@ export default function AdminClients() {
 
   useEffect(() => {
     setOffset(0);
-  }, [q, status]);
+  }, [q, status, affiliateId]);
+  useEffect(() => {
+    if (!affiliates.length) void dispatch(fetchAdminAffiliates({ status: "active", limit: 100 }));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = () =>
     void dispatch(
       fetchAdminClients({
         city_id: cityId || undefined,
+        affiliate_id: affiliateId || undefined,
         q: q || undefined,
         status: status || undefined,
         limit: PAGE_SIZE,
@@ -90,7 +107,7 @@ export default function AdminClients() {
   useEffect(() => {
     dispatch(clearAdminSaveError());
     load();
-  }, [q, status, cityId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, status, cityId, affiliateId, offset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyClientStatus = async (id: number, next: string) => {
     await rowBusy.run(
@@ -203,6 +220,17 @@ export default function AdminClients() {
           ariaLabel={t("cities.filter")}
           allLabel={t("cities.filterAll")}
           options={cityOptions}
+        />
+        <FilterSelect
+          value={affiliateId}
+          onChange={setAffiliateId}
+          ariaLabel={t("admin.affiliate")}
+          allLabel={t("admin.boardFilterAffiliate")}
+          options={[
+            ...affiliates.map((a) => ({ value: a.id, label: [`${a.first_name} ${a.last_name}`.trim(), a.company].filter(Boolean).join(" · ") })),
+            // An inactive affiliate opened from their page still shows as the picked filter.
+            ...(affiliateId && !affiliates.some((a) => String(a.id) === affiliateId) ? [{ value: Number(affiliateId), label: `${t("admin.affiliate")} #${affiliateId}` }] : []),
+          ]}
         />
         <FilterSelect
           value={status}

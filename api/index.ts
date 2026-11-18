@@ -5167,8 +5167,11 @@ const PROJECT_ADMIN_SELECT = `
   SELECT p.*,
     CONCAT(c.first_name, ' ', c.last_name) AS client_name,
     c.email AS client_email,
+    c.phone AS client_phone,
     CONCAT(a.first_name, ' ', a.last_name) AS affiliate_name,
+    a.phone AS affiliate_phone, a.email AS affiliate_email,
     COALESCE(NULLIF(k.company, ''), CONCAT(k.first_name, ' ', k.last_name)) AS contractor_name,
+    k.phone AS contractor_phone, k.email AS contractor_email,
     pl.name AS plan_name,
     ld.contact_name AS lender_contact, ld.phone AS lender_phone, ld.email AS lender_email,
     c.deal_status_id AS client_deal_status_id,
@@ -12073,6 +12076,7 @@ function registerFeatureRoutes(
         const clientId = Number(ins.insertId);
         await tagCityFromText("clients", clientId);
         await creditQrScan(req, "clients", clientId);
+        await startFlows("client_created", "client", clientId);
         await safeSend(
           email,
           tplPortalNotice({
@@ -12654,6 +12658,7 @@ function registerFeatureRoutes(
           label: tr(l, "Open project", "Abrir proyecto"),
         },
       }), { clientId: created.clientId });
+      await startFlows("client_created", "client", created.clientId);
       res.status(201).json({
         ok: true,
         outcome: "created",
@@ -13114,6 +13119,7 @@ function registerFeatureRoutes(
           label: tr(l, "Open project", "Abrir proyecto"),
         },
       }), { clientId: created.clientId });
+      await startFlows("client_created", "client", created.clientId);
       res.status(201).json({
         ok: true,
         client_id: created.clientId,
@@ -14878,6 +14884,7 @@ async function runAdminLeadConvertInner(opts: {
         label: tr(l, "Open project", "Abrir proyecto"),
       },
     }), { clientId: created.clientId });
+    await startFlows("client_created", "client", created.clientId);
     return {
       status: 201,
       body: {
@@ -16775,6 +16782,12 @@ function registerAdminRoutes(app: Express) {
         where.push(`${CITY_CLIENT_SQL} = ?`);
         params.push(cityFilter);
       }
+      // Affiliate page → Clients tile: that affiliate's clients.
+      const affiliateFilter = parseIdQuery(req.query.affiliate_id);
+      if (affiliateFilter) {
+        where.push("c.affiliate_id = ?");
+        params.push(affiliateFilter);
+      }
       const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const [countRows] = await pool.execute<RowDataPacket[]>(
         `SELECT COUNT(*) AS n FROM clients c ${whereSql}`,
@@ -16995,6 +17008,7 @@ function registerAdminRoutes(app: Express) {
         ],
       );
       const clientId = Number(r.insertId);
+      await startFlows("client_created", "client", clientId);
       if (phoneOverride) {
         await recordSharedPhoneOverride({
           entity: "client",
@@ -21042,6 +21056,7 @@ async function convertCrmContactToClient(opts: {
     );
     const clientId = Number(ins.insertId);
     await tagCityFromText("clients", clientId);
+    await startFlows("client_created", "client", clientId);
     if (phoneOverride) {
       await recordSharedPhoneOverride({
         entity: "client",
@@ -25861,6 +25876,7 @@ function registerConversationsRoutes(app: Express) {
         [first, last, phone, email, lang, adminId],
       );
       const clientId = Number(ins.insertId);
+      await startFlows("client_created", "client", clientId);
       if (phoneOverride) {
         await recordSharedPhoneOverride({
           entity: "client",
@@ -36063,6 +36079,20 @@ const FLOW_GOALS: Record<string, { kinds: FlowSubjectKind[]; met: (p: FlowPerson
       return false;
     },
   },
+  // Booking link sequences: any appointment for this homeowner (they booked, or staff booked one).
+  // A lead that became a client also counts (the client's own sequence takes over), so nobody gets both.
+  appointment_booked: {
+    kinds: ["lead", "client"],
+    met: async (p) => {
+      const [[r]] = (await pool.query<RowDataPacket[]>(
+        p.kind === "lead"
+          ? `SELECT (SELECT COUNT(*) FROM appointments a WHERE a.lead_id = l.id AND a.status <> 'cancelled') + (l.client_id IS NOT NULL) AS n FROM leads l WHERE l.id = ?`
+          : `SELECT COUNT(*) AS n FROM appointments a WHERE a.client_id = ? AND a.status <> 'cancelled'`,
+        [p.id],
+      )) as unknown as [RowDataPacket[]];
+      return Number(r?.n) > 0;
+    },
+  },
   contract_signed: {
     kinds: ["project"],
     met: async (p) => {
@@ -36120,6 +36150,21 @@ async function flowNextStepLink(p: FlowPerson, run: RowDataPacket): Promise<stri
   return link;
 }
 
+/**
+ * {{booking_link}}: the public booking page (`/book/<slug>`) of the person's assigned staff member when
+ * theirs is on, else the first super admin with a page on, else the home page. Bookings land on that
+ * person's calendar (CRM + their Outlook) and stop the booking sequence.
+ */
+export async function flowBookingUrl(repAdminId: number | null): Promise<string> {
+  const [[r]] = (await pool.query<RowDataPacket[]>(
+    `SELECT s.slug FROM scheduler_settings s JOIN admins a ON a.id = s.admin_id
+      WHERE s.is_enabled = 1 AND a.status = 'active' AND (a.id = ? OR a.role = 'super_admin')
+      ORDER BY (a.id = ?) DESC, a.id LIMIT 1`,
+    [repAdminId ?? 0, repAdminId ?? 0],
+  )) as unknown as [RowDataPacket[]];
+  return r?.slug ? `${APP_URL}/book/${encodeURIComponent(String(r.slug))}` : `${APP_URL}/`;
+}
+
 async function flowRepName(p: FlowPerson): Promise<string> {
   if (p.rep_admin_id) {
     const [[a]] = (await pool.query<RowDataPacket[]>(`SELECT first_name FROM admins WHERE id = ? AND status = 'active'`, [p.rep_admin_id])) as unknown as [RowDataPacket[]];
@@ -36163,14 +36208,15 @@ async function renderFlowText(text: string, p: FlowPerson, run: RowDataPacket | 
     const st = await affiliateOnboardingState(p.id);
     vars.missing_items = joinList(affiliateMissingItems(st, p.lang), p.lang) || tr(p.lang, "your setup", "su registro");
   }
-  if (needs("link")) {
-    const target = run ? await flowNextStepLink(p, run) : `${APP_URL}/`;
-    if (run && stepKey) {
-      const token = crypto.randomBytes(12).toString("hex");
-      await pool.execute(`INSERT INTO reminder_flow_links (token, run_id, step_key, url) VALUES (?, ?, ?, ?)`, [token, run.id, stepKey, target.slice(0, 1000)]);
-      vars.link = `${APP_URL}/api/public/fl/${token}`;
-    } else vars.link = target;
-  }
+  // Tracked when sent from a run (clicks show on the run), else the plain URL.
+  const tracked = async (target: string) => {
+    if (!run || !stepKey) return target;
+    const token = crypto.randomBytes(12).toString("hex");
+    await pool.execute(`INSERT INTO reminder_flow_links (token, run_id, step_key, url) VALUES (?, ?, ?, ?)`, [token, run.id, stepKey, target.slice(0, 1000)]);
+    return `${APP_URL}/api/public/fl/${token}`;
+  };
+  if (needs("link")) vars.link = await tracked(run ? await flowNextStepLink(p, run) : `${APP_URL}/`);
+  if (needs("booking_link")) vars.booking_link = await tracked(await flowBookingUrl(p.rep_admin_id));
   out = out.replace(/\{\{(\w+)\}\}/g, (m, k: string) => (vars[k] != null ? vars[k] : m));
   return out;
 }
@@ -36580,6 +36626,41 @@ type SeedFlow = { system_key: string; name: string; description: string; trigger
 
 const GW_SIGN = "{{rep_name}}\nGroundwork Capital Group · (866) 864-7506";
 
+/** Booking link sequence (new homeowners): book a call to walk through the ADU process. */
+const BOOKING_TOUCHES: SeedTouch[] = [
+  {
+    at: 0,
+    sms: [
+      "Hi {{first_name}}, it's {{rep_name}} from Groundwork. Pick a time for a quick call and we'll walk you through your ADU, step by step: {{booking_link}} Reply STOP to opt out.",
+      "Hola {{first_name}}, le habla {{rep_name}} de Groundwork. Elija un horario para una llamada rápida y le explicamos su ADU paso a paso: {{booking_link}} Responda STOP para no recibir más mensajes.",
+    ],
+    email: {
+      subject: ["Pick a time to talk about your ADU", "Elija un horario para hablar de su ADU"],
+      body: [
+        `Hi {{first_name}},\n\nThanks for your interest in building an ADU with Groundwork Capital Group.\n\nThe easiest next step is a short call. We'll walk you through the process, the plans, the timeline and your financing options, and answer every question.\n\nPick the time that works for you: {{booking_link}}\n\n${GW_SIGN}`,
+        `Hola {{first_name}}:\n\nGracias por su interés en construir un ADU con Groundwork Capital Group.\n\nEl siguiente paso más fácil es una llamada corta. Le explicamos el proceso, los planos, los tiempos y sus opciones de financiamiento, y respondemos todas sus preguntas.\n\nElija el horario que le funcione: {{booking_link}}\n\n${GW_SIGN}`,
+      ],
+    },
+  },
+  {
+    at: 48,
+    sms: [
+      "{{first_name}}, still want to talk about your ADU? Grab any open time here, it takes 10 seconds: {{booking_link}} Reply STOP to opt out.",
+      "{{first_name}}, ¿todavía quiere hablar de su ADU? Elija cualquier horario disponible, toma 10 segundos: {{booking_link}} Responda STOP para no recibir más mensajes.",
+    ],
+  },
+  {
+    at: 120,
+    email: {
+      subject: ["Your ADU questions, answered in one call", "Sus preguntas sobre el ADU, resueltas en una llamada"],
+      body: [
+        `Hi {{first_name}},\n\nMost homeowners have the same questions: how much it costs, how long it takes and how the rent pays it back. One call answers all of them for your property.\n\nBook a time here: {{booking_link}}\n\nPrefer to call us? (866) 864-7506.\n\n${GW_SIGN}`,
+        `Hola {{first_name}}:\n\nLa mayoría de los propietarios tienen las mismas preguntas: cuánto cuesta, cuánto tarda y cómo la renta lo paga. Una llamada las responde todas para su propiedad.\n\nReserve un horario aquí: {{booking_link}}\n\n¿Prefiere llamarnos? (866) 864-7506.\n\n${GW_SIGN}`,
+      ],
+    },
+  },
+];
+
 const SEED_FLOWS: SeedFlow[] = [
   {
     system_key: "affiliate_onboarding",
@@ -36816,6 +36897,23 @@ const SEED_FLOWS: SeedFlow[] = [
       },
     ],
   },
+  ...(["homeowner_lead", "client_created", "event_rsvp"] as const).map(
+    (trigger): SeedFlow => ({
+      system_key: `booking_${trigger}`,
+      name: {
+        homeowner_lead: "Book a consultation · new website lead",
+        client_created: "Book a consultation · new client",
+        event_rsvp: "Book a consultation · event RSVP",
+      }[trigger],
+      description:
+        "Sends the booking link right away (text + email), a text reminder after 2 days and a last email after 5 days. The link opens the assigned staff member's booking page (else the main one), synced with their Outlook calendar. Stops as soon as an appointment is booked or they reply." +
+        (trigger === "event_rsvp" ? " Pick it on an event to use it for that event's RSVPs." : ""),
+      trigger,
+      goal: "appointment_booked",
+      finish: "end",
+      touches: BOOKING_TOUCHES,
+    }),
+  ),
   {
     system_key: "event_rsvp_welcome",
     name: "Event RSVP welcome (A / B / C)",

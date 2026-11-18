@@ -4157,6 +4157,7 @@
     "goal_affiliate_onboarded": "Agreement and W-9 done",
     "goal_contractor_documents": "Contractor documents complete",
     "goal_homeowner_next_step": "Homeowner applied, booked or converted",
+    "goal_appointment_booked": "Appointment booked",
     "goal_contract_signed": "Contract signed",
     "goal_billing_resolved": "Billing fixed",
     "stopOnReply": "Stop when they reply (text or email)",
@@ -5334,5 +5335,18 @@
     "comingSoon": "Coming soon",
     "comingSoonHint": "Improve with AI is almost ready. Soon it will polish your drafts with one tap.",
     "soon": "Soon"
+  },
+  "affQr": {
+    "title": "QR code",
+    "hint": "Their tracking link as a QR. Download it and send it to them, or print it on flyers. Scans count as link clicks and new sign-ups are credited to them.",
+    "aria": "QR code for {{name}}'s link",
+    "copy": "Copy link"
+  },
+  "projectPeople": {
+    "title": "People on this project",
+    "homeowner": "Homeowner",
+    "affiliate": "Affiliate",
+    "contractor": "Contractor",
+    "noContact": "No phone or email on file."
   }
 }

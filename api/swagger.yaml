@@ -2822,10 +2822,11 @@ paths:
         "409": { description: "errors.contractorInvited when patching status on an invited row; errors.contractorApplicationRequired / errors.contractorOverrideReasonRequired when activating without an approved prequalification" }
   /api/admin/clients:
     get:
-      summary: "List clients (query: status, q, limit, offset) — returns total"
+      summary: "List clients (query: status, q, city_id, affiliate_id, limit, offset) — returns total"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `people.read`."
+      description: "Requires gw_admin_sid and permission `people.read`. affiliate_id = that affiliate's clients (Affiliate page → Clients tile opens /admin/clients?affiliate=ID)."
       parameters:
+        - { name: affiliate_id, in: query, required: false, schema: { type: integer } }
         - { name: status, in: query, required: false, schema: { type: string, enum: [pending, prospect, active, inactive, suspended] } }
         - { name: q, in: query, required: false, schema: { type: string } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }
@@ -2982,7 +2983,7 @@ paths:
     get:
       summary: "Project detail: project, contracts, draws, photos, milestone events, commission(s)"
       tags: [portal-admin]
-      description: "Requires gw_admin_sid and permission `projects.read`. Finance roles get `commission` (primary closer/direct) plus `commissions[]` for split closer+parent rows. Project may include frozen `commission_rate_*_cents_per_sqft` after loan finalize."
+      description: "Requires gw_admin_sid and permission `projects.read`. Finance roles get `commission` (primary closer/direct) plus `commissions[]` for split closer+parent rows. Project may include frozen `commission_rate_*_cents_per_sqft` after loan finalize. Project (detail and list) also carries `client_phone`, `affiliate_phone` / `affiliate_email`, `contractor_phone` / `contractor_email` for the People on this project panel (Text / Call / Email)."
       parameters:
         - { name: publicId, in: path, required: true, schema: { type: string } }
       responses:
