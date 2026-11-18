@@ -5762,13 +5762,7 @@ a.pf-stat:hover {
     white-space: nowrap;
     border: 0;
   }
-  .gw-composer__row {
-    grid-template-columns: 1fr;
-  }
-  .gw-composer__send {
-    width: 100%;
-    justify-content: center;
-  }
+  /* Composer on phones: see the stacked layout after the base composer rules (end of file). */
   .pf-table thead {
     display: none;
   }
@@ -21114,4 +21108,31 @@ button.sc-metric:hover {
 }
 .gw-project-people__row .gw-lastcontact {
   margin: 0.45rem 0 0.6rem;
+}
+
+/* Composer on phones (every place it's used, e.g. Conversations → New message): the text box takes
+   the full width and the actions sit below it. Lives after the base `.gw-composer__row` grid on
+   purpose: the older ≤640px rule above the base was overridden by source order, so between 376px
+   and 640px the buttons took a side column and squeezed the box to a sliver. The open thread (inside
+   `.gw-conv-composer`) keeps its own tuned layout, so it's excluded. */
+@media (max-width: 640px) {
+  .gw-composer:not(.gw-conv-composer *) .gw-composer__row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .gw-composer:not(.gw-conv-composer *) .gw-composer__input {
+    width: 100%;
+    min-height: 7.5rem;
+    font-size: 16px; /* no iOS zoom on focus */
+  }
+  .gw-composer:not(.gw-conv-composer *) .gw-composer__actions {
+    display: flex;
+    flex-wrap: nowrap;
+    width: 100%;
+    min-width: 0;
+  }
+  .gw-composer:not(.gw-conv-composer *) .gw-composer__actions .gw-composer__send {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
 }

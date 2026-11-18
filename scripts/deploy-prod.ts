@@ -127,6 +127,70 @@ async function runCommand(command: string, args: string[]) {
   });
 }
 
+// ── Vercel upload that survives the CLI's "fetch failed" ─────────────────────
+// `vercel --prod` uploads, then holds one connection open for the whole build to report Ready. On a
+// flaky network (or Node's fetch timing out) that connection drops and the CLI exits with
+// "Error: fetch failed" even though Vercel keeps building and goes live. We read the deployment URL
+// from the CLI output and, when that happens, follow the build ourselves with `vercel inspect`.
+
+/** The `*.vercel.app` deployment URL the CLI prints ("Production  https://…vercel.app"). */
+function parseVercelDeploymentUrl(output: string): string | null {
+  const urls = output.match(/https:\/\/[a-z0-9-]+\.vercel\.app/gi) || [];
+  return urls.length ? urls[urls.length - 1] : null;
+}
+
+/** "● Ready" / "● Error" / "● Building" … from `vercel inspect`. null = couldn't tell. */
+function parseVercelInspectStatus(output: string): "ready" | "error" | "building" | null {
+  const m = output.match(/status\s+●?\s*(\w+)/i);
+  if (!m) return null;
+  const st = m[1].toLowerCase();
+  if (st === "ready") return "ready";
+  if (st === "error" || st === "canceled" || st === "cancelled") return "error";
+  return "building";
+}
+
+async function vercelProdDeploy(extraArgs: string[]) {
+  let output = "";
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const child = spawn("npx", ["vercel", "--prod", ...extraArgs], { stdio: ["inherit", "pipe", "pipe"], shell: false, env: process.env });
+    child.stdout.on("data", (d) => {
+      output += String(d);
+      process.stdout.write(d);
+    });
+    child.stderr.on("data", (d) => {
+      output += String(d);
+      process.stderr.write(d);
+    });
+    child.on("error", reject);
+    child.on("exit", resolve);
+  });
+  if (code === 0) return;
+  const url = parseVercelDeploymentUrl(output);
+  if (!url || !/fetch failed|ECONNRESET|ETIMEDOUT|socket hang up|network/i.test(output)) {
+    throw new Error(`npx vercel --prod failed with exit code ${code ?? "unknown"}`);
+  }
+  console.log(`\n⏳ The Vercel CLI lost its connection, but the deployment was created. Following it: ${url}`);
+  const deadline = Date.now() + 25 * 60_000;
+  let misses = 0;
+  while (Date.now() < deadline) {
+    let st: ReturnType<typeof parseVercelInspectStatus> = null;
+    try {
+      st = parseVercelInspectStatus(await captureCommand("npx", ["vercel", "inspect", url]));
+    } catch {
+      st = null;
+    }
+    if (st === "ready") {
+      console.log("✅ Vercel deployment is Ready and live.");
+      return;
+    }
+    if (st === "error") throw new Error(`Vercel deployment failed: ${url} (open it on vercel.com for the build log)`);
+    if (st === null && ++misses >= 10) throw new Error(`Couldn't read the Vercel deployment status 10 times in a row: ${url}`);
+    if (st !== null) misses = 0;
+    await new Promise((r) => setTimeout(r, 15_000));
+  }
+  throw new Error(`Vercel deployment still not Ready after 25 minutes: ${url}`);
+}
+
 // ── Git: deploy only what is committed and pushed on main ────────────────────
 // `vercel --prod` uploads the working tree, so what goes live must be exactly origin/main.
 // The deploy refuses to start (and refuses to upload) with uncommitted or unpushed work.
@@ -559,7 +623,7 @@ async function main() {
     `\n🚀 Starting Vercel production deploy for version ${deployVersion}...\n`,
   );
   stage = "Vercel upload";
-  await runCommand("npx", ["vercel", "--prod", ...vercelArgs]);
+  await vercelProdDeploy(vercelArgs);
   stage = "after going live";
 
   // The site is already live here: a network blip on the version stamp must not read as a failed
