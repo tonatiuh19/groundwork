@@ -44,6 +44,7 @@ import affiliateOnboardingReducer from "./slices/affiliateOnboardingSlice";
 import phoneLinesReducer from "./slices/phoneLinesSlice";
 import dealStatusReducer from "./slices/dealStatusSlice";
 import spamShieldReducer from "./slices/spamShieldSlice";
+import addendaReducer from "./slices/addendaSlice";
 
 export const store = configureStore({
   // Photo uploads pass a `File` through a thunk arg (never stored in state).
@@ -60,6 +61,7 @@ export const store = configureStore({
     }),
   reducer: {
     spamShield: spamShieldReducer,
+    addenda: addendaReducer,
     lead: leadReducer,
     gcr: gcrReducer,
     contact: contactReducer,

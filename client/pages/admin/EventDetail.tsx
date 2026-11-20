@@ -43,6 +43,7 @@ import { EVENT_STATUSES, REGISTRATION_STATUSES, isEventPast } from "@/lib/eventO
 import EventMediaManager from "@/components/admin/EventMediaManager";
 import EventImageField from "@/components/admin/EventImageField";
 import EventQrPanel from "@/components/admin/EventQrPanel";
+import EventAddendaPanel from "@/components/admin/EventAddendaPanel";
 import {
   fromDateTimeLocalValue,
   toDateTimeLocalValue,
@@ -496,6 +497,8 @@ export default function AdminEventDetail() {
           </section>
 
           <EventQrPanel event={ev} />
+
+          <EventAddendaPanel eventId={ev.id} />
 
           <EventMediaManager eventId={ev.id} isPast={isEventPast(ev)} />
 

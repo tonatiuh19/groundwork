@@ -15,6 +15,7 @@ import SignaturePad from "@/components/portal/SignaturePad";
 import AgreementDocument, { previewAgreement } from "@/components/affiliate/AgreementDocument";
 import AffiliateBillingStep from "@/components/affiliate/AffiliateBillingStep";
 import W9Form from "@/components/onboarding/W9Form";
+import MyAddenda from "@/components/affiliate/MyAddenda";
 import { useFormatters } from "@/lib/format";
 import { withOnboardingToken } from "@/lib/onboardingToken";
 import { cn } from "@/lib/cn";
@@ -106,6 +107,7 @@ export function AffiliateOnboardingFlow({ mode }: { mode: "portal" | "welcome" }
   return (
     <div className={cn(shell, "gw-agreement-page")}>
       {mode === "portal" ? <PageHeader titleKey="affAgreement.title" leadKey="affAgreement.lead" /> : null}
+      {mode === "portal" ? <MyAddenda /> : null}
 
       <ol className="gw-onboard-steps" aria-label={t("affAgreement.stepsAria")}>
         <li className={cn(state.agreement_signed && "is-done")}>

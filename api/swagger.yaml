@@ -4636,6 +4636,142 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
         "200": { description: "OK" }
+  /api/admin/affiliates/{id}/addenda:
+    get:
+      summary: "Special agreements (addenda) of an affiliate"
+      tags: [portal-admin]
+      description: "Requires `people.read`. Newest first: title, rate_cents_per_sqft, pay_mode (replace = instead of the affiliate's own commission on covered projects, sponsors unchanged | extra = on top), status (draft | sent | signed | countersigned | void), events[], affiliates[] (whose clients count), frozen rendered_en / rendered_es, signer + countersigner, body_en / body_es."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addenda: AffiliateAddendum[] }" }
+    post:
+      summary: "Create a special agreement (draft)"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { title?, rate_cents_per_sqft (0-10000, default 100), pay_mode?, event_ids?, affiliate_ids? }. Starts with the default EN / ES addendum text."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: "{ ok, addendum }" }
+  /api/admin/addenda/options:
+    get:
+      summary: "Pickers for the addendum editor"
+      tags: [portal-admin]
+      description: "Requires `people.read`. Latest 300 events and active / pending affiliates (id, name, company)."
+      responses:
+        "200": { description: "{ ok, events[], affiliates[] }" }
+  /api/admin/addenda/{aid}:
+    put:
+      summary: "Edit a special agreement"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Draft or sent only (409 errors.addendumLocked once signed); a real change to a sent one takes it back to draft (send again); saving with no change keeps it sent. Body like create + body_en / body_es (light markup + {{affiliate_name}}, {{rate_per_sqft}}, {{events}}, {{assigned_affiliates}}, {{pay_terms}}, {{effective_date}})."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addendum }" }
+  /api/admin/addenda/{aid}/preview:
+    get:
+      summary: "Preview the filled text (nothing sent)"
+      tags: [portal-admin]
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, en, es, missing[] }" }
+  /api/admin/addenda/{aid}/send:
+    post:
+      summary: "Send to sign"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Freezes the EN + ES text (dated today), emails + texts the affiliate (STOP honored) a link to Agreement. 400 errors.addendumNoScope (no event / affiliate), errors.agreementNotReady (unfilled placeholder)."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addendum }" }
+  /api/admin/addenda/{aid}/countersign:
+    post:
+      summary: "Countersign for Groundwork (super admin)"
+      tags: [portal-admin]
+      description: "Body { name }. Only a signed agreement (409 errors.addendumNotSigned); 403 for non super admins. Covered projects with a finalized loan start paying right away; the affiliate is emailed."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addendum }" }
+  /api/admin/addenda/{aid}/void:
+    post:
+      summary: "Void a special agreement"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { reason }. Its own unpaid rows are voided and rows it replaced / added to go back to their normal amount; paid rows stay as paid."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addendum }" }
+  /api/admin/addenda/{aid}/projects:
+    get:
+      summary: "Covered projects + history"
+      tags: [portal-admin]
+      description: "Requires `people.read`. Projects reached through an event sign-up (lead.event_id → project lead / client), an assigned affiliate's client, or a staff include; excluded ones flagged; fee per project; change log."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, projects[], log[] }" }
+  /api/admin/addenda/{aid}/projects/{pid}:
+    post:
+      summary: "Include / exclude one project"
+      tags: [portal-admin]
+      description: "Requires `approvals`. Body { mode: include | exclude | clear, reason (required unless clear) }. Logged; the project's commissions re-apply at once."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+        - { name: pid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "OK" }
+  /api/admin/addenda/{aid}/pdf:
+    get:
+      summary: "Addendum PDF"
+      tags: [portal-admin]
+      description: "Frozen text + signatures; watermarked DRAFT / AWAITING COUNTERSIGN / VOID."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "application/pdf" }
+  /api/admin/events/{id}/addenda:
+    get:
+      summary: "Special agreements attached to an event"
+      tags: [portal-admin]
+      description: "Requires `events`."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addenda: EventAddendumRow[] }" }
+  /api/affiliate/addenda:
+    get:
+      summary: "My special agreements"
+      tags: [portal-affiliate]
+      description: "Sent ones and later (never drafts), with the frozen EN / ES text."
+      responses:
+        "200": { description: "{ ok, addenda[] }" }
+  /api/affiliate/addenda/{aid}/sign:
+    post:
+      summary: "Sign my special agreement"
+      tags: [portal-affiliate]
+      description: "Body { lang, text_sha256 (of the exact text shown), signed_name, signature_image (PNG data URL), consent: true }. 409 errors.agreementChanged when the text changed, errors.addendumNotOpen when it isn't waiting for a signature. Staff get an alert (affiliate_onboarding). View-as sessions can't sign."
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "{ ok, addendum }" }
+  /api/affiliate/addenda/{aid}/pdf:
+    get:
+      summary: "My special agreement PDF"
+      tags: [portal-affiliate]
+      parameters:
+        - { name: aid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: "application/pdf" }
+  /api/affiliate/production:
+    get:
+      summary: "Production under my signed special agreements"
+      tags: [portal-affiliate]
+      description: "Per signed / countersigned agreement: event sign-ups (first name + last initial, date, became client) and covered projects (first name + last initial, street name, stage, sq ft, my fee + status)."
+      responses:
+        "200": { description: "{ ok, agreements: AffiliateProduction[] }" }
   /api/admin/booking-teams:
     get:
       summary: "Company booking pages (Settings)"

@@ -96,6 +96,10 @@ describe.skipIf(!hasDb)("company booking page (integration)", () => {
     expect(out.appointment.attendees.filter((x: any) => x.kind === "admin").map((x: any) => x.admin_id)).toEqual([bId]);
   });
 
+  it("a time nobody is free is refused", async () => {
+    await request(app).post(`/api/public/book/${slug}`).send({ date: day, time: "12:30", name: `${prefix}Gap`, phone: phone(2), lang: "en" }).expect(409);
+  });
+
   it("a slug can't be shared between a company page and a personal link", async () => {
     await request(app).put(`/api/admin/scheduler`).set(as(aId)).send({ slug }).expect(409);
   });

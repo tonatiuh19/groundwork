@@ -1444,7 +1444,7 @@ export interface CommissionSettings {
   commission_grandparent_cents_per_sqft?: number;
 }
 
-export type AffiliateCommissionRole = "direct" | "closer" | "parent" | "grandparent";
+export type AffiliateCommissionRole = "direct" | "closer" | "parent" | "grandparent" | "addendum";
 
 export interface AffiliateTeamMember {
   id: number;
@@ -3224,3 +3224,86 @@ export interface AffiliateEventRow {
 
 /** Improve with AI: which composer the draft comes from (sets length, format and tone). */
 export type AiImproveKind = "sms" | "email" | "note" | "template";
+
+// ── Affiliate addenda (special agreements) ──
+
+export type AddendumStatus = "draft" | "sent" | "signed" | "countersigned" | "void";
+export type AddendumPayMode = "replace" | "extra";
+
+/** A special agreement on top of an affiliate's agreement: rate per sq ft on projects from its events / affiliates. */
+export interface AffiliateAddendum {
+  id: number;
+  affiliate_id: number;
+  title: string;
+  rate_cents_per_sqft: number;
+  /** replace = instead of the affiliate's own commission on covered projects (sponsors unchanged); extra = on top. */
+  pay_mode: AddendumPayMode;
+  status: AddendumStatus;
+  events: Array<{ id: number; title: string; title_es: string; starts_at: string | null }>;
+  /** Affiliates whose clients count (e.g. a mortgage company's loan officers). */
+  affiliates: Array<{ id: number; name: string }>;
+  /** Frozen when sent. */
+  rendered_en: string | null;
+  rendered_es: string | null;
+  lang: "en" | "es" | null;
+  sent_at: string | null;
+  signed_at: string | null;
+  signed_name: string | null;
+  countersigned_at: string | null;
+  countersigned_name: string | null;
+  voided_at: string | null;
+  void_reason: string | null;
+  /** Staff only. */
+  body_en?: string;
+  body_es?: string;
+  created_at?: string | null;
+}
+
+export interface AddendumBody {
+  title?: string;
+  body_en?: string;
+  body_es?: string;
+  rate_cents_per_sqft?: number;
+  pay_mode?: AddendumPayMode;
+  event_ids?: number[];
+  affiliate_ids?: number[];
+}
+
+export interface AddendumProjectRow {
+  id: number;
+  public_id: string;
+  client_name: string;
+  milestone: string;
+  loan_status: string;
+  sq_ft: number | null;
+  /** Why it counts: event sign-up, assigned affiliate's client, or staff include. */
+  via: "event" | "affiliate" | "staff";
+  excluded: boolean;
+  tag_reason: string | null;
+  fee_cents: number | null;
+  fee_status: string | null;
+}
+
+export interface AddendumLogRow {
+  action: string;
+  detail: string | null;
+  at: string | null;
+  by: string | null;
+}
+
+/** Affiliate portal → Production (per signed agreement). Homeowners as first name + last initial. */
+export interface AffiliateProduction {
+  addendum: AffiliateAddendum;
+  signups: Array<{ name: string; at: string | null; event_id: number; became_client: boolean }>;
+  projects: Array<{ name: string; street: string | null; milestone: string; sq_ft: number | null; fee_cents: number | null; fee_status: string | null }>;
+}
+
+export interface EventAddendumRow {
+  id: number;
+  title: string;
+  status: AddendumStatus;
+  rate_cents_per_sqft: number;
+  pay_mode: AddendumPayMode;
+  affiliate_id: number;
+  affiliate_name: string;
+}

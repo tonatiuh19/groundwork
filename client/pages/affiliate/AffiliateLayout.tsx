@@ -6,7 +6,7 @@ import {
   Link2,
   UserCog,
   Network,
-  FileSignature, LifeBuoy, CalendarDays } from "lucide-react";
+  FileSignature, LifeBuoy, CalendarDays, TrendingUp } from "lucide-react";
 import type { PortalNavItem } from "@/components/portal/PortalShell";
 import PortalShell from "@/components/portal/PortalShell";
 import AffiliateLinkButton from "@/components/affiliate/AffiliateLinkButton";
@@ -18,6 +18,7 @@ import BillingNotice from "@/components/billing/BillingNotice";
 import { ViewAsBanner } from "@/components/partnerKit/PartnerKit";
 import { useTranslation } from "react-i18next";
 import { logoutPortal } from "@/store/slices/portalAuthSlice";
+import { fetchMyAddenda } from "@/store/slices/addendaSlice";
 
 export default function AffiliateLayout() {
   const dispatch = useAppDispatch();
@@ -36,6 +37,13 @@ export default function AffiliateLayout() {
     if (!overview) void dispatch(fetchAffiliateOverview());
   }, [dispatch, overview]);
 
+  // Special agreements: the Production tab appears once one is signed.
+  const addenda = useAppSelector((s) => s.addenda.mine);
+  useEffect(() => {
+    if (user && addenda === null) void dispatch(fetchMyAddenda());
+  }, [dispatch, user, addenda]);
+  const hasProduction = Boolean(addenda?.some((a) => a.status === "signed" || a.status === "countersigned"));
+
   // Only show after overview confirms top-level (avoid flashing for subs).
   const canManageTeam = overview?.affiliate.can_manage_team === true;
 
@@ -50,6 +58,8 @@ export default function AffiliateLayout() {
       { to: "/affiliate/clients", labelKey: "portalNav.myClients", icon: Users },
       { to: "/affiliate/events", labelKey: "portalNav.myEvents", icon: CalendarDays },
     ];
+    // Production: only for affiliates with a signed special agreement.
+    if (hasProduction) items.push({ to: "/affiliate/production", labelKey: "portalNav.production", icon: TrendingUp });
     if (canManageTeam) {
       items.push({
         to: "/affiliate/team",
@@ -69,7 +79,7 @@ export default function AffiliateLayout() {
       { to: "/affiliate/profile", labelKey: "portalNav.profile", icon: UserCog },
     );
     return items;
-  }, [canManageTeam]);
+  }, [canManageTeam, hasProduction]);
 
   return (
     <>

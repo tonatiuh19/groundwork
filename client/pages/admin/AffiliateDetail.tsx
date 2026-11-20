@@ -5,6 +5,7 @@ import PersonFlowsPanel from "@/components/admin/PersonFlowsPanel";
 import LastContactStrip from "@/components/admin/LastContactStrip";
 import AffiliateLinkSend from "@/components/admin/AffiliateLinkSend";
 import AffiliateQrPanel from "@/components/admin/AffiliateQrPanel";
+import AddendaPanel from "@/components/admin/AddendaPanel";
 import ViewAsAffiliateButton from "@/components/admin/ViewAsAffiliateButton";
 import DeletePersonButton from "@/components/admin/DeletePersonButton";
 import { useNavigate, useParams } from "react-router-dom";
@@ -76,6 +77,7 @@ export default function AdminAffiliateDetail() {
   const { data, loading, error } = useAppSelector((s) => s.adminPortal.affiliateDetail);
   const { saving, saveError } = useAppSelector((s) => s.adminPortal);
   const canWrite = useAdminCan("approvals");
+  const isSuper = useAppSelector((s) => s.portalAuth.admin.user?.role) === "super_admin";
   const [pendingDemote, setPendingDemote] = useState<PendingStatusChange | null>(
     null,
   );
@@ -235,6 +237,7 @@ export default function AdminAffiliateDetail() {
             />
           </section>
 
+          <AddendaPanel affiliateId={a.id} affiliateName={`${a.first_name} ${a.last_name}`.trim()} canWrite={canWrite} isSuper={isSuper} />
           <PersonCitiesPanel kind="affiliate" id={a.id} />
           <AutomaticMessagesPanel kind="affiliate" id={a.id} />
           <PersonFlowsPanel kind="affiliate" id={a.id} />

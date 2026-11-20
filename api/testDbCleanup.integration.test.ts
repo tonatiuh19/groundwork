@@ -96,6 +96,7 @@ describe.skipIf(!process.env.DB_HOST)("testDbCleanup", () => {
     await insertId(`INSERT INTO legal_documents (slug, version, title_en, title_es, body_en, body_es, notes) VALUES ('terms', ?, 't', 't', 'x', 'x', ?)`, [legalVersion, `${p}legal`]);
     await insertId(`INSERT INTO legal_acceptances (person_kind, person_id, slug, version) VALUES ('affiliate', ?, 'terms', ?)`, [affId, legalVersion]);
     const qrId = await insertId(`INSERT INTO qr_links (slug, label, destination_url) VALUES (?, 'x', '/')`, [`${p}qr`]);
+    const addendumId = await insertId(`INSERT INTO affiliate_addenda (affiliate_id, title, body_en, body_es) VALUES (?, ?, 'x', 'x')`, [affId, `${p}addendum`]);
     const teamId = await insertId(`INSERT INTO booking_teams (slug, name) VALUES (?, 'Clean team')`, [`${p}team`]);
     await db.execute(`INSERT INTO booking_team_members (team_id, admin_id) VALUES (?, ?)`, [teamId, adminId]);
     const cityId = await insertId(`INSERT INTO service_cities (name, active) VALUES (?, 0)`, [`${p}city`]);
@@ -107,7 +108,7 @@ describe.skipIf(!process.env.DB_HOST)("testDbCleanup", () => {
     await insertId(`INSERT INTO scorecard_actions (subject_type, subject_id, scorecard, week_start, kind, body) VALUES ('affiliate', ?, 'affiliate', '2026-01-05', 'note', 'x')`, [affId]);
     await insertId(`INSERT INTO scorecard_time_off (subject_type, subject_id, starts_on, ends_on) VALUES ('affiliate', ?, '2026-01-05', '2026-01-06')`, [affId]);
     await insertId(`INSERT INTO scorecard_activities (subject_type, subject_id, kind, occurred_at) VALUES ('affiliate', ?, 'event_held', NOW())`, [affId]);
-    return { teamId, qrId, cityId, cityPartnerId, legalVersion, caTemplateVersion, flowId, flowRunId, mailDraftId, mailboxId, mailThreadId, adminId, affId, clientId, lineId, unknownId, lineConv, contactId, contactConv, templateId, statusId, dedupeId, bellId, eventId, billingActionId, cardLinkId };
+    return { addendumId, teamId, qrId, cityId, cityPartnerId, legalVersion, caTemplateVersion, flowId, flowRunId, mailDraftId, mailboxId, mailThreadId, adminId, affId, clientId, lineId, unknownId, lineConv, contactId, contactConv, templateId, statusId, dedupeId, bellId, eventId, billingActionId, cardLinkId };
   };
 
   const remaining = async (f: Awaited<ReturnType<typeof seed>>) => ({
@@ -137,6 +138,7 @@ describe.skipIf(!process.env.DB_HOST)("testDbCleanup", () => {
     caTemplate: await count(`SELECT COUNT(*) n FROM construction_agreement_templates WHERE version = ?`, [f.caTemplateVersion]),
     flowRun: await count(`SELECT COUNT(*) n FROM reminder_flow_runs WHERE id = ?`, [f.flowRunId]),
     qrLink: await count(`SELECT COUNT(*) n FROM qr_links WHERE id = ?`, [f.qrId]),
+    addendum: await count(`SELECT COUNT(*) n FROM affiliate_addenda WHERE id = ?`, [f.addendumId]),
     bookingTeam: await count(`SELECT COUNT(*) n FROM booking_teams WHERE id = ?`, [f.teamId]),
     city: await count(`SELECT COUNT(*) n FROM service_cities WHERE id = ?`, [f.cityId]),
     cityPartner: await count(`SELECT COUNT(*) n FROM city_partners WHERE id = ?`, [f.cityPartnerId]),

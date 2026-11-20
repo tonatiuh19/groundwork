@@ -83,6 +83,7 @@ import AffiliateDashboard from "./pages/affiliate/Dashboard";
 import AffiliateClients from "./pages/affiliate/Clients";
 import AffiliateEvents from "./pages/affiliate/Events";
 import AffiliateCommissions from "./pages/affiliate/Commissions";
+import AffiliateProduction from "./pages/affiliate/Production";
 import AffiliateTeam from "./pages/affiliate/Team";
 import AffiliateTrackingLink from "./pages/affiliate/TrackingLink";
 import AffiliateProfile from "./pages/affiliate/Profile";
@@ -227,6 +228,7 @@ export default function App() {
               <Route index element={<AffiliateDashboard />} />
               <Route path="clients" element={<AffiliateClients />} />
               <Route path="events" element={<AffiliateEvents />} />
+              <Route path="production" element={<AffiliateProduction />} />
               <Route path="team" element={<AffiliateTeam />} />
               <Route path="commissions" element={<AffiliateCommissions />} />
               <Route path="link" element={<AffiliateTrackingLink />} />

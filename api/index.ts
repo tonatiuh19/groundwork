@@ -4935,7 +4935,7 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
     if (closerId && split.closer_cents > 0) {
       await conn.execute(
         `UPDATE affiliate_commissions
-         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = ?
+         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = ?, addendum_id = NULL, addendum_base_cents = NULL
          WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
         [
           split.closer_cents,
@@ -4957,7 +4957,7 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
     if (parentId && split.parent_cents > 0) {
       await conn.execute(
         `UPDATE affiliate_commissions
-         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = 'parent'
+         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = 'parent', addendum_id = NULL, addendum_base_cents = NULL
          WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
         [
           split.parent_cents,
@@ -4980,7 +4980,7 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
     if (grandId && split.grandparent_cents > 0) {
       await conn.execute(
         `UPDATE affiliate_commissions
-         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = 'grandparent'
+         SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, role = 'grandparent', addendum_id = NULL, addendum_base_cents = NULL
          WHERE project_id = ? AND affiliate_id = ? AND status IN ('pending','approved')`,
         [
           split.grandparent_cents,
@@ -4999,6 +4999,7 @@ async function recalcProject(conn: Pool | PoolConnection, projectId: number) {
       );
     }
   }
+  await applyAddendumCommissions(conn, projectId);
 }
 
 /** After a per-row amount edit on a split deal, refresh project total from live rows. */
@@ -5124,6 +5125,8 @@ async function syncCommissionForLoan(
            sq_ft = IF(status = 'paid', sq_ft, VALUES(sq_ft)),
            rate_cents_per_sqft = IF(status = 'paid', rate_cents_per_sqft, VALUES(rate_cents_per_sqft)),
            expected_pay_at = IF(status = 'paid', expected_pay_at, VALUES(expected_pay_at)),
+           addendum_id = IF(status = 'paid', addendum_id, NULL),
+           addendum_base_cents = IF(status = 'paid', addendum_base_cents, NULL),
            status = IF(status = 'void', 'pending', status)`,
         [
           affiliateId,
@@ -5175,6 +5178,7 @@ async function syncCommissionForLoan(
       `UPDATE projects SET commission_expected_pay_at = ? WHERE id = ?`,
       [expected, projectId],
     );
+    await applyAddendumCommissions(conn, projectId, adminId);
   } else {
     await conn.execute(
       `UPDATE affiliate_commissions SET status = 'void',
@@ -5195,6 +5199,310 @@ async function syncCommissionForLoan(
       [projectId],
     );
   }
+}
+
+
+// ── Affiliate addenda (special agreements) ──
+// A countersigned addendum pays its affiliate rate × sq ft on projects from its events (RSVP / sign-up lead
+// → project) or from its assigned affiliates' clients, plus staff includes, minus staff excludes. It accrues
+// with the loan like every commission. replace = the affiliate's own row on that project is paid at the
+// addendum amount (sponsors unchanged); extra = added to it; no own row = its own 'addendum' row. Normal
+// commission syncs clear the markers and this re-applies right after, so amounts never double up.
+
+type AddendumPayMode = "replace" | "extra";
+
+/** Row amount under a special agreement. Pure. */
+export function addendumRowAmount(mode: AddendumPayMode, baseCents: number, rateCents: number, sqFt: number | null): number {
+  const add = Math.max(0, Math.round(rateCents * (sqFt || 0)));
+  return mode === "extra" ? Math.max(0, baseCents) + add : add;
+}
+
+/** One addendum per affiliate per project: the newest countersigned one wins. Pure. */
+export function pickAddendumPerAffiliate<T extends { id: number; affiliate_id: number }>(list: T[]): Map<number, T> {
+  const out = new Map<number, T>();
+  for (const a of list) {
+    const cur = out.get(a.affiliate_id);
+    if (!cur || a.id > cur.id) out.set(a.affiliate_id, a);
+  }
+  return out;
+}
+
+/** Countersigned addenda that cover one project (newest first). */
+async function addendaForProject(conn: Pool | PoolConnection, p: RowDataPacket): Promise<Array<{ id: number; affiliate_id: number; rate: number; mode: AddendumPayMode }>> {
+  const [rows] = await conn.query<RowDataPacket[]>(
+    `SELECT ad.id, ad.affiliate_id, ad.rate_cents_per_sqft, ad.pay_mode FROM affiliate_addenda ad
+     LEFT JOIN affiliate_addendum_projects t ON t.addendum_id = ad.id AND t.project_id = ?
+     WHERE ad.status = 'countersigned' AND (t.mode = 'include' OR (t.mode IS NULL AND (
+       EXISTS (SELECT 1 FROM affiliate_addendum_events e JOIN leads l ON l.event_id = e.event_id WHERE e.addendum_id = ad.id AND (l.id = ? OR l.client_id = ?))
+       OR EXISTS (SELECT 1 FROM affiliate_addendum_affiliates x WHERE x.addendum_id = ad.id AND x.affiliate_id IN (?, ?))
+     ))) ORDER BY ad.id DESC`,
+    [p.id, p.lead_id ?? 0, p.client_id ?? 0, p.affiliate_id ?? 0, p.closer_affiliate_id ?? 0],
+  );
+  return rows.map((r) => ({ id: Number(r.id), affiliate_id: Number(r.affiliate_id), rate: Number(r.rate_cents_per_sqft), mode: String(r.pay_mode) as AddendumPayMode }));
+}
+
+/** Bring a project's unpaid commission rows in line with its special agreements. Never touches paid rows. */
+async function applyAddendumCommissions(conn: Pool | PoolConnection, projectId: number, adminId: number | null = null): Promise<void> {
+  // Runs on every commission recalc: one tiny query when no agreement is in effect and none touched this project.
+  const [[gate]] = (await conn.query<RowDataPacket[]>(
+    `SELECT EXISTS (SELECT 1 FROM affiliate_addenda WHERE status = 'countersigned') AS live,
+            EXISTS (SELECT 1 FROM affiliate_commissions WHERE project_id = ? AND (addendum_id IS NOT NULL OR role = 'addendum')) AS touched`,
+    [projectId],
+  )) as unknown as [RowDataPacket[]];
+  if (!Number(gate?.live) && !Number(gate?.touched)) return;
+  const [[p]] = (await conn.query<RowDataPacket[]>(
+    `SELECT id, client_id, lead_id, sq_ft, loan_status, affiliate_id, closer_affiliate_id, commission_expected_pay_at FROM projects WHERE id = ? LIMIT 1`,
+    [projectId],
+  )) as unknown as [RowDataPacket[]];
+  if (!p) return;
+  const [rows] = await conn.query<RowDataPacket[]>(
+    `SELECT id, affiliate_id, role, amount_cents, status, addendum_id, addendum_base_cents FROM affiliate_commissions WHERE project_id = ?`,
+    [projectId],
+  );
+  const chosen = String(p.loan_status) === "finalized" ? pickAddendumPerAffiliate(await addendaForProject(conn, p)) : new Map();
+  if (!chosen.size && !rows.some((r) => r.addendum_id != null || r.role === "addendum")) return;
+  const sqFt = p.sq_ft == null ? null : Number(p.sq_ft);
+  for (const [affId, ad] of chosen) {
+    const row = rows.find((r) => Number(r.affiliate_id) === affId);
+    if (row && String(row.status) === "paid") continue;
+    if (!row) {
+      await conn.execute(
+        `INSERT INTO affiliate_commissions (affiliate_id, role, project_id, client_id, amount_cents, sq_ft, rate_cents_per_sqft, status, expected_pay_at, created_by_admin_id, addendum_id, notes)
+         VALUES (?, 'addendum', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+        [affId, projectId, p.client_id, addendumRowAmount("replace", 0, ad.rate, sqFt), sqFt, ad.rate, p.commission_expected_pay_at ?? null, adminId, ad.id, `Special agreement #${ad.id}`],
+      );
+      continue;
+    }
+    const own = String(row.role) === "addendum";
+    // The amount before this agreement: kept while the same agreement applies, else the row as it is now.
+    const base = own ? 0 : row.addendum_id != null && Number(row.addendum_id) === ad.id && row.addendum_base_cents != null ? Number(row.addendum_base_cents) : Number(row.amount_cents);
+    await conn.execute(
+      `UPDATE affiliate_commissions SET amount_cents = ?, sq_ft = ?, rate_cents_per_sqft = ?, addendum_id = ?, addendum_base_cents = ?, notes = ?,
+         status = IF(status = 'void', 'pending', status), expected_pay_at = COALESCE(expected_pay_at, ?) WHERE id = ? AND status <> 'paid'`,
+      [
+        addendumRowAmount(own ? "replace" : ad.mode, base, ad.rate, sqFt),
+        sqFt,
+        own || ad.mode === "replace" ? ad.rate : row.rate_cents_per_sqft ?? null,
+        ad.id,
+        own ? null : base,
+        `Special agreement #${ad.id} (${own ? "own" : ad.mode})`,
+        p.commission_expected_pay_at ?? null,
+        row.id,
+      ],
+    );
+  }
+  // Agreements that no longer apply: their own rows are voided, adjusted rows go back to what they were.
+  for (const row of rows) {
+    if (String(row.status) === "paid" || chosen.has(Number(row.affiliate_id))) continue;
+    if (String(row.role) === "addendum") {
+      if (String(row.status) !== "void")
+        await conn.execute(`UPDATE affiliate_commissions SET status = 'void', notes = 'Special agreement no longer applies' WHERE id = ?`, [row.id]);
+    } else if (row.addendum_id != null) {
+      await conn.execute(
+        `UPDATE affiliate_commissions SET amount_cents = COALESCE(addendum_base_cents, amount_cents), addendum_id = NULL, addendum_base_cents = NULL, notes = NULL WHERE id = ?`,
+        [row.id],
+      );
+    }
+  }
+  await refreshProjectEconomicsFromCommissionRows(conn, projectId);
+}
+
+/** Projects an addendum can reach (event sign-ups, assigned affiliates' clients, staff tags). */
+async function addendumProjectRows(addendumId: number): Promise<RowDataPacket[]> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT p.id, p.public_id, p.milestone, p.loan_status, p.sq_ft, p.property_address, p.affiliate_id, p.closer_affiliate_id, c.first_name, c.last_name, t.mode AS tag_mode, t.reason AS tag_reason,
+       (SELECT e.event_id FROM affiliate_addendum_events e JOIN leads l ON l.event_id = e.event_id WHERE e.addendum_id = ? AND (l.id = p.lead_id OR l.client_id = p.client_id) LIMIT 1) AS via_event_id,
+       (SELECT x.affiliate_id FROM affiliate_addendum_affiliates x WHERE x.addendum_id = ? AND x.affiliate_id IN (p.affiliate_id, p.closer_affiliate_id) LIMIT 1) AS via_affiliate_id
+     FROM projects p JOIN clients c ON c.id = p.client_id
+     LEFT JOIN affiliate_addendum_projects t ON t.addendum_id = ? AND t.project_id = p.id
+     WHERE t.mode IS NOT NULL
+       OR EXISTS (SELECT 1 FROM affiliate_addendum_events e JOIN leads l ON l.event_id = e.event_id WHERE e.addendum_id = ? AND (l.id = p.lead_id OR l.client_id = p.client_id))
+       OR EXISTS (SELECT 1 FROM affiliate_addendum_affiliates x WHERE x.addendum_id = ? AND x.affiliate_id IN (p.affiliate_id, p.closer_affiliate_id))
+     ORDER BY p.id DESC LIMIT 500`,
+    [addendumId, addendumId, addendumId, addendumId, addendumId],
+  );
+  return rows;
+}
+
+/** Re-apply after an addendum changes (countersign, void, tag): every project it reaches or already touched. */
+async function resyncAddendumProjects(addendumId: number): Promise<void> {
+  const ids = new Set((await addendumProjectRows(addendumId)).map((r) => Number(r.id)));
+  const [touched] = await pool.query<RowDataPacket[]>(`SELECT DISTINCT project_id FROM affiliate_commissions WHERE addendum_id = ?`, [addendumId]);
+  for (const t of touched) ids.add(Number(t.project_id));
+  for (const id of ids) await withTx((conn) => applyAddendumCommissions(conn, id));
+}
+
+
+// ── Affiliate addendum documents ──
+
+const ADDENDUM_DEFAULT_BODY: Record<Lang, string> = {
+  en: `# Addendum to the Groundwork Affiliate Agreement
+
+This addendum is between **Groundwork Capital Group** ("Groundwork") and **{{affiliate_name}}** ("Affiliate"). It is part of the Affiliate Agreement the Affiliate signed. For the projects below, this addendum controls where the two differ.
+
+## Projects covered
+- Homeowners who sign up through these events: {{events}}
+- Homeowners referred by these affiliates: {{assigned_affiliates}}
+
+## Payment
+Groundwork will pay the Affiliate **{{rate_per_sqft}} per square foot** built on each covered project. {{pay_terms}} Payment follows the same timing and conditions as commissions under the Affiliate Agreement (after the homeowner's loan closes).
+
+## Term
+Effective {{effective_date}}. Either party may end this addendum in writing. Projects covered before it ends keep their payment.`,
+  es: `# Anexo al Contrato de Afiliado de Groundwork
+
+Este anexo es entre **Groundwork Capital Group** ("Groundwork") y **{{affiliate_name}}** ("Afiliado"). Forma parte del Contrato de Afiliado que el Afiliado firmó. Para los proyectos de abajo, este anexo prevalece donde los dos difieran.
+
+## Proyectos cubiertos
+- Propietarios que se registran en estos eventos: {{events}}
+- Propietarios referidos por estos afiliados: {{assigned_affiliates}}
+
+## Pago
+Groundwork pagará al Afiliado **{{rate_per_sqft}} por pie cuadrado** construido en cada proyecto cubierto. {{pay_terms}} El pago sigue los mismos plazos y condiciones que las comisiones del Contrato de Afiliado (después de que cierre el préstamo del propietario).
+
+## Vigencia
+Vigente desde el {{effective_date}}. Cualquiera de las partes puede terminar este anexo por escrito. Los proyectos cubiertos antes de que termine conservan su pago.`,
+};
+
+/** Fill {{placeholders}}; unknown ones stay so they can be caught. Pure. */
+export function renderAddendum(body: string, vars: Record<string, string>): string {
+  return String(body).replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (m, k) => (vars[k] !== undefined ? vars[k] : m));
+}
+/** Placeholders still unfilled after rendering. Pure. */
+export function unfilledPlaceholders(text: string): string[] {
+  return [...new Set([...String(text).matchAll(/\{\{\s*([a-z_]+)\s*\}\}/g)].map((m) => m[1]))];
+}
+
+type AddendumFull = { a: RowDataPacket; events: Array<{ id: number; title: string; title_es: string; starts_at: string | null }>; affiliates: Array<{ id: number; name: string }> };
+
+async function loadAddendum(id: number): Promise<AddendumFull | null> {
+  const [[a]] = (await pool.query<RowDataPacket[]>(
+    `SELECT ad.*, af.first_name, af.last_name, af.email, af.phone, af.preferred_language FROM affiliate_addenda ad JOIN affiliates af ON af.id = ad.affiliate_id WHERE ad.id = ? LIMIT 1`,
+    [id],
+  )) as unknown as [RowDataPacket[]];
+  if (!a) return null;
+  const [ev] = await pool.query<RowDataPacket[]>(
+    `SELECT e.id, e.title_en, e.title_es, e.starts_at FROM affiliate_addendum_events x JOIN marketing_events e ON e.id = x.event_id WHERE x.addendum_id = ? ORDER BY e.starts_at`,
+    [id],
+  );
+  const [af] = await pool.query<RowDataPacket[]>(
+    `SELECT f.id, f.first_name, f.last_name FROM affiliate_addendum_affiliates x JOIN affiliates f ON f.id = x.affiliate_id WHERE x.addendum_id = ? ORDER BY f.first_name`,
+    [id],
+  );
+  return {
+    a,
+    events: ev.map((e) => ({ id: Number(e.id), title: String(e.title_en), title_es: String(e.title_es || e.title_en), starts_at: isoDate(e.starts_at) })),
+    affiliates: af.map((f) => ({ id: Number(f.id), name: `${f.first_name || ""} ${f.last_name || ""}`.trim() })),
+  };
+}
+
+function addendumVars(f: AddendumFull, lang: Lang, when = new Date()): Record<string, string> {
+  const none = lang === "es" ? "ninguno" : "none";
+  const day = (iso: string | null) => (iso ? pacificLongDate(new Date(iso), lang) : "");
+  return {
+    affiliate_name: `${f.a.first_name || ""} ${f.a.last_name || ""}`.trim(),
+    rate_per_sqft: money2(Number(f.a.rate_cents_per_sqft)),
+    events: f.events.length ? f.events.map((e) => `${lang === "es" ? e.title_es : e.title}${e.starts_at ? ` (${day(e.starts_at)})` : ""}`).join("; ") : none,
+    assigned_affiliates: f.affiliates.length ? f.affiliates.map((x) => x.name).join(", ") : none,
+    pay_terms:
+      String(f.a.pay_mode) === "extra"
+        ? lang === "es" ? "Este pago es adicional a la comisión regular del Afiliado." : "This payment is in addition to the Affiliate's regular commission."
+        : lang === "es" ? "Este pago reemplaza la comisión regular del Afiliado en los proyectos cubiertos." : "This payment replaces the Affiliate's regular commission on covered projects.",
+    effective_date: pacificLongDate(when, lang),
+  };
+}
+
+async function addendumLog(addendumId: number, adminId: number | null, action: string, detail: string | null = null): Promise<void> {
+  await pool.execute(`INSERT INTO affiliate_addendum_log (addendum_id, admin_id, action, detail) VALUES (?, ?, ?, ?)`, [addendumId, adminId, action, detail ? detail.slice(0, 500) : null]);
+}
+
+function addendumOut(f: AddendumFull, opts: { internal: boolean }) {
+  const a = f.a;
+  return {
+    id: Number(a.id),
+    affiliate_id: Number(a.affiliate_id),
+    title: String(a.title),
+    rate_cents_per_sqft: Number(a.rate_cents_per_sqft),
+    pay_mode: String(a.pay_mode) as AddendumPayMode,
+    status: String(a.status),
+    events: f.events,
+    affiliates: f.affiliates,
+    rendered_en: a.rendered_en ? String(a.rendered_en) : null,
+    rendered_es: a.rendered_es ? String(a.rendered_es) : null,
+    lang: a.lang ? String(a.lang) : null,
+    sent_at: isoDate(a.sent_at),
+    signed_at: isoDate(a.signed_at),
+    signed_name: a.signed_name ? String(a.signed_name) : null,
+    countersigned_at: isoDate(a.countersigned_at),
+    countersigned_name: a.countersigned_name ? String(a.countersigned_name) : null,
+    voided_at: isoDate(a.voided_at),
+    void_reason: a.void_reason ? String(a.void_reason) : null,
+    ...(opts.internal ? { body_en: String(a.body_en), body_es: String(a.body_es), created_at: isoDate(a.created_at) } : {}),
+  };
+}
+
+/** Affiliate notice for a special agreement: email + text (STOP honored), links to their Agreement page. */
+async function notifyAffiliateAddendum(f: AddendumFull, kind: "sent" | "countersigned"): Promise<void> {
+  try {
+    const a = f.a;
+    const l = asLang(a.preferred_language);
+    const url = `${APP_URL}/affiliate/agreement#addenda`;
+    const rate = money2(Number(a.rate_cents_per_sqft));
+    const sent = kind === "sent";
+    if (a.email && (!notifySandbox() || isSandboxSafeEmail(a.email))) {
+      const tpl = tplPartnerEmail({
+        lang: l,
+        subject: sent ? tr(l, `Please review and sign: ${a.title}`, `Revise y firme: ${a.title}`) : tr(l, `Signed by Groundwork: ${a.title}`, `Firmado por Groundwork: ${a.title}`),
+        kicker: tr(l, "Special agreement", "Anexo especial"),
+        headline: sent ? tr(l, "You have a new agreement to sign", "Tiene un nuevo anexo para firmar") : tr(l, "Your agreement is in effect", "Su anexo está vigente"),
+        intro: sent
+          ? tr(l, "Groundwork sent you an addendum to your affiliate agreement. Read it and sign it in your portal.", "Groundwork le envió un anexo a su contrato de afiliado. Léalo y fírmelo en su portal.")
+          : tr(l, "Groundwork countersigned your addendum. Your production and payments show in your portal.", "Groundwork firmó su anexo. Su producción y sus pagos aparecen en su portal."),
+        figure: { value: rate, label: tr(l, "per square foot built", "por pie cuadrado construido") },
+        cta: { url, label: sent ? tr(l, "Review and sign", "Revisar y firmar") : tr(l, "Open my portal", "Abrir mi portal") },
+      });
+      await sendEmail({ to: String(a.email), subject: tpl.subject, html: tpl.html });
+    }
+    if (a.phone && !(await smsOptedOut(String(a.phone)))) {
+      const from = await resolveCampaignSmsFrom();
+      if (from)
+        await sendSms({
+          to: String(a.phone),
+          from,
+          body: sent
+            ? tr(l, `Groundwork: you have a new agreement to sign (${rate} per sq ft). ${url}`, `Groundwork: tiene un nuevo anexo para firmar (${rate} por pie cuadrado). ${url}`)
+            : tr(l, `Groundwork signed your agreement. It's in effect. ${url}`, `Groundwork firmó su anexo. Ya está vigente. ${url}`),
+        });
+    }
+  } catch (e: any) {
+    console.error(`[addendum:notify] #${f.a.id}:`, e?.message ?? e);
+  }
+}
+
+/** Frozen text + signatures; watermarked until countersigned (or VOID / DRAFT). */
+async function buildAddendumPdf(f: AddendumFull): Promise<Buffer> {
+  const a = f.a;
+  const lang: Lang = a.lang ? asLang(a.lang) : asLang(a.preferred_language);
+  const body = String((lang === "es" ? a.rendered_es : a.rendered_en) || renderAddendum(String(lang === "es" ? a.body_es : a.body_en), addendumVars(f, lang)));
+  const w = await createAgreementPdfWriter(`Groundwork affiliate addendum #${a.id}`);
+  w.renderBody(body);
+  w.ensure(200);
+  w.gap(12);
+  w.para(`**${lang === "es" ? "Afiliado" : "Affiliate"}**`, { size: 11, gap: 4 });
+  w.para(`**${lang === "es" ? "Nombre" : "Name"}:** ${a.signed_name || ""}`, { gap: 2 });
+  w.para(`**${lang === "es" ? "Fecha" : "Date"}:** ${a.signed_at ? pacificLongDate(new Date(a.signed_at), lang) : ""}`, { gap: 2 });
+  await w.signature(a.signature_image ? Buffer.from(String(a.signature_image).split(",")[1] || "", "base64") : null);
+  w.gap(8);
+  w.para("**Groundwork Capital Group**", { size: 11, gap: 4 });
+  w.para(`**${lang === "es" ? "Nombre" : "Name"}:** ${a.countersigned_name || ""}`, { gap: 2 });
+  w.para(`**${lang === "es" ? "Fecha" : "Date"}:** ${a.countersigned_at ? pacificLongDate(new Date(a.countersigned_at), lang) : ""}`, { gap: 2 });
+  if (a.signed_at) {
+    w.gap(10);
+    w.para(`Electronic signature: ${a.signed_name} · ${new Date(a.signed_at).toISOString()} · IP ${a.signed_ip || "-"} · ${String(a.signed_user_agent || "-").slice(0, 90)}`, { size: 7.5, color: w.gray, gap: 1 });
+    if (a.body_sha256) w.para(`SHA-256 of the addendum text: ${a.body_sha256}`, { size: 7.5, color: w.gray, gap: 1 });
+  }
+  const st = String(a.status);
+  return w.finish(st === "void" ? "VOID" : st === "draft" ? "DRAFT" : st === "countersigned" ? null : "AWAITING COUNTERSIGN");
 }
 
 // ── Notices (emails) ────────────────────────────────────────────────────────
@@ -18487,7 +18795,7 @@ function registerAdminRoutes(app: Express) {
       )
         ? String(req.query.status)
         : null;
-      const role = ["direct", "closer", "parent", "grandparent"].includes(
+      const role = ["direct", "closer", "parent", "grandparent", "addendum"].includes(
         String(req.query.role),
       )
         ? String(req.query.role)
@@ -42143,6 +42451,397 @@ function buildApp(): Express {
       res.json({ ok: true, url: "/affiliate", expires_at: expires.toISOString() });
     }),
   );
+
+  // ── Affiliate addenda (special agreements): staff side ──
+  const addendumPdfOut = (res: Response, pdf: Buffer, id: number) => {
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="groundwork-addendum-${id}.pdf"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(pdf);
+  };
+  const mustAddendum = async (id: number) => {
+    const f = await loadAddendum(id);
+    if (!f) throw new HttpError(404, "errors.notFound");
+    return f;
+  };
+  /** Events + affiliates for an addendum (ids validated; the affiliate itself can't be one of its own). */
+  const saveAddendumLinks = async (addendumId: number, ownerId: number, b: Record<string, any>) => {
+    const ids = (v: unknown) => {
+      if (!Array.isArray(v) || v.length > 50) throw new HttpError(400, "validation.invalidField");
+      return [...new Set(v.map((x) => parseId(x)))];
+    };
+    if (b.event_ids !== undefined) {
+      const list = ids(b.event_ids);
+      const [ok] = list.length ? await pool.query<RowDataPacket[]>(`SELECT id FROM marketing_events WHERE id IN (?)`, [list]) : [[] as RowDataPacket[]];
+      if (ok.length !== list.length) throw new HttpError(400, "validation.invalidField");
+      await withTx(async (conn) => {
+        await conn.execute(`DELETE FROM affiliate_addendum_events WHERE addendum_id = ?`, [addendumId]);
+        for (const e of list) await conn.execute(`INSERT INTO affiliate_addendum_events (addendum_id, event_id) VALUES (?, ?)`, [addendumId, e]);
+      });
+    }
+    if (b.affiliate_ids !== undefined) {
+      const list = ids(b.affiliate_ids).filter((x) => x !== ownerId);
+      const [ok] = list.length ? await pool.query<RowDataPacket[]>(`SELECT id FROM affiliates WHERE id IN (?)`, [list]) : [[] as RowDataPacket[]];
+      if (ok.length !== list.length) throw new HttpError(400, "validation.invalidField");
+      await withTx(async (conn) => {
+        await conn.execute(`DELETE FROM affiliate_addendum_affiliates WHERE addendum_id = ?`, [addendumId]);
+        for (const x of list) await conn.execute(`INSERT INTO affiliate_addendum_affiliates (addendum_id, affiliate_id) VALUES (?, ?)`, [addendumId, x]);
+      });
+    }
+  };
+  app.get(
+    "/api/admin/affiliates/:id/addenda",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const [rows] = await pool.query<RowDataPacket[]>(`SELECT id FROM affiliate_addenda WHERE affiliate_id = ? ORDER BY id DESC LIMIT 50`, [parseId(req.params.id)]);
+      const items = [];
+      for (const r of rows) items.push(addendumOut((await loadAddendum(Number(r.id)))!, { internal: true }));
+      res.json({ ok: true, addenda: items });
+    }),
+  );
+  app.post(
+    "/api/admin/affiliates/:id/addenda",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const affId = parseId(req.params.id);
+      const [[af]] = (await pool.query<RowDataPacket[]>(`SELECT id FROM affiliates WHERE id = ?`, [affId])) as unknown as [RowDataPacket[]];
+      if (!af) throw new HttpError(404, "errors.notFound");
+      const b = req.body || {};
+      const rate = Math.round(Number(b.rate_cents_per_sqft ?? 100));
+      if (!Number.isFinite(rate) || rate < 0 || rate > 10000) throw new HttpError(400, "validation.invalidField");
+      const me = portalUser(res).id;
+      const [ins] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO affiliate_addenda (affiliate_id, title, body_en, body_es, rate_cents_per_sqft, pay_mode, created_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [affId, String(b.title || "Special agreement").trim().slice(0, 200) || "Special agreement", ADDENDUM_DEFAULT_BODY.en, ADDENDUM_DEFAULT_BODY.es, rate, b.pay_mode === "extra" ? "extra" : "replace", me],
+      );
+      const id = Number(ins.insertId);
+      await saveAddendumLinks(id, affId, b);
+      await addendumLog(id, me, "created");
+      res.status(201).json({ ok: true, addendum: addendumOut((await loadAddendum(id))!, { internal: true }) });
+    }),
+  );
+  app.put(
+    "/api/admin/addenda/:aid",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = parseId(req.params.aid);
+      const f = await mustAddendum(id);
+      // The text and terms lock once the affiliate signs (void and send a new one to change them).
+      if (!["draft", "sent"].includes(String(f.a.status))) throw new HttpError(409, "errors.addendumLocked");
+      const b = req.body || {};
+      const rate = b.rate_cents_per_sqft === undefined ? Number(f.a.rate_cents_per_sqft) : Math.round(Number(b.rate_cents_per_sqft));
+      if (!Number.isFinite(rate) || rate < 0 || rate > 10000) throw new HttpError(400, "validation.invalidField");
+      const text = (v: unknown, cur: string, max: number) => (v === undefined ? cur : String(v).slice(0, max));
+      const bodyEn = text(b.body_en, String(f.a.body_en), 60000);
+      const bodyEs = text(b.body_es, String(f.a.body_es), 60000);
+      if (bodyEn.trim().length < 20 || bodyEs.trim().length < 20) throw new HttpError(400, "validation.invalidField");
+      const title = text(b.title, String(f.a.title), 200).trim() || String(f.a.title);
+      const mode = b.pay_mode === undefined ? String(f.a.pay_mode) : b.pay_mode === "extra" ? "extra" : "replace";
+      const ids = (v: unknown) => (Array.isArray(v) ? [...new Set(v.map(Number))].sort((x, y) => x - y).join(",") : null);
+      const changed =
+        title !== String(f.a.title) || bodyEn !== String(f.a.body_en) || bodyEs !== String(f.a.body_es) || rate !== Number(f.a.rate_cents_per_sqft) || mode !== String(f.a.pay_mode) ||
+        (b.event_ids !== undefined && ids(b.event_ids) !== ids(f.events.map((e) => e.id))) ||
+        (b.affiliate_ids !== undefined && ids((b.affiliate_ids as unknown[]).filter((x) => Number(x) !== Number(f.a.affiliate_id))) !== ids(f.affiliates.map((x) => x.id)));
+      // Saving (or previewing) with nothing changed never takes a sent copy back.
+      if (!changed) return res.json({ ok: true, addendum: addendumOut(f, { internal: true }) });
+      await pool.execute(
+        `UPDATE affiliate_addenda SET title = ?, body_en = ?, body_es = ?, rate_cents_per_sqft = ?, pay_mode = ?, status = 'draft', rendered_en = NULL, rendered_es = NULL WHERE id = ?`,
+        [title, bodyEn, bodyEs, rate, mode, id],
+      );
+      await saveAddendumLinks(id, Number(f.a.affiliate_id), b);
+      // An edit after sending takes the old copy back: it must be sent again.
+      await addendumLog(id, portalUser(res).id, String(f.a.status) === "sent" ? "edited_unsent" : "edited", `rate ${rate}`);
+      res.json({ ok: true, addendum: addendumOut((await loadAddendum(id))!, { internal: true }) });
+    }),
+  );
+  /** Preview the text as the affiliate would see it today (nothing frozen or sent). */
+  app.get(
+    "/api/admin/addenda/:aid/preview",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const f = await mustAddendum(parseId(req.params.aid));
+      const en = renderAddendum(String(f.a.body_en), addendumVars(f, "en"));
+      const es = renderAddendum(String(f.a.body_es), addendumVars(f, "es"));
+      res.json({ ok: true, en, es, missing: [...new Set([...unfilledPlaceholders(en), ...unfilledPlaceholders(es)])] });
+    }),
+  );
+  app.post(
+    "/api/admin/addenda/:aid/send",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = parseId(req.params.aid);
+      const f = await mustAddendum(id);
+      if (!["draft", "sent"].includes(String(f.a.status))) throw new HttpError(409, "errors.addendumLocked");
+      if (!f.events.length && !f.affiliates.length) throw new HttpError(400, "errors.addendumNoScope");
+      const now = new Date();
+      const en = renderAddendum(String(f.a.body_en), addendumVars(f, "en", now));
+      const es = renderAddendum(String(f.a.body_es), addendumVars(f, "es", now));
+      if (unfilledPlaceholders(en).length || unfilledPlaceholders(es).length) throw new HttpError(400, "errors.agreementNotReady");
+      await pool.execute(`UPDATE affiliate_addenda SET status = 'sent', rendered_en = ?, rendered_es = ?, sent_at = NOW() WHERE id = ?`, [en, es, id]);
+      await addendumLog(id, portalUser(res).id, "sent");
+      await notifyAffiliateAddendum(f, "sent");
+      res.json({ ok: true, addendum: addendumOut((await loadAddendum(id))!, { internal: true }) });
+    }),
+  );
+  app.post(
+    "/api/admin/addenda/:aid/countersign",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const admin = portalUser(res);
+      // Signing for Groundwork binds the company: super admins only.
+      if (admin.role !== "super_admin") throw new HttpError(403, "errors.forbidden");
+      const id = parseId(req.params.aid);
+      const name = String(req.body?.name || "").trim().slice(0, 200);
+      if (name.length < 2) throw new HttpError(400, "validation.signerNameRequired");
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE affiliate_addenda SET status = 'countersigned', countersigned_at = NOW(), countersigned_by_admin_id = ?, countersigned_name = ? WHERE id = ? AND status = 'signed'`,
+        [admin.id, name, id],
+      );
+      if (!r.affectedRows) throw new HttpError(409, "errors.addendumNotSigned");
+      await addendumLog(id, admin.id, "countersigned", name);
+      // Covered projects whose loan already closed start paying now.
+      await resyncAddendumProjects(id);
+      const f = (await loadAddendum(id))!;
+      await notifyAffiliateAddendum(f, "countersigned");
+      res.json({ ok: true, addendum: addendumOut(f, { internal: true }) });
+    }),
+  );
+  app.post(
+    "/api/admin/addenda/:aid/void",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = parseId(req.params.aid);
+      const f = await mustAddendum(id);
+      if (String(f.a.status) === "void") throw new HttpError(409, "errors.addendumLocked");
+      const reason = String(req.body?.reason || "").trim().slice(0, 500);
+      if (reason.length < 3) throw new HttpError(400, "validation.reasonRequired");
+      // Paid amounts stay as paid (never clawed back here); only unpaid ones change.
+      await pool.execute(`UPDATE affiliate_addenda SET status = 'void', voided_at = NOW(), voided_by_admin_id = ?, void_reason = ? WHERE id = ?`, [portalUser(res).id, reason, id]);
+      await addendumLog(id, portalUser(res).id, "voided", reason);
+      await resyncAddendumProjects(id);
+      res.json({ ok: true, addendum: addendumOut((await loadAddendum(id))!, { internal: true }) });
+    }),
+  );
+  app.get(
+    "/api/admin/addenda/:aid/projects",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const id = parseId(req.params.aid);
+      const f = await mustAddendum(id);
+      const rows = await addendumProjectRows(id);
+      const [fees] = rows.length
+        ? await pool.query<RowDataPacket[]>(`SELECT project_id, amount_cents, status FROM affiliate_commissions WHERE affiliate_id = ? AND project_id IN (?) AND addendum_id = ?`, [f.a.affiliate_id, rows.map((r) => r.id), id])
+        : [[] as RowDataPacket[]];
+      const [log] = await pool.query<RowDataPacket[]>(
+        `SELECT l.action, l.detail, l.created_at, CONCAT_WS(' ', a.first_name, a.last_name) AS by_name FROM affiliate_addendum_log l LEFT JOIN admins a ON a.id = l.admin_id WHERE l.addendum_id = ? ORDER BY l.id DESC LIMIT 50`,
+        [id],
+      );
+      res.json({
+        ok: true,
+        projects: rows.map((r) => {
+          const fee = fees.find((x) => Number(x.project_id) === Number(r.id));
+          return {
+            id: Number(r.id),
+            public_id: String(r.public_id),
+            client_name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
+            milestone: String(r.milestone),
+            loan_status: String(r.loan_status),
+            sq_ft: r.sq_ft == null ? null : Number(r.sq_ft),
+            via: r.tag_mode === "include" ? "staff" : r.via_event_id ? "event" : r.via_affiliate_id ? "affiliate" : "staff",
+            excluded: r.tag_mode === "exclude",
+            tag_reason: r.tag_reason ? String(r.tag_reason) : null,
+            fee_cents: fee ? Number(fee.amount_cents) : null,
+            fee_status: fee ? String(fee.status) : null,
+          };
+        }),
+        log: log.map((l) => ({ action: String(l.action), detail: l.detail ? String(l.detail) : null, at: isoDate(l.created_at), by: l.by_name ? String(l.by_name) : null })),
+      });
+    }),
+  );
+  /** Staff include / exclude one project (or clear the override), with a reason, logged. */
+  app.post(
+    "/api/admin/addenda/:aid/projects/:pid",
+    requireAdmin("approvals"),
+    route(async (req, res) => {
+      const id = parseId(req.params.aid);
+      const pid = parseId(req.params.pid);
+      const f = await mustAddendum(id);
+      if (String(f.a.status) === "void") throw new HttpError(409, "errors.addendumLocked");
+      const mode = String(req.body?.mode || "");
+      const reason = String(req.body?.reason || "").trim().slice(0, 500) || null;
+      const [[p]] = (await pool.query<RowDataPacket[]>(`SELECT id, public_id FROM projects WHERE id = ?`, [pid])) as unknown as [RowDataPacket[]];
+      if (!p) throw new HttpError(404, "errors.notFound");
+      if (mode === "clear") await pool.execute(`DELETE FROM affiliate_addendum_projects WHERE addendum_id = ? AND project_id = ?`, [id, pid]);
+      else if (mode === "include" || mode === "exclude") {
+        if (!reason || reason.length < 3) throw new HttpError(400, "validation.reasonRequired");
+        await pool.execute(
+          `INSERT INTO affiliate_addendum_projects (addendum_id, project_id, mode, reason, admin_id) VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE mode = VALUES(mode), reason = VALUES(reason), admin_id = VALUES(admin_id), created_at = NOW()`,
+          [id, pid, mode, reason, portalUser(res).id],
+        );
+      } else throw new HttpError(400, "validation.invalidField");
+      await addendumLog(id, portalUser(res).id, `project_${mode}`, `${p.public_id}${reason ? `: ${reason}` : ""}`);
+      await withTx((conn) => applyAddendumCommissions(conn, pid));
+      res.json({ ok: true });
+    }),
+  );
+  app.get(
+    "/api/admin/addenda/:aid/pdf",
+    requireAdmin("people.read"),
+    route(async (req, res) => {
+      const f = await mustAddendum(parseId(req.params.aid));
+      addendumPdfOut(res, await buildAddendumPdf(f), Number(f.a.id));
+    }),
+  );
+  /** Pickers for the addendum editor: recent / upcoming events and affiliates (light rows, no paging). */
+  app.get(
+    "/api/admin/addenda/options",
+    requireAdmin("people.read"),
+    route(async (_req, res) => {
+      const [ev] = await pool.query<RowDataPacket[]>(`SELECT id, title_en, title_es, starts_at, city FROM marketing_events ORDER BY starts_at DESC LIMIT 300`);
+      const [af] = await pool.query<RowDataPacket[]>(
+        `SELECT id, first_name, last_name, company, status FROM affiliates WHERE status IN ('active','pending') ORDER BY first_name, last_name LIMIT 2000`,
+      );
+      res.json({
+        ok: true,
+        events: ev.map((e) => ({ id: Number(e.id), title: String(e.title_en), title_es: String(e.title_es || e.title_en), starts_at: isoDate(e.starts_at), city: e.city ? String(e.city) : null })),
+        affiliates: af.map((a) => ({ id: Number(a.id), name: `${a.first_name || ""} ${a.last_name || ""}`.trim(), company: a.company ? String(a.company) : null, status: String(a.status) })),
+      });
+    }),
+  );
+  /** Special agreements attached to an event (event page). */
+  app.get(
+    "/api/admin/events/:id/addenda",
+    requireAdmin("events"),
+    route(async (req, res) => {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT ad.id, ad.title, ad.status, ad.rate_cents_per_sqft, ad.pay_mode, ad.affiliate_id, f.first_name, f.last_name FROM affiliate_addendum_events x
+         JOIN affiliate_addenda ad ON ad.id = x.addendum_id JOIN affiliates f ON f.id = ad.affiliate_id WHERE x.event_id = ? ORDER BY ad.id DESC`,
+        [parseId(req.params.id)],
+      );
+      res.json({
+        ok: true,
+        addenda: rows.map((r) => ({
+          id: Number(r.id),
+          title: String(r.title),
+          status: String(r.status),
+          rate_cents_per_sqft: Number(r.rate_cents_per_sqft),
+          pay_mode: String(r.pay_mode),
+          affiliate_id: Number(r.affiliate_id),
+          affiliate_name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
+        })),
+      });
+    }),
+  );
+
+  // ── Affiliate addenda: affiliate side (view-as sessions are read-only) ──
+  const affAddPortal = requirePortal("affiliate");
+  const myAddendum = async (res: Response, id: number) => {
+    const f = await loadAddendum(id);
+    if (!f || Number(f.a.affiliate_id) !== portalUser(res).id || String(f.a.status) === "draft") throw new HttpError(404, "errors.notFound");
+    return f;
+  };
+  app.get(
+    "/api/affiliate/addenda",
+    affAddPortal,
+    route(async (_req, res) => {
+      const [rows] = await pool.query<RowDataPacket[]>(`SELECT id FROM affiliate_addenda WHERE affiliate_id = ? AND status <> 'draft' ORDER BY id DESC LIMIT 20`, [portalUser(res).id]);
+      const items = [];
+      for (const r of rows) items.push(addendumOut((await loadAddendum(Number(r.id)))!, { internal: false }));
+      res.json({ ok: true, addenda: items });
+    }),
+  );
+  app.post(
+    "/api/affiliate/addenda/:aid/sign",
+    affAddPortal,
+    route(async (req, res) => {
+      const id = parseId(req.params.aid);
+      const f = await myAddendum(res, id);
+      if (String(f.a.status) !== "sent") throw new HttpError(409, "errors.addendumNotOpen");
+      const b = req.body || {};
+      if (b.consent !== true) throw new HttpError(400, "validation.esignConsentRequired");
+      const name = String(b.signed_name || "").trim().slice(0, 200);
+      if (name.length < 2) throw new HttpError(400, "validation.signerNameRequired");
+      const sig = parseSignaturePng(b.signature_image);
+      const lang = asLang(b.lang);
+      const text = String((lang === "es" ? f.a.rendered_es : f.a.rendered_en) || "");
+      const sha = sha256(text);
+      // They sign exactly what they saw: staff edits meanwhile make them reload.
+      if (!text || String(b.text_sha256 || "") !== sha) throw new HttpError(409, "errors.agreementChanged");
+      const [r] = await pool.execute<ResultSetHeader>(
+        `UPDATE affiliate_addenda SET status = 'signed', lang = ?, body_sha256 = ?, signed_at = NOW(), signed_name = ?, signature_image = ?, signed_ip = ?, signed_user_agent = ? WHERE id = ? AND status = 'sent'`,
+        [lang, sha, name, `data:image/png;base64,${sig.toString("base64")}`, clientIp(req), String(req.headers["user-agent"] || "").slice(0, 500) || null, id],
+      );
+      if (!r.affectedRows) throw new HttpError(409, "errors.addendumNotOpen");
+      await addendumLog(id, null, "signed", name);
+      await notifyStaff(
+        "affiliate_onboarding",
+        (l) => ({
+          subject: tr(l, `Special agreement signed: ${name} · countersign it`, `Anexo firmado: ${name} · fírmelo por Groundwork`),
+          headline: tr(l, `${name} signed "${f.a.title}"`, `${name} firmó "${f.a.title}"`),
+          paragraphs: [tr(l, "It starts paying once a super admin countersigns it on the affiliate's page.", "Empieza a pagar cuando un super admin lo firme por Groundwork en la página del afiliado.")],
+          details: [[tr(l, "Rate", "Tarifa"), `${money2(Number(f.a.rate_cents_per_sqft))} / sq ft`]],
+          cta: { url: `${APP_URL}/admin/affiliates/${f.a.affiliate_id}#addenda`, label: tr(l, "Open affiliate", "Abrir afiliado") },
+        }),
+      );
+      res.json({ ok: true, addendum: addendumOut((await loadAddendum(id))!, { internal: false }) });
+    }),
+  );
+  app.get(
+    "/api/affiliate/addenda/:aid/pdf",
+    affAddPortal,
+    route(async (req, res) => {
+      const f = await myAddendum(res, parseId(req.params.aid));
+      addendumPdfOut(res, await buildAddendumPdf(f), Number(f.a.id));
+    }),
+  );
+  /**
+   * Production under my signed special agreements: sign-ups from the linked events and the projects they
+   * cover (homeowner as first name + last initial, stage, sq ft, my fee). Nothing before I sign.
+   */
+  app.get(
+    "/api/affiliate/production",
+    affAddPortal,
+    route(async (_req, res) => {
+      const me = portalUser(res).id;
+      const [ads] = await pool.query<RowDataPacket[]>(`SELECT id FROM affiliate_addenda WHERE affiliate_id = ? AND status IN ('signed','countersigned') ORDER BY id DESC LIMIT 20`, [me]);
+      const short = (first: unknown, last: unknown) => `${String(first || "").trim()} ${String(last || "").trim().charAt(0)}${last ? "." : ""}`.trim();
+      const out = [];
+      for (const r of ads) {
+        const f = (await loadAddendum(Number(r.id)))!;
+        const eventIds = f.events.map((e) => e.id);
+        const [signups] = eventIds.length
+          ? await pool.query<RowDataPacket[]>(
+              `SELECT l.full_name, l.created_at, l.event_id, l.status, l.client_id FROM leads l WHERE l.event_id IN (?) AND l.status <> 'spam' ORDER BY l.created_at DESC LIMIT 300`,
+              [eventIds],
+            )
+          : [[] as RowDataPacket[]];
+        const projects = (await addendumProjectRows(f.a.id)).filter((p) => p.tag_mode !== "exclude");
+        const [fees] = projects.length
+          ? await pool.query<RowDataPacket[]>(`SELECT project_id, amount_cents, status, paid_at FROM affiliate_commissions WHERE affiliate_id = ? AND addendum_id = ? AND project_id IN (?)`, [me, f.a.id, projects.map((p) => p.id)])
+          : [[] as RowDataPacket[]];
+        out.push({
+          addendum: addendumOut(f, { internal: false }),
+          signups: signups.map((s) => {
+            const parts = String(s.full_name || "").trim().split(/\s+/);
+            return { name: short(parts[0], parts.slice(1).join(" ")), at: isoDate(s.created_at), event_id: Number(s.event_id), became_client: s.client_id != null };
+          }),
+          projects: projects.map((p) => {
+            const fee = fees.find((x) => Number(x.project_id) === Number(p.id));
+            return {
+              name: short(p.first_name, p.last_name),
+              street: streetOnly(p.property_address),
+              milestone: String(p.milestone),
+              sq_ft: p.sq_ft == null ? null : Number(p.sq_ft),
+              fee_cents: fee ? Number(fee.amount_cents) : null,
+              fee_status: fee ? String(fee.status) : null,
+            };
+          }),
+        });
+      }
+      res.json({ ok: true, agreements: out });
+    }),
+  );
   app.post(
     "/api/admin/city-partners/:id/view-as",
     requireAdmin("approvals"),
@@ -45163,7 +45862,7 @@ function buildApp(): Express {
           },
           role: {
             type: "string",
-            enum: ["direct", "closer", "parent", "grandparent"],
+            enum: ["direct", "closer", "parent", "grandparent", "addendum"],
           },
           affiliate_id: { type: "integer" },
           limit: { type: "integer" },
@@ -46790,7 +47489,7 @@ function buildApp(): Express {
             where.push("ac.status = ?");
             params.push(status);
           }
-          const role = ["direct", "closer", "parent", "grandparent"].includes(
+          const role = ["direct", "closer", "parent", "grandparent", "addendum"].includes(
             mcpStr(args.role),
           )
             ? mcpStr(args.role)

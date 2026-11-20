@@ -19,6 +19,7 @@ export default function DangerConfirmModal({
   error,
   onCancel,
   onConfirm,
+  inputLabel,
 }: {
   open: boolean;
   titleKey: string;
@@ -31,13 +32,15 @@ export default function DangerConfirmModal({
   error?: string | null;
   onCancel: () => void;
   onConfirm: (typed: string) => void;
+  /** Free text the action needs (a reason, a signer name): 3+ characters unlock the button. */
+  inputLabel?: string;
 }) {
   const { t } = useTranslation();
   const [typed, setTyped] = useState("");
   useEffect(() => {
     if (open) setTyped("");
   }, [open]);
-  const ok = !confirmText || typed.trim().toLowerCase() === confirmText.trim().toLowerCase();
+  const ok = inputLabel ? typed.trim().length >= 3 : !confirmText || typed.trim().toLowerCase() === confirmText.trim().toLowerCase();
   return (
     <Modal open={open} titleKey={titleKey} onClose={() => !busy && onCancel()}>
       <div className="pf-form gw-danger">
@@ -45,7 +48,12 @@ export default function DangerConfirmModal({
           <AlertTriangle size={20} aria-hidden />
           <div>{children}</div>
         </div>
-        {confirmText ? (
+        {inputLabel ? (
+          <label className="pf-field">
+            <span>{inputLabel}</span>
+            <input value={typed} autoComplete="off" maxLength={500} onChange={(e) => setTyped(e.target.value)} />
+          </label>
+        ) : confirmText ? (
           <label className="pf-field">
             <span>{t("danger.typeToConfirm", { text: confirmText })}</span>
             <input value={typed} autoComplete="off" onChange={(e) => setTyped(e.target.value)} />
